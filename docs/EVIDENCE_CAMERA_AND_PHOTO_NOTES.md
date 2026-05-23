@@ -155,6 +155,18 @@ For evidence-bearing photos on flags or issues, the workflow gains one optional 
 
 The note becomes the flag's description if the flag didn't already have one.
 
+**Note timing for damage/maintenance flags (prototype finding #7):** when the flag is a damage or maintenance type, the descriptive note is captured **inside the guided flag workflow, before the flag is saved** — while the inspector is still looking at the problem. This is more reliable than capturing photos now and hoping someone writes the note later. The photo notes described in this document and the flag's own description work together: the first photo's note (or proof-set note) doubles as the flag description when no separate description was typed.
+
+---
+
+## Pre-arrival Evidence Pack (prototype finding #13)
+
+A frequent, high-value retrieval is "give me timestamped proof the apartment was fine before this guest." The **Pre-arrival Evidence Pack** button (on the Apartment Action Centre property header — see `APARTMENT_ACTION_CENTRE.md`) assembles the relevant baseline photos in one tap:
+
+- It is built from the existing `photos` table, filtered to `retention_class = 'routine_pre_arrival'` for the chosen property/stay — **not** a separate store and **not** a re-upload.
+- Output is a timestamped, print/share-ready proof set (the same rendering used by the Evidence Vault's "evidence pack" — see `EVIDENCE_VAULT_AND_WHATSAPP_WORKFLOW.md`).
+- This is the capture side's pay-off: because Evidence Camera Mode made baseline capture fast and frictionless during every turnover, the proof is already there when a dispute arrives weeks later.
+
 ---
 
 ## Photo timestamps and metadata

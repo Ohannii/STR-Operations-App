@@ -101,6 +101,57 @@ A guest damage flag is the most expensive in terms of downstream work because it
 
 ---
 
+## Context inheritance (prototype finding #1)
+
+When a flag is raised **during an inspection**, it automatically inherits its context. The user is **never** asked to re-select the apartment or the inspection:
+
+- `company_id`, `property_id` — inherited from the inspection.
+- `inspection_id`, `inspection_item_id` — set from the line item the flag was raised on (or just `inspection_id` if raised from the inspection's general "add flag" affordance).
+- `stay_id` — inherited from the inspection's linked stay (outgoing stay for a turnover/post-stay context).
+- Default `flag_category_id` — pre-selected from the section/line-item context (a TV line item pre-selects "Inventory damaged"; the damage section pre-selects "Guest damage"; the appliances section pre-selects "Maintenance issue").
+
+The inspector's only required action is to confirm or change the pre-selected type and (where the type or item requires it) add a note and photo. Asking "which apartment?" mid-inspection is a bug, not a feature.
+
+A flag raised **from the Apartment Action Centre** (not during an inspection — see prototype finding #14) inherits `company_id` and `property_id` from the property card it was raised on, with `inspection_id` and `inspection_item_id` left null. Everything else is identical.
+
+---
+
+## The "action needed" picker (prototype finding #8)
+
+When raising or triaging a flag, the user can optionally indicate what action is needed. This is a single guided picker, presented as plain-language options, that maps to child-action intent. The options:
+
+| Picker option (plain language) | Maps to |
+|---|---|
+| Reclean | Cleaning child action (re-clean) |
+| Deep clean | Cleaning child action (deep clean) |
+| Maintenance required | Maintenance child action → maintenance job |
+| Guest notification required | Guest recovery task (notification step) |
+| Needs Asana | Asana logging queue entry (outbound; see `INTEGRATION_ROADMAP.md`) |
+| Owner approval required | Accountability record → approval policy flow |
+| Monthly owner charge | Accountability record (owner-chargeable, rolls to monthly summary) |
+| Record-only / no action | Flag set to `no_action`; appears in history only |
+
+These options are **multi-select** — one real-world problem can need several (e.g., a guest-damaged oven might need *maintenance required* + *guest notification required* + *owner approval required*). Every selected option becomes a **child action under the one parent flag** — never a separate top-level task. See `DEDUPLICATION_AND_TASK_GROUPING_RULES.md`.
+
+---
+
+## Child actions are optional during inspection and editable later (prototype findings #9, #10, #16)
+
+**Inspectors often don't know which child actions are required.** A junior inspector photographing a cracked tile shouldn't have to decide whether it's owner-chargeable or needs Asana. So:
+
+- During an inspection, the action-needed picker is **optional**. An inspector can save a flag with photos and a note and pick **nothing** in the picker. The flag is captured; triage happens later.
+- **Admin/managers edit child actions later, directly from the Apartment Action Centre.** From a flag card a manager can add, change, or close child actions and advance their statuses without reopening the inspection. Examples of status advances managers make from the card:
+  - Asana pending → Asana logged
+  - Guest notification pending → sent
+  - Maintenance pending → assigned → done
+  - Owner charge pending → reviewed
+- Selecting **"Maintenance required"** on a flag **visibly creates or attaches a maintenance child action under the parent flag** — the manager sees the maintenance chip appear in the flag card's work strip immediately, not buried elsewhere (prototype finding #16).
+- A child action can be added to a flag at any point in the flag's life, by any role permitted to triage. Adding one never duplicates the parent; it nests under it.
+
+This separation — inspectors capture, managers decide — is the same principle used everywhere in the product: field roles never make money/routing decisions.
+
+---
+
 ## Where flags live in the data model
 
 (See `DATABASE_SCHEMA_PLAN.md` for the full consolidated schema. Summary here for cross-reference.)

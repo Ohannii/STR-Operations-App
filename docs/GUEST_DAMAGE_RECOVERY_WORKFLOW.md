@@ -24,6 +24,14 @@ The guest recovery workflow is **not a separate module the manager has to naviga
 
 The screenshot of a sent message is stored as a photo with `entity_type = 'recovery_message_proof'`, `guest_recovery_task_id` set, and `retention_class = 'dispute_evidence'`. That is what removes the need to ever scroll WhatsApp for proof again.
 
+### Guest notification is a child action under the parent flag (prototype findings #8, #10, #17)
+
+"Guest notification required" is one of the action-needed options on a flag (`FLAG_AND_ACTION_MODEL.md`). When selected, it attaches a guest-notification child action to the parent flag — it does **not** create a separate top-level task. A manager advances its status directly from the flag card on the Apartment Action Centre:
+
+- guest notification **pending → sent** (with the screenshot proof captured at "sent")
+
+This sits alongside the flag's other child actions (maintenance, owner charge, Asana, review) under the one parent. The same cracked-TV flag can carry "guest notification required" + "maintenance required" + "owner approval required" at once — all children of one problem, one card, never duplicated.
+
 ---
 
 ## The recovery cascade

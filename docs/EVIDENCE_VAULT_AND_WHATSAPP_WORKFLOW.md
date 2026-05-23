@@ -105,15 +105,19 @@ Each drawer offers the same selection actions as the Vault: open, add to pack, s
 
 This is the dispute-defence use case. A guest claims they didn't damage something. The team needs to prove the apartment was clean and intact before arrival.
 
-**Path:**
+**Fastest path — the Pre-arrival Evidence Pack button (prototype finding #13):**
+
+The Apartment Action Centre property header has a one-tap **Pre-arrival Evidence Pack** button. Tapping it assembles the property's most recent pre-arrival/turnover baseline photos (filtered to `routine_pre_arrival`, for the chosen stay) into a timestamped, print/share-ready proof set immediately — no manual searching. This is the button the team reaches for first when a dispute lands.
+
+**Manual path (when you need a specific older stay):**
 
 1. From the Apartment Action Centre, open the property's Property view.
 2. Tap "Stay history" or scroll to the relevant stay.
-3. Tap the stay → see its linked pre-arrival inspection.
+3. Tap the stay → see its linked pre-arrival/turnover inspection.
 4. Tap "Evidence" on that inspection → a drawer opens showing all pre-arrival photos for that stay.
 5. Select the relevant ones → "Add to evidence pack" or "Open WhatsApp."
 
-Time-to-find: under 30 seconds for someone familiar with the app. **Compared to scrolling WhatsApp for 10 minutes per dispute, this is the largest single time saving in the product.**
+Time-to-find: one tap via the button, or under 30 seconds via the manual path. **Compared to scrolling WhatsApp for 10 minutes per dispute, this is the largest single time saving in the product.**
 
 ---
 
@@ -127,6 +131,12 @@ Time-to-find: under 30 seconds for someone familiar with the app. **Compared to 
 4. Pre-arrival proof for the same stay is one tap away (the card shows "Pre-arrival evidence for this stay →").
 
 Time-to-find: zero. The evidence is on the screen the manager is already looking at.
+
+---
+
+## Print-friendly evidence report for Asana (prototype finding #11)
+
+The Asana logging queue (see `APARTMENT_ACTION_CENTRE.md`) reuses this document's evidence-pack rendering. When a manager taps "Copy / export / print-friendly evidence report" for an Asana-pending flag, the system produces the same kind of bundle described in "Preparing an evidence pack" below — flag context + timestamped photos + child-action checklist — formatted as **one task per parent flag**, ready to paste into Asana. "Mark as logged" then advances the flag's Asana child action. No duplication, one-way, app stays source of truth.
 
 ---
 

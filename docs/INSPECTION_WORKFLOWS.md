@@ -100,22 +100,34 @@ Reopen rules:
 
 1. **Open the app** — already logged in, lands on "My day".
 2. **Pick a property** — list shows assigned properties first, sorted by next-due inspection.
-3. **Pick a template** — Pre-arrival / Post-stay / Monthly / Custom.
-4. **Tap "Start inspection"** — a new draft is created (server if online, local-only if offline).
+3. **Pick a template** — Turnover (default) / Pre-arrival / Post-stay / Monthly / Custom.
+4. **Tap "Start inspection"** — a new draft is created (server if online, local-only if offline). From this point, **every flag raised inside the inspection automatically inherits this property + inspection + stay context** — the inspector is never asked to pick the apartment again (prototype finding #1).
 5. **Section screen** — title at top, list of line items, big "Next section" button at the bottom.
 6. **For each item:**
    - Tap a status pill (OK / Damaged / Missing / Attention).
    - If `required_photo`, the "Add photo" button is highlighted and submit is blocked until at least one photo is attached.
    - If `required_note`, the note field shows a "Required" marker.
    - Photos compress in the background; a small spinner indicates queueing.
-7. **Move through sections** until "Finish" appears.
-8. **Final review screen:**
-   - Counts: total items, OK / Damaged / Missing / Attention.
-   - Photos: total photos attached, photos pending upload.
-   - Any item with a problem is listed with a thumbnail.
-   - Inspector can tap to jump back to fix any item.
-9. **Submit** — if all required photos and notes are present, the inspection moves to `submitted`. Audit event written.
-10. **Confirmation screen** — "Inspection submitted. X items will continue syncing in the background." Clear sync banner.
+7. **Raising a flag mid-inspection (guided flag workflow):**
+   - Tap "Flag a problem" on a line item (or the section's general "Add flag").
+   - Confirm or change the pre-selected flag type.
+   - For damage/maintenance types, **the note is captured during the guided flow, before the flag is saved** (prototype finding #7) — and a photo is prompted per the item/flag-type rules.
+   - Optionally pick "action needed" options (multi-select; optional — see `FLAG_AND_ACTION_MODEL.md`). An inspector who doesn't know what's needed picks nothing; a manager triages later.
+   - Tap **"Save flag."**
+8. **Saving a flag does NOT submit the inspection (prototype finding #2).** The inspection stays in `draft` / in-progress. Saving a flag only writes the flag; it never advances the inspection's state.
+9. **After saving a flag, the inspector sees clear next actions (prototype finding #3):**
+   - **Continue inspection** (returns to where they were — the default, biggest button)
+   - **Go to Apartment Action Centre** (for this property)
+   - **Review saved flag** (opens the flag just created)
+10. **Continue any time.** An in-progress inspection can always be resumed until it is explicitly submitted (prototype finding #4). Closing the app, taking a call, going offline — the draft persists and reopens where it was left.
+11. **Move through sections** until "Finish" appears.
+12. **Final review screen (prototype finding #12):**
+   - Completion summary: total items, OK / Damaged / Missing / Attention, flags raised, photos attached, photos pending upload.
+   - Any item with a problem is listed with a thumbnail; tap to jump back and fix.
+   - The "ready for next guest?" question (turnover/pre-arrival).
+   - A clear, single **"Submit Inspection"** button.
+13. **Submit** — only this button moves the inspection to `submitted`. If required photos/notes are present, state advances and an audit event is written.
+14. **Confirmation screen** — "Inspection submitted. X items will continue syncing in the background." Clear sync banner. The inspector is routed to the property's Apartment Action Centre.
 
 ---
 
@@ -127,6 +139,29 @@ Reopen rules:
    - Turned into an **issue** (one tap; pre-fills title, property, photos).
    - Marked **owner-chargeable** (with approval = manager's user id; audited).
 4. Tap **"Mark reviewed"** → state moves to `reviewed`, audit event written.
+
+---
+
+## Inspection history (prototype findings #5, #6)
+
+Inspection history is browsable per property and distinguishes four states clearly:
+
+- **In progress** (draft) — started, not yet submitted. Resumable.
+- **Submitted** — inspector finished; awaiting manager review.
+- **Reviewed** — a manager has acknowledged it.
+- **Closed** — fully done, including any child actions resolved (a derived/displayed state; see note below).
+
+Opening any historical inspection by date shows the complete record:
+
+- All checklist items with their OK / Damaged / Missing / Attention status.
+- Notes per item.
+- All flags raised, grouped under their parent (never duplicated).
+- Evidence photos with timestamps and any notes.
+- Child actions linked to each flag (maintenance, Asana, guest notification, owner charge, review) with their current status.
+- Submit / review status and the relevant timestamps (started, submitted, reviewed).
+- The inspector who performed it (and reviewer, if reviewed).
+
+Implementation note: `inspections.status` in the schema is `draft | submitted | reviewed`. "In progress" is the display label for `draft`. "Closed" is a **display state** derived from "reviewed AND all linked flags/child actions resolved" — it is not a separate stored status in v1.0 (avoids a redundant column). If real use shows a need for an explicit stored `closed`, it's a one-line schema addition later; flagged in `KNOWN_ISSUES.md`.
 
 ---
 

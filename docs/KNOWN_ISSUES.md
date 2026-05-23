@@ -10,6 +10,48 @@ None. No code or services exist yet.
 
 These are not bugs — they are planning-stage risks that need attention as we move into building. They are listed here so we don't forget any of them once we have code.
 
+### Risk: a "record-only" choice could be used to bury a safety flag — **NEW (Claude logic test, prototype findings)**
+
+- **Priority: Safety**
+- The action-needed picker (#8) includes "record-only / no action," and the picker is optional for inspectors (#9). A junior or careless inspector could mark a genuine safety hazard (gas smell, broken lock, exposed wiring) as record-only, dropping it out of the open Action Centre queue.
+- **Plan:** A flag whose **type** is `safety_urgent` must NOT be closeable to `no_action`/record-only by an inspector. Safety flags always enter the open queue and notify a manager regardless of the picker. The picker's "record-only" option is suppressed when the flag type is safety. Manager override to close a safety flag is allowed but audited. Add an explicit acceptance test.
+- **Reassess:** at v1.0 flag-capture field test. Any path that lets a safety flag silently disappear is a release blocker.
+
+### Risk: editing flags on an already-submitted/reviewed inspection — **NEW (Claude logic test)**
+
+- **Priority: Data / Audit**
+- Findings #9/#10 make child actions editable later by managers from the Action Centre, but the parent flag lives on an inspection that may be `submitted`/`reviewed`. We haven't stated whether the flag's own fields (type, description, photos) can change after submit, versus only its child actions.
+- **Plan:** Child actions remain manager-editable after submit (that's triage). The flag's evidentiary core (type, description, original photos) becomes **append-only** after submit — you can add a clarifying note/photo (audited) but not rewrite or delete originals, preserving evidence integrity. True edits require the same role gating as reopening the inspection. Document in `FLAG_AND_ACTION_MODEL.md` before building flag-edit UI.
+- **Reassess:** before the flag module is built.
+
+### Risk: meaning of "Closed" is a derived display state, not stored — **NEW (Claude logic test)**
+
+- **Priority: Architecture (minor)**
+- History distinguishes In progress / Submitted / Reviewed / **Closed** (#5), but `inspections.status` is only `draft | submitted | reviewed`. "Closed" is derived ("reviewed AND all child actions resolved").
+- **Plan:** Keep it derived for v1.0 (no redundant column); make the derivation explicit in code and tests. If users later want to close an inspection independent of child actions, add a stored `closed_at` — a one-line migration. Documented in `INSPECTION_WORKFLOWS.md`.
+- **Reassess:** after v1.0 real use.
+
+### Risk: offline behaviour of the Asana queue, Evidence Pack, and child-action edits — **NEW (Claude logic test)**
+
+- **Priority: UX / Offline**
+- These new manager surfaces may be used on poor signal. We specified offline behaviour for inspection capture but not for these.
+- **Plan:** Online-preferred, offline-tolerant: queue child-action status changes locally and sync like drafts; the Evidence Pack/Asana export need photos that may not be cached offline, so show a clear "needs connection to assemble full pack" state rather than a half-empty pack. Specify in `APARTMENT_ACTION_CENTRE.md` / `EVIDENCE_VAULT_AND_WHATSAPP_WORKFLOW.md` when built (v1.1/v1.2).
+- **Reassess:** when the Action Centre manager actions are built.
+
+### Risk: duplicate flags from "add flag anywhere" during a concurrent inspection — **NEW (Claude logic test)**
+
+- **Priority: UX / Dedup**
+- Finding #14 lets anyone add a flag from the Action Centre any time. If an inspector is mid-turnover AND a coordinator adds a flag for the same problem from the Action Centre, two flags exist for one problem.
+- **Plan:** Extend the "possible duplicates" detection (same property + similar type within a short window) to fire across the add-from-Action-Centre path and an in-progress inspection on the same property. v1.0 surfaces the hint; manual merge. Add a test. (`DEDUPLICATION_AND_TASK_GROUPING_RULES.md`)
+- **Reassess:** at v1.0 dedup acceptance testing.
+
+### Risk: "Needs Asana" assumes Asana for every company — **NEW (Claude logic test, minor)**
+
+- **Priority: Workflow (minor)**
+- "Needs Asana" is a first-class picker option (#8/#11), but Asana is optional and the app is source of truth. For a future company that never used Asana, the option is noise.
+- **Plan:** Make the "Needs Asana" picker option and the Asana logging queue a **per-company toggle**, off by default unless Asana transition mode is enabled. Cheap; the child-action type is already optional. Document in `INTEGRATION_ROADMAP.md` when the queue is built.
+- **Reassess:** when a second company is onboarded.
+
 ### Risk: Evidence Camera Mode on iOS Safari — implementation cost and reliability — **NEW (evidence-camera refinement)**
 
 - **Priority: UX / Architecture**

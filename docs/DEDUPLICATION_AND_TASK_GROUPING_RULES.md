@@ -24,6 +24,19 @@ Said another way:
 
 This is non-negotiable. Any screen, report, search, or notification that violates it is wrong and needs fixing before merge.
 
+### One parent flag holds every kind of child action (prototype finding #17)
+
+The Replit prototype confirmed the failure mode this rule prevents: a single real-world issue must not scatter into duplicate tasks. One parent flag holds **all** of its child actions together:
+
+- evidence (photos)
+- Asana logging
+- guest notification (recovery task)
+- maintenance (issue → job)
+- owner charge (accountability record)
+- review / sign-off
+
+All six attach under the one flag. The Action Centre shows one card; the work strip shows the child actions; nothing about this problem appears anywhere else as an independent open task. If a manager adds "maintenance required" to a flag that already has a guest-notification child, both live under the same parent — they do not become two separate problems.
+
 ---
 
 ## What "flag-as-parent" means in the data

@@ -11,11 +11,11 @@ The point is not bureaucracy — it's that we've now spent three sessions catchi
 ## Planning completeness
 
 - [x] Planning blueprint has 20+ documents covering tenancy, properties, inspections, photos, flags, accountability, approvals, recovery, owner communication, Action Centre, retention, templates, evidence camera, deduplication.
-- [x] All 10 prompts in `prompts/` exist (`PROMPT_0_CLAUDE_PREP.md`, `SESSION_START.md`, `SESSION_HANDOFF.md`, `SESSION_CLOSE.md`, `SESSION_RESUME.md`, `BUG_FIX_PROMPT.md`, `ARCHITECTURE_REVIEW_PROMPT.md`, `PRE_DEPLOYMENT_PROMPT.md`, `POST_DEPLOYMENT_VALIDATION_PROMPT.md`, `STAGED_BUILD_PROMPT.md`).
-- [x] `prompts/STAGED_BUILD_PROMPT.md` exists (added in this session — see `prompts/` folder).
-- [x] `docs/SEED_DATA_PLAN.md` exists (added in this session).
-- [x] `docs/COST_TRACKER.md` exists (added in this session).
-- [x] `docs/FIELD_TEST_PROTOCOL.md` exists (added in this session).
+- [x] All seven prompts in `prompts/` exist (`PROMPT_0_CLAUDE_PREP.md`, `SESSION_START.md`, `SESSION_HANDOFF.md`, `SESSION_CLOSE.md`, `SESSION_RESUME.md`, `BUG_FIX_PROMPT.md`, `ARCHITECTURE_REVIEW_PROMPT.md`, `PRE_DEPLOYMENT_PROMPT.md`, `POST_DEPLOYMENT_VALIDATION_PROMPT.md`).
+- [ ] `prompts/STAGED_BUILD_PROMPT.md` exists (added in this session — see `prompts/` folder).
+- [ ] `docs/SEED_DATA_PLAN.md` exists (added in this session).
+- [ ] `docs/COST_TRACKER.md` exists (added in this session).
+- [ ] `docs/FIELD_TEST_PROTOCOL.md` exists (added in this session).
 
 ## Architectural anchors locked
 
@@ -27,11 +27,11 @@ The point is not bureaucracy — it's that we've now spent three sessions catchi
 
 ## Data model consolidated
 
-- [x] `DATABASE_SCHEMA_PLAN.md` rewritten as final clean table definitions (not patch notes). This is a hard prerequisite for migration creation.
-- [x] Every parent-child link (`parent_flag_id`) declared with FK and indexed.
-- [x] All photo FKs to optional parents (`flag_id`, `stay_id`, `guest_recovery_task_id`, etc.) declared as nullable.
-- [x] Audit table is append-only and covers every state change worth investigating.
-- [x] All multi-tenant tables carry `company_id` and the RLS pattern is consistent.
+- [ ] `DATABASE_SCHEMA_PLAN.md` rewritten as final clean table definitions (not patch notes). This is a hard prerequisite for migration creation.
+- [ ] Every parent-child link (`parent_flag_id`) declared with FK and indexed.
+- [ ] All photo FKs to optional parents (`flag_id`, `stay_id`, `guest_recovery_task_id`, etc.) declared as nullable.
+- [ ] Audit table is append-only and covers every state change worth investigating.
+- [ ] All multi-tenant tables carry `company_id` and the RLS pattern is consistent.
 - [x] Annual audit template kind is recognised in v1.0 schema (UI deferred to v1.3 — founder approved 2026-05-14).
 - [x] Approval policy ceilings and caps modelled as **per property** by default (founder approved 2026-05-14).
 
@@ -79,7 +79,7 @@ The point is not bureaucracy — it's that we've now spent three sessions catchi
 - [x] `KNOWN_ISSUES.md` carries every risk identified, with priority and reassess trigger.
 - [x] `TESTING_CHECKLIST.md` carries acceptance tests for each milestone gate.
 - [x] Save-as-you-go rule in `CLAUDE_PROJECT_SKILLSET.md`.
-- [x] 5-minute end-of-session ritual added to `CLAUDE_PROJECT_SKILLSET.md`.
+- [ ] 5-minute end-of-session ritual added to `CLAUDE_PROJECT_SKILLSET.md`.
 
 ## Founder gating decisions — ALL FIVE APPROVED (2026-05-14)
 

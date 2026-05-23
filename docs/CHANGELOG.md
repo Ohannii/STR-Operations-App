@@ -1,5 +1,42 @@
 # CHANGELOG.md
 
+## 2026-05-14 — Replit prototype findings incorporated (UX learning only)
+
+### Session goal
+
+A throwaway Replit prototype was built to test UX and workflow logic. **Its code is not used, not copied, and not production** — it served only as product/UX learning. Seventeen findings were incorporated into the official planning docs. No code, no build, no migrations, no service connections, no deployment in this session.
+
+### What changed (by finding)
+
+- **#1 Context inheritance** — flags raised during an inspection auto-inherit property + inspection + stay; the user is never re-asked which apartment. (`FLAG_AND_ACTION_MODEL.md`, `INSPECTION_WORKFLOWS.md`, `TURNOVER_INSPECTION_WORKFLOW.md`)
+- **#2 Save ≠ submit** — saving a flag never advances the inspection; it stays draft/in-progress until an explicit Submit. (`INSPECTION_WORKFLOWS.md`, `TURNOVER_INSPECTION_WORKFLOW.md`)
+- **#3 Post-save next actions** — Continue inspection / Go to Apartment Action Centre / Review saved flag. (`INSPECTION_WORKFLOWS.md`)
+- **#4 Always resumable** — in-progress inspections resume until submitted. (`INSPECTION_WORKFLOWS.md`)
+- **#5/#6 Inspection history** — states (In progress/Submitted/Reviewed/Closed) + full historical detail (items, OK, notes, flags, photos, child actions, status, timestamps, inspector). Note: Closed is a derived display state in v1.0. (`INSPECTION_WORKFLOWS.md`)
+- **#7 Note in guided flow** — damage/maintenance note captured before the flag saves. (`INSPECTION_WORKFLOWS.md`, `EVIDENCE_CAMERA_AND_PHOTO_NOTES.md`)
+- **#8 Action-needed picker** — reclean / deep clean / maintenance / guest notify / needs Asana / owner approval / monthly owner charge / record-only. (`FLAG_AND_ACTION_MODEL.md`)
+- **#9 Picker optional** — inspectors can save a flag choosing nothing; managers triage later. (`FLAG_AND_ACTION_MODEL.md`)
+- **#10/#16 Manager child-action editing** — statuses advanced from the Action Centre flag card; "maintenance required" visibly attaches a maintenance child. (`APARTMENT_ACTION_CENTRE.md`, `FLAG_AND_ACTION_MODEL.md`)
+- **#11 Asana logging queue** — global + per-apartment views, print-friendly export, mark-as-logged; one task per parent flag, outbound only. (`APARTMENT_ACTION_CENTRE.md`, `EVIDENCE_VAULT_AND_WHATSAPP_WORKFLOW.md`)
+- **#12 Submit button + summary** — single clear Submit Inspection with completion summary. (`INSPECTION_WORKFLOWS.md`)
+- **#13 Pre-arrival Evidence Pack** — one-tap timestamped baseline proof. (`APARTMENT_ACTION_CENTRE.md`, `EVIDENCE_CAMERA_AND_PHOTO_NOTES.md`, `EVIDENCE_VAULT_AND_WHATSAPP_WORKFLOW.md`)
+- **#14/#15 Add flag anywhere** — quick-add buttons on the Action Centre property header (damage/maintenance/inventory/cleanliness/record-only). (`APARTMENT_ACTION_CENTRE.md`)
+- **#17 One parent holds all child actions** — evidence, Asana, guest notification, maintenance, owner charge, review all nest under one flag; no scattered duplicates. (`DEDUPLICATION_AND_TASK_GROUPING_RULES.md`)
+
+### Files updated
+
+`INSPECTION_WORKFLOWS.md`, `TURNOVER_INSPECTION_WORKFLOW.md`, `FLAG_AND_ACTION_MODEL.md`, `APARTMENT_ACTION_CENTRE.md`, `EVIDENCE_CAMERA_AND_PHOTO_NOTES.md`, `EVIDENCE_VAULT_AND_WHATSAPP_WORKFLOW.md`, `GUEST_DAMAGE_RECOVERY_WORKFLOW.md`, `DEDUPLICATION_AND_TASK_GROUPING_RULES.md`, `TESTING_CHECKLIST.md`, `TASK_LOG.md`, `CHANGELOG.md`, `KNOWN_ISSUES.md`.
+
+### Claude's own logic test
+
+A self-directed gap analysis was run on top of the 17 findings (see `KNOWN_ISSUES.md` for the new risks raised). Highlights: explicit handling needed for who-can-edit-a-submitted-inspection's flags; flags raised on a property mid-turnover by a second person; the meaning of "Closed"; offline behaviour of the Asana queue and Evidence Pack; and preventing inspectors from being able to bury a safety flag by choosing "record-only".
+
+### Tooling note
+
+Local tooling setup + GitHub verification were completed earlier the same day (see `TASK_LOG.md`). This session was documentation only.
+
+---
+
 ## 2026-05-14 — Founder pre-build gating approvals
 
 The founder reviewed the planning package and **approved all five pre-build gating decisions**. The planning phase is now fully locked; the next step is tooling setup.

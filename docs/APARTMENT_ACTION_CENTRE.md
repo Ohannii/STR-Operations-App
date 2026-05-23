@@ -55,6 +55,14 @@ Five sections, in this order top to bottom:
 - Assigned inspector(s), assigned coordinator.
 - Owner name (managers see it; field roles don't).
 - This-month owner spend bar.
+- **Quick-add buttons (prototype findings #14, #15):** a row of clearly-labelled plus buttons lets anyone with rights raise a flag **at any time, without starting an inspection** — straight from the property:
+  - ➕ Damage flag
+  - ➕ Maintenance flag
+  - ➕ Inventory flag
+  - ➕ Cleanliness flag
+  - ➕ Record-only observation
+
+  A flag raised this way inherits the property context automatically (`company_id`, `property_id`), with `inspection_id` left null. It opens the same guided flag workflow used inside inspections (type pre-selected, note + photo per the rules, optional action-needed picker). A record-only observation goes straight to `no_action` and into history, not the open queue.
 
 ### 2. Today's actions
 
@@ -79,6 +87,15 @@ Each card shows:
 
 Worked example — a cracked TV flagged on a turnover spawns a flag (parent) + recovery task + maintenance job + accountability record. It appears as **one** card with a three-chip work strip, not four cards. Full example in `DEDUPLICATION_AND_TASK_GROUPING_RULES.md`.
 
+**Managers advance child-action statuses directly from the card (prototype findings #10, #16).** Each chip in the work strip is tappable and editable in place, without reopening the inspection:
+
+- Asana pending → **Asana logged**
+- Guest notification pending → **sent**
+- Maintenance pending → **assigned** → **done**
+- Owner charge pending → **reviewed**
+
+Selecting "Maintenance required" on a flag immediately adds a visible maintenance chip to the work strip (prototype finding #16) — the manager sees the child action attach under the parent, never spawned as a separate card elsewhere. Adding, editing, or closing child actions here is the manager's main triage surface.
+
 Cards in `raised`/`classified` with no children yet simply have an empty work strip and a "Classify / Convert / Mark no-action" action — they're problems the manager hasn't routed yet.
 
 **Record-only observations never appear here.** A `condition_note` / `no_action_record` set to `no_action` lives in apartment history, not in this open queue (see `TEMPLATE_AND_INVENTORY_MODEL.md`).
@@ -100,6 +117,30 @@ Each row: amount + chargeable party + reason for pending + one-tap action ("Appr
 - Upcoming inspections in the next 7 days (especially turnovers and pre-arrivals).
 - Upcoming scheduled maintenance.
 - Manual occupancy/reservation notes the manager has added.
+
+---
+
+## The Asana logging queue (prototype finding #11)
+
+Some teams will keep using Asana during the transition. Rather than each person hunting through flags to decide what to copy into Asana, the Action Centre offers an **Asana logging queue**: a filtered view of every flag whose action-needed picker included "Needs Asana" and whose Asana status is still `pending`.
+
+It is **not** a separate task system and it does **not** duplicate flags — it is a view over flags that carry a "needs Asana" child action, exactly like the Evidence Vault is a view over photos. Rules:
+
+- **Global view:** every Asana-pending flag across the company, newest first.
+- **Grouped per-apartment view:** the same items grouped under each property.
+- **Copy / export / print-friendly evidence report:** for a selected flag (or a property's set), generate a clean text+photo summary ready to paste into Asana — **one Asana task per parent flag**, with the flag's child actions listed as a checklist inside it (never one Asana task per child). This is the same one-task-per-problem discipline as `DEDUPLICATION_AND_TASK_GROUPING_RULES.md` and `INTEGRATION_ROADMAP.md`.
+- **Mark as logged:** once the manager has pasted it into Asana, they tap "Mark as logged" and the flag's Asana child action moves `pending → logged`, removing it from the queue. Audited.
+
+The app remains the source of truth; Asana is an optional outbound mirror. The queue exists to make the transition painless, not to make Asana load-bearing.
+
+---
+
+## Quick actions on the property (prototype finding #13)
+
+The property header also offers two fast, high-value buttons:
+
+- **Pre-arrival Evidence Pack** — one tap assembles the most recent pre-arrival / turnover baseline photos for this property (or for a chosen stay) into a timestamped, print/share-ready proof set. This is the dispute-defence shortcut: "prove the apartment was fine before this guest." It is built from the same `photos` data (filtered to `routine_pre_arrival` + the relevant stay) — see `EVIDENCE_VAULT_AND_WHATSAPP_WORKFLOW.md`. No re-upload, no separate store.
+- **Add flag** (the quick-add buttons described in the Property header above).
 
 ---
 

@@ -102,6 +102,39 @@ A v1.0 release cannot be promoted to staging until **all** of these pass:
 - [ ] Company Admin can view the policy in the admin UI (read-only in v1.0).
 - [ ] The policy is not used for enforcement in v1.0 (enforcement is a v1.2 test).
 
+### Flag behaviour & next actions (new — v1.0, prototype findings)
+
+- [ ] A flag raised during an inspection inherits property + inspection + stay context; the user is NOT asked to choose the property again. (#1)
+- [ ] Saving a flag does NOT change the inspection's status — it stays draft/in-progress. (#2)
+- [ ] After saving a flag, the inspector sees three next actions: Continue inspection / Go to Apartment Action Centre / Review saved flag. (#3)
+- [ ] An in-progress inspection can always be resumed until it is explicitly submitted. (#4)
+- [ ] A damage/maintenance flag captures its note inside the guided flow, before save. (#7)
+- [ ] The action-needed picker offers: reclean, deep clean, maintenance required, guest notification required, needs Asana, owner approval required, monthly owner charge, record-only/no-action. (#8)
+- [ ] The action-needed picker is optional for the inspector (can save a flag selecting nothing). (#9)
+- [ ] A manager can advance child-action statuses from the Action Centre flag card without reopening the inspection: Asana pending→logged, guest-notify pending→sent, maintenance pending→assigned→done, owner charge pending→reviewed. (#10)
+- [ ] Selecting "maintenance required" visibly adds a maintenance child chip to the parent flag's work strip. (#16)
+- [ ] One real-world problem holds all its child actions (evidence, Asana, guest notification, maintenance, owner charge, review) under one parent flag — never scattered as duplicates. (#17)
+
+### Inspection history (new — v1.0, prototype findings #5, #6)
+
+- [ ] History distinguishes In progress / Submitted / Reviewed / Closed.
+- [ ] Opening a historical inspection by date shows: all checklist items, OK statuses, notes, flags, evidence photos, child actions, submit/review status, timestamps, and the inspector.
+
+### Add-flag-anywhere & quick actions (new — v1.0, prototype findings #13, #14, #15)
+
+- [ ] A flag can be added from the Apartment Action Centre without starting an inspection.
+- [ ] The property header shows quick-add buttons: damage / maintenance / inventory / cleanliness / record-only observation.
+- [ ] A flag added from the Action Centre inherits property context with inspection_id null.
+- [ ] A one-tap "Pre-arrival Evidence Pack" button assembles timestamped baseline proof photos for the property/stay.
+- [ ] There is a single clear "Submit Inspection" button with a completion summary. (#12)
+
+### Asana logging queue (new — v1.0/transition, prototype finding #11)
+
+- [ ] The Asana queue lists every flag with a "needs Asana" child action still pending.
+- [ ] The queue offers a global view and a grouped per-apartment view.
+- [ ] "Copy / export / print-friendly evidence report" produces one task summary per parent flag, with child actions as a checklist inside it (never one task per child).
+- [ ] "Mark as logged" advances the flag's Asana child action pending→logged and removes it from the queue, with an audit row.
+
 ### Inspection workflow
 
 - [ ] Inspector can start a **Turnover** inspection (combined post-stay + pre-arrival) from a property's Action Centre card in one tap.

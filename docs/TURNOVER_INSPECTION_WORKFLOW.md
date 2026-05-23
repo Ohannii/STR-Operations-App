@@ -121,6 +121,16 @@ If the inspector taps "Not ready," they're prompted to add a one-line reason ("O
 
 The team has junior staff. The turnover flow must be **stupid-proof** (the first-class principle in `CLAUDE_PROJECT_SKILLSET.md`).
 
+### Flag behaviour during a turnover (prototype findings #1, #2, #3, #7, #9)
+
+These rules apply throughout the turnover flow and are worth stating explicitly because the turnover is where most flags are born:
+
+- **Context is inherited, never re-asked.** A flag raised anywhere in the turnover automatically carries this property, this inspection, and the outgoing stay. The inspector is never asked "which apartment?" mid-flow.
+- **Saving a flag never submits the turnover.** The inspection stays in progress until the inspector taps the single "Submit Inspection" button on the final review screen. An inspector can raise ten flags across six sections and the inspection is still a draft until they choose to submit.
+- **Notes are captured in the guided flow before a damage/maintenance flag saves** — the inspector describes what they see while looking at it, not later from memory.
+- **The action-needed picker is optional for the inspector.** Junior staff who don't know whether something is owner-chargeable or needs Asana simply save the flag with a photo and note; the manager triages from the Action Centre afterwards.
+- **After saving a flag, the inspector gets three clear next actions:** Continue inspection (default), Go to Apartment Action Centre, or Review saved flag.
+
 What junior-mode means in this workflow:
 
 - **Big visual hints.** Each section has an icon. Mark-All-OK button is the biggest button. Flag button is also big, but a different colour (orange/red) so it stands out as the "this is more work" path.

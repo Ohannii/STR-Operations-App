@@ -2,9 +2,36 @@
 
 ## Current objective
 
-**All five pre-build gating decisions APPROVED by the founder (2026-05-14).** The planning phase is fully locked. There are no remaining open decisions before tooling.
+**Replit prototype findings incorporated into planning docs (2026-05-14).** A throwaway Replit prototype was used purely for UX/workflow learning (its code is NOT used, NOT copied, NOT production). Seventeen findings were folded into the planning docs, sharpening flag-context inheritance, save-flag-≠-submit, post-save next actions, inspection history detail, the action-needed picker, child-actions-optional-and-editable-later, the Asana logging queue, add-flag-from-Action-Centre, and the Pre-arrival Evidence Pack button.
 
-The next objective is the **tooling setup walkthrough** (still no code), then the **empty v1.0 Next.js skeleton** (first code session).
+Tooling setup is complete (local toolchain + GitHub verified). The next objective remains the **first build session: empty v1.0 Next.js skeleton** (public landing page only, no auth, no features, no DB).
+
+### Prototype findings incorporated (2026-05-14)
+
+All 17 findings recorded and reflected in docs. Key ones:
+- #1 Flag inherits apartment + inspection context; never re-asks property.
+- #2 Saving a flag never submits the inspection (stays draft until explicit Submit).
+- #3 After saving a flag: Continue / Go to Action Centre / Review flag.
+- #5,#6 Inspection history states (In progress/Submitted/Reviewed/Closed) + full historical detail view.
+- #7 Damage/maintenance note captured in the guided flow before save.
+- #8 Action-needed picker options (reclean, deep clean, maintenance, guest notify, needs Asana, owner approval, monthly owner charge, record-only).
+- #9 Child actions optional during inspection.
+- #10,#16 Managers edit child-action statuses from the Action Centre; "maintenance required" visibly attaches a maintenance child.
+- #11 Asana logging queue (global + per-apartment + print-friendly export + mark-as-logged), one task per parent flag.
+- #12 Clear Submit Inspection button + completion summary.
+- #13 Pre-arrival Evidence Pack one-tap button.
+- #14,#15 Add flag any time from the Action Centre via quick-add buttons.
+- #17 One parent flag holds all child actions; no scattered duplicates.
+
+### Tooling setup (2026-05-14) — COMPLETE
+
+- Windows; project at `C:\Users\annem\Projects\STR-Operations-App` (outside OneDrive).
+- VS Code; Node v24.16.0; npm 11.13.0 (`npm.cmd`); pnpm 11.2.2 (`pnpm.cmd`); Git 2.51.0.
+- PowerShell blocks `.ps1` — always use `.cmd`. Do not change execution policy unless needed.
+- Private GitHub repo `https://github.com/Ohannii/STR-Operations-App`, `origin` connected, pushes working, tree clean.
+- `.gitignore` verified (node_modules, .env/.env.*, build dirs, .vercel/.supabase, OS junk; allows .env.example).
+- Tooling setup log committed.
+- NOT done by design: no app code, no `pnpm install`, no Next.js project, no migrations, no Supabase/Vercel, no deploy.
 
 ### Founder gating approvals (2026-05-14)
 
