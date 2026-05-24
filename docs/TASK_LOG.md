@@ -2,11 +2,9 @@
 
 ## Current objective
 
-**v1.0 Skeleton Milestone complete + documentation alignment (2026-05-24).** The empty Next.js skeleton was built, verified (`pnpm dev` and `pnpm build` pass), and merged to main via PR #1. It has no features, no auth, and no data — a verified toolchain baseline, not a product.
+**Supabase staging connection complete (2026-05-24).** The skeleton is connected to Supabase staging (`str-ops-staging`, eu-west-2, London). Health check at `/api/health` confirmed reachable. PR #3 merged to main. No schema, no auth, no data — verified connection only.
 
-Documentation alignment is complete on branch `docs/v1-foundation-planning-alignment`: the naming distinction between the **v1.0 Skeleton Milestone** (complete) and **Product Stage v1.0** (the inspection/foundation product, not yet started) is now explicit across the planning docs. Key Replit prototype findings have been moved from referenced-by-number to explicitly documented in the correct files. Branch awaits review and merge.
-
-**The next objective is the first Product Stage v1.0 build session:** Supabase staging connection. Use `prompts/SUPABASE_CONNECTION_PROMPT.md` (new) then `prompts/STAGED_BUILD_PROMPT.md`.
+**The next objective is the Product Stage v1.0 schema foundation:** Supabase CLI setup, `supabase init`, link project to staging, and the first schema migrations for the v1.0 core tables. Use `prompts/STAGED_BUILD_PROMPT.md` (stage = v1.0).
 
 ### Prototype findings incorporated (2026-05-14)
 
@@ -54,6 +52,20 @@ Recorded in `PRE_BUILD_READINESS_CHECKLIST.md`.
 - Branch `build/v1-0-skeleton` merged to main via PR #1.
 - No features, no auth, no database, no service connections. This was the toolchain verification milestone only.
 - The dev server was stopped after verification — subsequent "refused to connect" screenshots were not failures.
+
+### Supabase staging connection (2026-05-24) — COMPLETE
+
+Branch: `build/v1-0-supabase-connection`. PR #3 merged to main.
+
+- Installed `@supabase/supabase-js 2.106.1` and `@supabase/ssr 0.10.3`.
+- Created `src/lib/supabase/client.ts` (browser) and `src/lib/supabase/server.ts` (server/SSR).
+- Created `src/app/api/health/route.ts` — health check route calling `getUser()` to verify live connection.
+- Created `.env.example` with variable names and safety notes (no secrets).
+- Updated `docs/COST_TRACKER.md`: staging project recorded, cost rule, Connected Services section.
+- `pnpm build` passed twice (zero TypeScript errors). `pnpm dev` started cleanly.
+- Health check confirmed: `{ "status": "ok" }` — Supabase staging reachable, eu-west-2.
+- `.env.local` exists locally only — never staged, never committed.
+- No schema, no migrations, no auth, no Vercel, no deployment.
 
 ### Documentation alignment — v1.0 naming + prototype findings (2026-05-24) — COMPLETE
 
@@ -173,11 +185,11 @@ None — the documentation alignment is complete and awaiting commit/PR merge.
 
 1. ✅ **DONE (2026-05-14)**: Pre-build gating decisions approved (Dropinn caps; annual-audit UI v1.3; turnover default; four-stage plan; flag-as-parent dedup).
 2. ✅ **DONE (2026-05-14)**: Tooling setup complete (Node, pnpm, Git, VS Code, GitHub, `pnpm dev` verified).
-3. ✅ **DONE (2026-05-23)**: v1.0 Skeleton Milestone built and merged to main (empty Next.js shell; `pnpm build` passes).
-4. ✅ **DONE (2026-05-24)**: Documentation alignment — skeleton/stage naming resolved; key prototype findings explicitly documented; `prompts/SUPABASE_CONNECTION_PROMPT.md` created.
-5. **Next**: Review and merge branch `docs/v1-foundation-planning-alignment`. Then open a new session, read `prompts/SUPABASE_CONNECTION_PROMPT.md`, and connect the skeleton to a new **staging** Supabase project. Connection + health check only — no schema, no auth, no features.
-6. After Supabase staging is connected and verified: run v1.0 schema migrations on staging using `prompts/STAGED_BUILD_PROMPT.md` (stage = v1.0).
-7. Only after schema + RLS verified on staging: begin Product Stage v1.0 feature build (auth, inspection workflow, flag capture).
+3. ✅ **DONE (2026-05-23)**: v1.0 Skeleton Milestone built and merged to main — PR #1.
+4. ✅ **DONE (2026-05-24)**: Documentation alignment — skeleton/stage naming, prototype findings, `prompts/SUPABASE_CONNECTION_PROMPT.md` — PR #2.
+5. ✅ **DONE (2026-05-24)**: Supabase staging connected and verified (`str-ops-staging`, eu-west-2, health check ok) — PR #3.
+6. **Next**: v1.0 schema foundation session — install Supabase CLI, `supabase init`, link to staging, first migrations for core tables. Use `prompts/STAGED_BUILD_PROMPT.md` (stage = v1.0).
+7. After schema + RLS verified on staging: begin Product Stage v1.0 feature build (auth, inspection workflow, flag capture).
 
 ## Recommended improvements — ALL FIVE NOW APPLIED (2026-05-14)
 
@@ -199,7 +211,7 @@ None.
 
 Planning is complete. Tooling is complete. The v1.0 Skeleton Milestone is merged to main. Documentation alignment is done on branch `docs/v1-foundation-planning-alignment` — merge that branch first, then start the Supabase connection session.
 
-**The next safe step is:** merge the doc alignment branch, then open a new session with `prompts/SUPABASE_CONNECTION_PROMPT.md` and connect the skeleton to a staging Supabase project. Do not skip to schema migrations in the same session as the connection setup — keep them separate so each session has one clear goal. Use `prompts/STAGED_BUILD_PROMPT.md` for every build session once the connection is verified.
+**The next safe step is** the v1.0 schema foundation session: install the Supabase CLI, run `supabase init`, link the project to `str-ops-staging`, and write the first migration for the core tables. Use `prompts/STAGED_BUILD_PROMPT.md` (stage = v1.0). Keep schema work on staging only — the production Supabase project does not exist yet and must not be created until the v1.0 field test passes.
 
 ## Outstanding decisions for the founder
 

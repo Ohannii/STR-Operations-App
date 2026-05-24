@@ -1,5 +1,44 @@
 # CHANGELOG.md
 
+## 2026-05-24 — Supabase staging connection verified (PR #3)
+
+### Session goal
+
+Connect the Next.js skeleton to a live Supabase staging project and verify the connection is reachable. Documentation and connection only — no schema, no migrations, no auth, no data, no Vercel.
+
+### What was done
+
+- Created Supabase staging project `str-ops-staging` (eu-west-2 / West Europe London, Free plan).
+- Installed `@supabase/supabase-js 2.106.1` and `@supabase/ssr 0.10.3`.
+- Created `src/lib/supabase/client.ts` — browser-side Supabase client (safe to use in Client Components; uses anon key + RLS enforcement).
+- Created `src/lib/supabase/server.ts` — server-side Supabase client (async cookies from `next/headers`; use in Server Components, Server Actions, Route Handlers).
+- Created `src/app/api/health/route.ts` — temporary health-check route calling `getUser()` to verify live Supabase reachability. Returns `{ status: "ok" }` when the project is reachable. To be removed before production.
+- Created `.env.example` — committed variable-name template with safety notes. No secrets. `.env.local` exists locally only; never staged, never committed.
+- Updated `docs/COST_TRACKER.md` — Supabase row updated to **Live — staging**, `str-ops-staging` (eu-west-2) recorded, Connected Services section added, cost rule added.
+- Fixed `package.json` name: `str-skeleton-temp` → `str-operations-app`.
+- `pnpm build` passed (zero TypeScript errors). Health check confirmed: `{ "status": "ok" }`.
+
+### Constraints honoured
+
+- `.env.local` never committed. Supabase URL, anon key, and service_role key never pasted into chat or code.
+- No service_role key used anywhere.
+- No database tables. No migrations. No RLS policies. No Vercel. No deployment.
+- No paid upgrade, plan change, billing change, add-on, or production Supabase project.
+
+### Files changed (8)
+
+`package.json`, `pnpm-lock.yaml`, `next-env.d.ts` (auto-updated), `src/lib/supabase/client.ts` (new), `src/lib/supabase/server.ts` (new), `src/app/api/health/route.ts` (new), `.env.example` (new), `docs/COST_TRACKER.md`.
+
+### What does not yet exist
+
+Database schema, migrations, RLS policies, auth, any application features, Vercel connection, production Supabase project, real data.
+
+### Next action
+
+v1.0 schema foundation session — install Supabase CLI, `supabase init`, link to staging, write first SQL migrations for core tables. Use `prompts/STAGED_BUILD_PROMPT.md` (stage = v1.0). Staging only; production project must not be created until the v1.0 field test passes.
+
+---
+
 ## 2026-05-24 — v1.0 Skeleton Milestone complete + documentation alignment
 
 ### Session goal
