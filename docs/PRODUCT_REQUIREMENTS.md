@@ -41,6 +41,13 @@
 
 **Re-staged after the operational logic test (2026-05-12):** pre-arrival inspection, Apartment Action Centre, flag taxonomy, approval policies, and photo retention classes were moved into v1.0's data model. Their UI is staged across v1.0–v1.3 but the schema must be right from day one.
 
+> **v1.0 naming disambiguation — important:** The label "v1.0" refers to two distinct things in this project and must not be confused.
+>
+> - **"v1.0 Skeleton Milestone"** — the empty Next.js shell (no features, no auth, no data). `pnpm dev` and `pnpm build` pass. **Completed 2026-05-23; PR #1 merged to main.** This milestone only verifies the toolchain — it is not a usable product.
+> - **"Product Stage v1.0"** (full title: *Inspection loop + foundation*) — the first functional product stage, described in the table below. Not yet started.
+>
+> All sub-release and stage references in this document refer to **Product Stages** unless explicitly stated otherwise. The skeleton milestone is recorded in `CHANGELOG.md` and `TASK_LOG.md`.
+
 | Stage | Headline outcome | Key scope |
 |---|---|---|
 | **v1.0** — Inspection loop + foundation | An inspector can do a full **Turnover inspection** (combined post-stay + pre-arrival) with fast multi-photo capture, offline. The Action Centre shows what needs attention. The schema is ready for everything that follows. | Auth + tenancy, properties, **Turnover + pre-arrival-only + post-stay-only + annual-audit templates seeded**, **per-property inventory lists**, **Mark-All-OK + mandatory-individual + record-only observations**, full mobile inspection workflow, **Evidence Camera Mode** (camera-stays-open, multi-photo, photo strip, optional notes) + sync with **retention class on every photo**, offline drafts, HTML inspection report with **"hide OK items"**, audit trail, **flag taxonomy in schema** (11 categories seeded) with **flag-as-parent + duplicate-prevention discipline**, **basic Apartment Action Centre** (portfolio + property views, grouped one-card-per-problem), **Evidence Vault search** over the photos table, **`approval_policies` table seeded with Dropinn defaults (per-property caps)**, **`stays` entity with outgoing/incoming links**, **annual-audit template kind in schema**, roles: Company Admin + Inspector. |

@@ -1,5 +1,51 @@
 # CHANGELOG.md
 
+## 2026-05-24 — v1.0 Skeleton Milestone complete + documentation alignment
+
+### Session goal
+
+Two things were completed:
+
+1. **v1.0 Skeleton Milestone** — the empty Next.js shell (PR #1, merged to main). `pnpm install`, `pnpm dev` (localhost:3000), and `pnpm build` all pass. No features, no auth, no database. The skeleton exists only to verify the toolchain; it is not a product. The dev server was stopped after verification — subsequent "refused to connect" screenshots were not failures.
+
+2. **Documentation alignment** — docs updated to distinguish "v1.0 Skeleton Milestone" (complete) from "Product Stage v1.0" (Inspection loop + foundation, not yet started). Key Replit prototype findings that were previously referenced by number are now explicitly documented in the correct files.
+
+**No app code changes beyond the skeleton. No service connections. No migrations. No deployment.**
+
+### Terminology locked
+
+- **"v1.0 Skeleton Milestone"** = the empty Next.js shell. Completed 2026-05-23.
+- **"Product Stage v1.0"** = the inspection/foundation product stage. Not yet started. All v1.0 scope references in planning docs refer to this stage.
+
+### Key prototype findings explicitly documented in this session
+
+These findings were incorporated in a prior session but made explicit in the correct doc files here:
+
+- **Evidence core append-only after submission** — rule written into `FLAG_AND_ACTION_MODEL.md` as its own section (was previously only a plan in `KNOWN_ISSUES.md`).
+- **Pre-arrival Evidence Pack button** — added to the inspector confirmation screen in `INSPECTION_WORKFLOWS.md` (was previously only in `APARTMENT_ACTION_CENTRE.md` / `EVIDENCE_VAULT_AND_WHATSAPP_WORKFLOW.md`).
+- **v1.0 naming disambiguation** — added to `PRODUCT_REQUIREMENTS.md` at the staging table.
+
+### Files changed
+
+`docs/PRODUCT_REQUIREMENTS.md`, `docs/FLAG_AND_ACTION_MODEL.md`, `docs/INSPECTION_WORKFLOWS.md`, `docs/APARTMENT_ACTION_CENTRE.md`, `prompts/SUPABASE_CONNECTION_PROMPT.md` (new), `docs/KNOWN_ISSUES.md`, `docs/TASK_LOG.md`, `docs/CHANGELOG.md` (this entry).
+
+### Additional gap fixes (traceability review)
+
+A post-edit traceability review against all 16 Replit prototype findings identified two partially-covered requirements:
+
+- **Requirement #14 (previous inspections accessible from apartment dashboard)** — `APARTMENT_ACTION_CENTRE.md` Property view had no inspection history section. Added Section 7 "Inspection history" documenting the "Past inspections" element, the four display states, the paired pre-arrival/post-stay row for dispute evidence, and the cross-reference to `INSPECTION_WORKFLOWS.md`.
+- **Requirement #16 (safety flags must not be hidden as record-only)** — `FLAG_AND_ACTION_MODEL.md` said safety flags "bypass normal triage" but did not explicitly state that the "record-only / no action" picker option is suppressed for `safety_urgent` flags. Added the rule in two places: the taxonomy notes (explicit rule with audit requirement) and the action-needed picker table row ("Record-only / no action" now notes it is suppressed for safety flags).
+
+### What did not change
+
+Stack, schema, roles, all product decisions, all founder-approved rules. No scope change. No code change beyond the skeleton already merged.
+
+### Next action
+
+Merge branch `docs/v1-foundation-planning-alignment`, then open a new session with `prompts/SUPABASE_CONNECTION_PROMPT.md` and connect the skeleton to a staging Supabase project.
+
+---
+
 ## 2026-05-14 — Replit prototype findings incorporated (UX learning only)
 
 ### Session goal

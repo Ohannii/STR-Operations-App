@@ -46,6 +46,7 @@ Notes:
 - A single inspection line item can carry multiple flags (e.g., "Inventory damaged" + "Guest damage" + "Owner-chargeable if guest doesn't pay").
 - Types 1, 10, and 11 produce zero downstream work — they exist so that "no problem found" is a deliberate, recorded decision, not a silent omission.
 - Type 9 (Safety/urgent) is the one type that **bypasses normal triage** and lands directly in the Action Centre as a red banner.
+- **Type 9 (Safety/urgent) cannot be set to `no_action` or record-only by an inspector.** The "record-only / no action" option is suppressed in the action-needed picker when the flag type is `safety_urgent`. A safety flag always enters the open queue and triggers a manager notification regardless of what picker options are selected. A manager can close a safety flag but this requires an explicit confirmation step and writes an audit event. This is a release-blocker rule: a junior inspector must not be able to make a gas leak or broken lock disappear by tapping "record-only." See `KNOWN_ISSUES.md` — "Risk: a record-only choice could be used to bury a safety flag."
 
 ---
 
@@ -129,7 +130,7 @@ When raising or triaging a flag, the user can optionally indicate what action is
 | Needs Asana | Asana logging queue entry (outbound; see `INTEGRATION_ROADMAP.md`) |
 | Owner approval required | Accountability record → approval policy flow |
 | Monthly owner charge | Accountability record (owner-chargeable, rolls to monthly summary) |
-| Record-only / no action | Flag set to `no_action`; appears in history only |
+| Record-only / no action | Flag set to `no_action`; appears in history only. **Suppressed (not shown) when flag type is `safety_urgent`** — safety flags cannot be hidden as record-only. |
 
 These options are **multi-select** — one real-world problem can need several (e.g., a guest-damaged oven might need *maintenance required* + *guest notification required* + *owner approval required*). Every selected option becomes a **child action under the one parent flag** — never a separate top-level task. See `DEDUPLICATION_AND_TASK_GROUPING_RULES.md`.
 
@@ -149,6 +150,22 @@ These options are **multi-select** — one real-world problem can need several (
 - A child action can be added to a flag at any point in the flag's life, by any role permitted to triage. Adding one never duplicates the parent; it nests under it.
 
 This separation — inspectors capture, managers decide — is the same principle used everywhere in the product: field roles never make money/routing decisions.
+
+---
+
+## Evidence core is append-only after submission
+
+Once the parent inspection is submitted, a flag's **evidentiary core** — its type, description, and original photos — becomes **append-only**:
+
+- A clarifying note or supplemental photo can be added at any time (written to audit).
+- The original type, description, and photos cannot be rewritten or deleted once the inspection is submitted.
+- True corrections (e.g., a mis-typed description) require reopening the inspection under the same role gating as an inspection reopen (Ops Manager or higher; audited).
+
+**Child actions remain freely editable** by managers after submission — that is triage, not evidence. The distinction is: *what happened* is frozen; *what we do about it* stays open.
+
+This rule preserves the integrity of the evidence record. A flag raised at inspection time is the evidentiary baseline for any dispute that follows. If the core fields can be rewritten after submit, the evidence is not trustworthy as a legal or OTA-dispute record.
+
+See also: `KNOWN_ISSUES.md` — "Risk: editing flags on an already-submitted/reviewed inspection."
 
 ---
 
