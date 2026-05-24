@@ -47,7 +47,7 @@ Recorded in `PRE_BUILD_READINESS_CHECKLIST.md`.
 
 ### v1.0 Skeleton Milestone (2026-05-23) — COMPLETE
 
-- Next.js 15 skeleton created with pnpm, TypeScript, Tailwind, App Router.
+- Next.js 16.2.6 skeleton created with pnpm, TypeScript, Tailwind, App Router.
 - `pnpm install`, `pnpm dev` (served at localhost:3000), and `pnpm build` all pass.
 - Branch `build/v1-0-skeleton` merged to main via PR #1.
 - No features, no auth, no database, no service connections. This was the toolchain verification milestone only.
