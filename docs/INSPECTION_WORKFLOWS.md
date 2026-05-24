@@ -128,6 +128,7 @@ Reopen rules:
    - A clear, single **"Submit Inspection"** button.
 13. **Submit** — only this button moves the inspection to `submitted`. If required photos/notes are present, state advances and an audit event is written.
 14. **Confirmation screen** — "Inspection submitted. X items will continue syncing in the background." Clear sync banner. The inspector is routed to the property's Apartment Action Centre.
+   - For **turnover and pre-arrival inspections**, the confirmation screen also surfaces a **"Generate Evidence Pack"** button (prototype finding #13). One tap assembles the timestamped baseline photos into a shareable pre-arrival evidence pack — the proof of apartment condition before the next guest arrives. Full spec in `EVIDENCE_CAMERA_AND_PHOTO_NOTES.md` and `EVIDENCE_VAULT_AND_WHATSAPP_WORKFLOW.md`.
 
 ---
 

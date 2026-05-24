@@ -2,9 +2,11 @@
 
 ## Current objective
 
-**Replit prototype findings incorporated into planning docs (2026-05-14).** A throwaway Replit prototype was used purely for UX/workflow learning (its code is NOT used, NOT copied, NOT production). Seventeen findings were folded into the planning docs, sharpening flag-context inheritance, save-flag-≠-submit, post-save next actions, inspection history detail, the action-needed picker, child-actions-optional-and-editable-later, the Asana logging queue, add-flag-from-Action-Centre, and the Pre-arrival Evidence Pack button.
+**v1.0 Skeleton Milestone complete + documentation alignment (2026-05-24).** The empty Next.js skeleton was built, verified (`pnpm dev` and `pnpm build` pass), and merged to main via PR #1. It has no features, no auth, and no data — a verified toolchain baseline, not a product.
 
-Tooling setup is complete (local toolchain + GitHub verified). The next objective remains the **first build session: empty v1.0 Next.js skeleton** (public landing page only, no auth, no features, no DB).
+Documentation alignment is complete on branch `docs/v1-foundation-planning-alignment`: the naming distinction between the **v1.0 Skeleton Milestone** (complete) and **Product Stage v1.0** (the inspection/foundation product, not yet started) is now explicit across the planning docs. Key Replit prototype findings have been moved from referenced-by-number to explicitly documented in the correct files. Branch awaits review and merge.
+
+**The next objective is the first Product Stage v1.0 build session:** Supabase staging connection. Use `prompts/SUPABASE_CONNECTION_PROMPT.md` (new) then `prompts/STAGED_BUILD_PROMPT.md`.
 
 ### Prototype findings incorporated (2026-05-14)
 
@@ -44,6 +46,27 @@ All 17 findings recorded and reflected in docs. Key ones:
 Recorded in `PRE_BUILD_READINESS_CHECKLIST.md`.
 
 ## Completed
+
+### v1.0 Skeleton Milestone (2026-05-23) — COMPLETE
+
+- Next.js 15 skeleton created with pnpm, TypeScript, Tailwind, App Router.
+- `pnpm install`, `pnpm dev` (served at localhost:3000), and `pnpm build` all pass.
+- Branch `build/v1-0-skeleton` merged to main via PR #1.
+- No features, no auth, no database, no service connections. This was the toolchain verification milestone only.
+- The dev server was stopped after verification — subsequent "refused to connect" screenshots were not failures.
+
+### Documentation alignment — v1.0 naming + prototype findings (2026-05-24) — COMPLETE
+
+Branch: `docs/v1-foundation-planning-alignment`. Seven files changed:
+
+- `docs/PRODUCT_REQUIREMENTS.md` — added v1.0 naming disambiguation note (Skeleton Milestone vs Product Stage v1.0) at the staging table.
+- `docs/FLAG_AND_ACTION_MODEL.md` — added explicit "Evidence core is append-only after submission" section (was only a plan in `KNOWN_ISSUES.md`).
+- `docs/INSPECTION_WORKFLOWS.md` — added Pre-arrival Evidence Pack button reference to inspector confirmation screen (prototype finding #13).
+- `prompts/SUPABASE_CONNECTION_PROMPT.md` — new file; the prompt for the Supabase staging connection session.
+- `docs/KNOWN_ISSUES.md` — updated Active Issues with skeleton milestone state note.
+- `docs/APARTMENT_ACTION_CENTRE.md` — added Section 7 "Inspection history" to the Property view (prototype findings #5, #6); now explicitly links inspection history from the apartment dashboard and documents the paired pre-arrival/post-stay display for evidence comparison.
+- `docs/TASK_LOG.md` — this file.
+- `docs/CHANGELOG.md` — new entry (see that file).
 
 ### This session — evidence-camera + turnover + dedup refinement (2026-05-14)
 
@@ -144,23 +167,17 @@ Founder applied an end-to-end operational test with new context:
 
 ## In progress
 
-None — the operational test deliverables are all saved to disk.
+None — the documentation alignment is complete and awaiting commit/PR merge.
 
-## Next actions (in order, none of which involve coding)
+## Next actions (in order)
 
-1. **Founder**: review and confirm the refinement conclusions. The key items to read first:
-   - `docs/PRE_BUILD_READINESS_CHECKLIST.md` (the gate to building — read this first)
-   - `docs/TURNOVER_INSPECTION_WORKFLOW.md` (the primary inspection flow)
-   - `docs/DEDUPLICATION_AND_TASK_GROUPING_RULES.md` (one card per problem — the load-bearing rule)
-   - `docs/EVIDENCE_CAMERA_AND_PHOTO_NOTES.md` (fast capture — the make-or-break UX)
-   - `docs/EVIDENCE_VAULT_AND_WHATSAPP_WORKFLOW.md` (retrieval + WhatsApp from the flag card)
-   - `docs/TEMPLATE_AND_INVENTORY_MODEL.md` (templates + per-apartment inventory)
-   - `docs/DATABASE_SCHEMA_PLAN.md` (the consolidated final schema)
-2. **Founder**: download all files (zip presented at end of this session) and replace the versions in the project folder.
-3. ✅ **DONE (2026-05-14)**: the five gating decisions in `PRE_BUILD_READINESS_CHECKLIST.md` are all approved (Dropinn caps; annual-audit UI stays v1.3; turnover is default; four-stage plan; flag-as-parent dedup).
-4. **Founder**: when ready, open a new Claude session and say: *"I'm ready for the tooling setup for v1.0. Walk me through it step by step."*
-5. Claude then walks through GitHub → VS Code → Node → pnpm → Supabase → Vercel setup, one tool at a time. **No app code yet.**
-6. Only after tools are installed: ask Claude to create the empty v1.0 project skeleton (Next.js app, public landing page only, no auth, no features). This is the first session that produces code.
+1. ✅ **DONE (2026-05-14)**: Pre-build gating decisions approved (Dropinn caps; annual-audit UI v1.3; turnover default; four-stage plan; flag-as-parent dedup).
+2. ✅ **DONE (2026-05-14)**: Tooling setup complete (Node, pnpm, Git, VS Code, GitHub, `pnpm dev` verified).
+3. ✅ **DONE (2026-05-23)**: v1.0 Skeleton Milestone built and merged to main (empty Next.js shell; `pnpm build` passes).
+4. ✅ **DONE (2026-05-24)**: Documentation alignment — skeleton/stage naming resolved; key prototype findings explicitly documented; `prompts/SUPABASE_CONNECTION_PROMPT.md` created.
+5. **Next**: Review and merge branch `docs/v1-foundation-planning-alignment`. Then open a new session, read `prompts/SUPABASE_CONNECTION_PROMPT.md`, and connect the skeleton to a new **staging** Supabase project. Connection + health check only — no schema, no auth, no features.
+6. After Supabase staging is connected and verified: run v1.0 schema migrations on staging using `prompts/STAGED_BUILD_PROMPT.md` (stage = v1.0).
+7. Only after schema + RLS verified on staging: begin Product Stage v1.0 feature build (auth, inspection workflow, flag capture).
 
 ## Recommended improvements — ALL FIVE NOW APPLIED (2026-05-14)
 
@@ -180,12 +197,10 @@ None.
 
 ## Handoff note for the next session
 
-Planning is complete. Refinement is complete. The operational logic test and the evidence-camera/turnover/dedup refinement are both complete. v1 is staged with the right structural foundation. The schema is consolidated into final clean definitions ready to generate migrations from. All five optional improvements are applied.
+Planning is complete. Tooling is complete. The v1.0 Skeleton Milestone is merged to main. Documentation alignment is done on branch `docs/v1-foundation-planning-alignment` — merge that branch first, then start the Supabase connection session.
 
-**The next safe step is founder confirmation of the conclusions, then the tooling setup walkthrough.** Resist starting code in the same session as tooling — keep them separate so each session has one clear goal. Use `prompts/STAGED_BUILD_PROMPT.md` for every build session once code starts.
+**The next safe step is:** merge the doc alignment branch, then open a new session with `prompts/SUPABASE_CONNECTION_PROMPT.md` and connect the skeleton to a staging Supabase project. Do not skip to schema migrations in the same session as the connection setup — keep them separate so each session has one clear goal. Use `prompts/STAGED_BUILD_PROMPT.md` for every build session once the connection is verified.
 
 ## Outstanding decisions for the founder
 
-None. All five pre-build gating decisions were approved on 2026-05-14 (recorded above and in `PRE_BUILD_READINESS_CHECKLIST.md`).
-
-Everything is locked. The next step is the tooling setup walkthrough.
+None. All five pre-build gating decisions were approved on 2026-05-14 (recorded above and in `PRE_BUILD_READINESS_CHECKLIST.md`). Everything is locked. The next step is the Supabase staging connection session.

@@ -2,7 +2,9 @@
 
 ## Active issues
 
-None. No code or services exist yet.
+None.
+
+> **State note (2026-05-24):** The v1.0 Skeleton Milestone is complete — empty Next.js shell, `pnpm dev` and `pnpm build` pass, PR #1 merged to main. No services are connected, no features exist, no database or auth is wired. The current phase is documentation alignment before building Product Stage v1.0. All risks below remain planning-stage risks, not live bugs.
 
 ---
 

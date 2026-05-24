@@ -118,6 +118,21 @@ Each row: amount + chargeable party + reason for pending + one-tap action ("Appr
 - Upcoming scheduled maintenance.
 - Manual occupancy/reservation notes the manager has added.
 
+### 7. Inspection history (prototype findings #5, #6)
+
+Accessible directly from the Property view — a "Past inspections" link or collapsed section lists every inspection for this property in reverse chronological order, with its status displayed clearly:
+
+- **In progress** (draft) — started, not submitted. Resumable by the assigned inspector.
+- **Submitted** — inspector finished; awaiting manager review.
+- **Reviewed** — a manager has acknowledged it.
+- **Closed** — reviewed and all linked child actions resolved (derived display state; see `INSPECTION_WORKFLOWS.md`).
+
+Tapping any row opens the full inspection detail: all checklist items, flags raised, photos with timestamps, notes, and current child action statuses. This is the primary surface for **evidence comparison** — managers and coordinators use it to check what the apartment looked like before a guest arrived vs after checkout.
+
+**Paired pre-arrival / post-stay display:** when a pre-arrival and a post-stay inspection share the same `stay_id`, they appear as a linked pair in the history list. This makes dispute evidence lookup fast: "what was the condition before this guest?" is answered by opening the pre-arrival half of the relevant pair. Side-by-side line-item comparison between paired inspections is a v1.5 enhancement; v1.0 shows both accessible from one stay row.
+
+See `INSPECTION_WORKFLOWS.md` for full state definitions and the complete inspection detail view spec.
+
 ---
 
 ## The Asana logging queue (prototype finding #11)
