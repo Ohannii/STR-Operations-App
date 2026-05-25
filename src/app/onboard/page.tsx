@@ -23,6 +23,11 @@ export default async function OnboardPage({
   const { error } = await searchParams
   const displayName = ctx.profile?.full_name ?? ctx.user.email ?? 'there'
 
+  // Show the error banner whenever the URL has an `?error=` key, even if
+  // the value is empty. Previously a truthy check hid empty messages,
+  // which is exactly when something silent goes wrong on the server.
+  const hasError = error !== undefined
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4 py-10">
       <div className="w-full max-w-md bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -34,9 +39,9 @@ export default async function OnboardPage({
           administrator. You can add team members later.
         </p>
 
-        {error ? (
+        {hasError ? (
           <div className="mb-4 p-3 rounded bg-red-50 border border-red-200 text-sm text-red-800">
-            {decodeURIComponent(error)}
+            {decodeURIComponent(error ?? '') || '(no message provided — check the terminal running pnpm dev)'}
           </div>
         ) : null}
 
