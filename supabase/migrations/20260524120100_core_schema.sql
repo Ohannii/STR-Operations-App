@@ -414,7 +414,13 @@ create table public.flag_categories (
   default_action_sla_hours          int,
   is_active                         boolean not null default true,
   created_at                        timestamptz not null default now(),
-  unique (company_id, key)
+  -- NULLS NOT DISTINCT (Postgres 15+) treats two (NULL, 'x') rows as a
+  -- duplicate, which is what we want for system seeds where every
+  -- system row has company_id IS NULL. Without this, two re-runs of the
+  -- system seed could silently create duplicate (NULL, 'condition_note')
+  -- rows. Per-company custom categories (v1.5+) use the same constraint
+  -- transparently because their company_id is non-NULL.
+  unique nulls not distinct (company_id, key)
 );
 
 

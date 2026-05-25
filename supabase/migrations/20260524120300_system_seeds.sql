@@ -13,6 +13,11 @@
 -- Per-company seeds (default approval policy + the four inspection
 -- templates) belong in a stored procedure or app-side seeding flow,
 -- not here. That arrives in the next session.
+--
+-- Both inserts end with ON CONFLICT DO NOTHING so a partial-failure
+-- recovery (or any accidental re-run) is idempotent. The
+-- flag_categories ON CONFLICT depends on the UNIQUE NULLS NOT DISTINCT
+-- constraint declared in the core schema migration.
 -- ============================================================
 
 
@@ -42,7 +47,8 @@ insert into public.roles (key, display_label, description) values
   ('property_owner_viewer',  'Property Owner (Viewer)',
    'Read-only access to sent reports and dispute evidence for their own properties.'),
   ('super_admin',            'Super Admin',
-   'Platform-level admin. Used for support and rare cross-company operations.');
+   'Platform-level admin. Used for support and rare cross-company operations.')
+on conflict (key) do nothing;
 
 
 -- ----------------------------------------------------------------
@@ -66,4 +72,10 @@ values
   (null, 'company_responsibility',  'Company pays',       'building',       'low',  'create_accountability'),
   (null, 'safety_urgent',           'Safety!',            'alert-octagon',  'high', 'create_issue'),
   (null, 'follow_up_required',      'Check next time',   'calendar-clock', 'low',  'no_action'),
-  (null, 'no_action_record',        'Just noting it',     'bookmark',       'low',  'no_action');
+  (null, 'no_action_record',        'Just noting it',     'bookmark',       'low',  'no_action')
+on conflict (company_id, key) do nothing;
+-- ON CONFLICT works here because the UNIQUE constraint on
+-- flag_categories(company_id, key) was declared NULLS NOT DISTINCT
+-- in 20260524120100_core_schema.sql, so two (NULL, 'condition_note')
+-- rows are treated as a conflict. Without that change, ON CONFLICT
+-- on a NULL company_id would silently let duplicates through.
