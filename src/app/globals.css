@@ -1,8 +1,17 @@
 @import "tailwindcss";
 
+/*
+ * Light-only theme for the v1.0 build. Backgrounds are slate-50;
+ * body text is slate-900. Pages set their own bg via Tailwind
+ * utilities; this fallback only shows around the edges.
+ *
+ * Dark mode will return when we ship a deliberate theme system
+ * with proper card / border / status-color tokens.
+ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f8fafc; /* slate-50 */
+  --foreground: #0f172a; /* slate-900 */
 }
 
 @theme inline {
@@ -10,17 +19,19 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* Tiny custom breakpoint for very narrow phones (≥ 400px). */
+  --breakpoint-xs: 25rem;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html, body {
+  background: var(--background);
+  color: var(--foreground);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+    Segoe UI, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
