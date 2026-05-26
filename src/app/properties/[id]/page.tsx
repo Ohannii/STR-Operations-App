@@ -268,36 +268,44 @@ export default async function PropertyPage({
               const Icon = cat?.icon ?? Flag
               const sev = severityDisplay(flag.severity)
               return (
-                <Card key={flag.id}>
-                  <div className="p-4 flex items-start gap-3">
-                    <div
-                      className={
-                        cat?.tone === 'red'
-                          ? 'shrink-0 w-9 h-9 rounded-lg bg-red-100 text-red-700 flex items-center justify-center'
-                          : 'shrink-0 w-9 h-9 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center'
-                      }
-                    >
-                      <Icon size={16} aria-hidden />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2 mb-1">
-                        <span className="text-sm font-semibold text-slate-900">
-                          {cat?.label ?? 'Flag'}
-                        </span>
-                        <Badge tone={sev.tone}>{sev.label}</Badge>
-                        <Badge tone="slate">{flag.status}</Badge>
+                <li key={flag.id}>
+                  <Link
+                    href={`/properties/${property.id}/flags/${flag.id}`}
+                    className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+                    aria-label={`Open flag: ${cat?.label ?? 'Flag'}`}
+                  >
+                    <Card className="hover:border-slate-300 hover:shadow-sm transition-all">
+                      <div className="p-4 flex items-start gap-3">
+                        <div
+                          className={
+                            cat?.tone === 'red'
+                              ? 'shrink-0 w-9 h-9 rounded-lg bg-red-100 text-red-700 flex items-center justify-center'
+                              : 'shrink-0 w-9 h-9 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center'
+                          }
+                        >
+                          <Icon size={16} aria-hidden />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2 mb-1">
+                            <span className="text-sm font-semibold text-slate-900">
+                              {cat?.label ?? 'Flag'}
+                            </span>
+                            <Badge tone={sev.tone}>{sev.label}</Badge>
+                            <Badge tone="slate">{flag.status}</Badge>
+                          </div>
+                          {flag.description ? (
+                            <p className="text-sm text-slate-700 leading-snug">{flag.description}</p>
+                          ) : (
+                            <p className="text-sm text-slate-400 italic">No description</p>
+                          )}
+                          <p className="text-[11px] text-slate-500 mt-1.5">
+                            Raised {relativeTime(flag.raised_at)}
+                          </p>
+                        </div>
                       </div>
-                      {flag.description ? (
-                        <p className="text-sm text-slate-700 leading-snug">{flag.description}</p>
-                      ) : (
-                        <p className="text-sm text-slate-400 italic">No description</p>
-                      )}
-                      <p className="text-[11px] text-slate-500 mt-1.5">
-                        Raised {relativeTime(flag.raised_at)}
-                      </p>
-                    </div>
-                  </div>
-                </Card>
+                    </Card>
+                  </Link>
+                </li>
               )
             })}
           </ul>
