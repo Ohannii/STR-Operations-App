@@ -102,10 +102,11 @@ export default async function NewRecoveryTaskPage({
         </div>
         <div>
           <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">
-            Start guest recovery
+            Start recovery tracking
           </h1>
           <p className="text-sm text-slate-600 mt-0.5">
-            On flag{' '}
+            Optional. Use this for WhatsApp follow-up or formal paid/refused tracking on
+            the flag{' '}
             <span className="font-medium text-slate-900">{cat?.label ?? 'Flag'}</span>{' '}
             in <span className="font-medium text-slate-900">{property.name}</span>.
           </p>
@@ -175,12 +176,18 @@ export default async function NewRecoveryTaskPage({
                 htmlFor="estimated_amount"
                 hint="ZAR. Optional but shown in the message."
               >
+                {/*
+                  step="any" avoids the HTML5 step-grid validation,
+                  which combined with FP arithmetic in the browser
+                  can quietly snap a typed "200" to "199.98".
+                  Server-side rounds defensively as well.
+                */}
                 <Input
                   id="estimated_amount"
                   name="estimated_amount"
                   type="number"
                   min={0}
-                  step={0.01}
+                  step="any"
                   placeholder="2500.00"
                 />
               </Field>
@@ -228,7 +235,7 @@ export default async function NewRecoveryTaskPage({
               <Link href={`/properties/${property.id}/flags/${flag.id}`}>
                 <Button variant="secondary" type="button">Cancel</Button>
               </Link>
-              <Button type="submit">Create recovery task</Button>
+              <Button type="submit">Start tracking</Button>
             </div>
           </form>
         </div>

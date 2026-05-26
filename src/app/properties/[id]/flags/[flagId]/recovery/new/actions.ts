@@ -47,10 +47,14 @@ export async function createRecoveryTaskAction(formData: FormData) {
 
   let estimatedAmount: number | null = null
   if (estimatedStr) {
-    estimatedAmount = Number(estimatedStr)
-    if (isNaN(estimatedAmount) || estimatedAmount < 0) {
+    const raw = Number(estimatedStr)
+    if (isNaN(raw) || raw < 0) {
       redirect(`${formUrl}?error=${encodeURIComponent('Estimated amount must be a non-negative number.')}`)
     }
+    // Round to 2 decimals via integer arithmetic. Belt-and-braces
+    // against any FP drift introduced by the browser's step-grid
+    // validation when type="number" + step="0.01" is used.
+    estimatedAmount = Math.round(raw * 100) / 100
   }
 
   const deadlineHours = Number(deadlineHoursStr)

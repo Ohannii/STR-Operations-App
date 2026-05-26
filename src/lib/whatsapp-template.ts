@@ -73,11 +73,23 @@ export function buildWhatsAppUrl(phone: string | null | undefined, message: stri
 }
 
 /**
- * ZAR currency formatting. Cheap and correct enough for v1.0; if
- * we ship multi-currency later we'll replace with Intl-based.
+ * ZAR currency formatting.
+ *
+ * Defensive 2-decimal rounding via integer arithmetic. The
+ * Math.round(amount * 100) / 100 step neutralises any floating-
+ * point drift that may have crept in from form input handling
+ * (HTML5 step="0.01" + IEEE-754 can produce values like
+ * 199.98000000000002 from "200"). Display must match storage
+ * for money or trust gets corroded fast.
+ *
+ * Long-term: if billing / formal recovery workflows tighten, we
+ * may move money to integer cents end-to-end. Not now -- the
+ * existing decimal(12,2) Postgres columns are exact; this is
+ * purely a defence against bad inputs from the client.
  */
 export function formatZAR(amount: number): string {
-  return 'R ' + amount.toLocaleString('en-ZA', {
+  const rounded = Math.round(amount * 100) / 100
+  return 'R ' + rounded.toLocaleString('en-ZA', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })

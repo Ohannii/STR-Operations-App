@@ -521,15 +521,17 @@ export default async function FlagDetailPage({
         </div>
       </Card>
 
-      {/* Guest recovery (eligibility-gated) */}
+      {/* Guest recovery (eligibility-gated; optional unless task exists) */}
       {showRecoverySection ? (
         <section id="recovery" className="mb-8 scroll-mt-20">
           <div className="mb-3">
-            <h2 className="text-lg font-semibold text-slate-900">Guest recovery</h2>
+            <h2 className="text-lg font-semibold text-slate-900">
+              {recoveryTask ? 'Guest recovery' : 'Optional guest recovery'}
+            </h2>
             <p className="text-sm text-slate-600">
               {recoveryTask
-                ? 'Track notification, payment, or refusal. Each step is logged.'
-                : 'Recover cost from the guest by sending a message and tracking the outcome.'}
+                ? 'Track notification, payment, or refusal. Each step is logged for the audit trail.'
+                : 'Responsibility = Guest is already enough to mark this as guest-chargeable. Only start a recovery task when you need WhatsApp follow-up, paid/refused tracking, or a formal audit trail.'}
             </p>
           </div>
 
@@ -547,23 +549,28 @@ export default async function FlagDetailPage({
             />
           ) : (
             <Card>
-              <div className="p-5 flex items-start gap-3">
-                <div className="p-2 rounded-md bg-slate-100">
+              <div className="p-5 flex flex-col sm:flex-row sm:items-start gap-3">
+                <div className="shrink-0 p-2 rounded-md bg-slate-100 w-fit">
                   <MessageCircle size={16} className="text-slate-700" aria-hidden />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-900">No recovery task yet</p>
+                  <p className="text-sm font-medium text-slate-900">
+                    Recovery tracking is optional
+                  </p>
                   <p className="text-sm text-slate-600 mt-0.5">
-                    Capture the guest&rsquo;s WhatsApp number, generate a message, and
-                    log whether they paid or refused.
+                    For most flags, leaving{' '}
+                    <span className="font-medium text-slate-800">Responsibility = Guest</span>{' '}
+                    is enough — the cost stays captured on the flag itself. Start formal
+                    tracking here only when you want to send a WhatsApp message and log
+                    paid / refused outcomes.
                   </p>
                 </div>
                 <Link
                   href={`/properties/${property.id}/flags/${flag.id}/recovery/new`}
-                  className={buttonClasses('primary', 'sm')}
+                  className={buttonClasses('secondary', 'sm', 'shrink-0')}
                 >
                   <Plus size={14} aria-hidden />
-                  Create recovery task
+                  Start recovery tracking
                 </Link>
               </div>
             </Card>
@@ -1050,7 +1057,7 @@ function RecoveryActions({
                 name="amount_recovered"
                 type="number"
                 min={0}
-                step={0.01}
+                step="any"
                 required
                 defaultValue={estimatedAmount ?? ''}
                 className="block w-32 h-9 px-2.5 text-sm text-slate-900 border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:border-emerald-600"

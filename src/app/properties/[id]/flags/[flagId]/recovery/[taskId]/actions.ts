@@ -122,12 +122,15 @@ export async function markGuestPaidAction(formData: FormData) {
     )
   }
 
-  const amount = Number(amountStr)
-  if (isNaN(amount) || amount < 0) {
+  const rawAmount = Number(amountStr)
+  if (isNaN(rawAmount) || rawAmount < 0) {
     redirect(
       `${detailUrl(propertyId, flagId, `?error=${encodeURIComponent('Amount must be a non-negative number.')}`)}`,
     )
   }
+  // Round to 2 decimals via integer arithmetic; same FP defence as
+  // the recovery create action and formatZAR.
+  const amount = Math.round(rawAmount * 100) / 100
 
   const ctx = await getUserContext()
   if (!ctx) redirect('/login')
