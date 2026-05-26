@@ -1,23 +1,21 @@
-﻿export default function Home() {
-  return (
-    <main
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        minHeight: "100vh",
-        gap: "0.5rem",
-        fontFamily: "system-ui, sans-serif",
-        textAlign: "center",
-        padding: "1rem",
-      }}
-    >
-      <h1 style={{ fontSize: "1.5rem", fontWeight: 600 }}>
-        STR Operations App
-      </h1>
-      <p style={{ color: "#555", margin: 0 }}>v1.0 skeleton</p>
-      <p style={{ color: "#555", margin: 0 }}>Local build running</p>
-    </main>
-  );
+import { redirect } from 'next/navigation'
+import { createClient } from '@/lib/supabase/server'
+
+/**
+ * GET /
+ *
+ * Always redirects: logged-in → /dashboard, logged-out → /login.
+ * The dashboard page itself will bounce the user to /onboard if
+ * they don't yet have a company.
+ */
+export default async function Home() {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
+  if (user) {
+    redirect('/dashboard')
+  }
+  redirect('/login')
 }
