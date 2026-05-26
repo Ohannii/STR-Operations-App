@@ -3,14 +3,16 @@ import { notFound, redirect } from 'next/navigation'
 import {
   ArrowLeft,
   Flag as FlagIcon,
+  MessageCircle,
   MessageSquare,
+  Plus,
   RotateCcw,
   type LucideIcon,
 } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+import { Button, buttonClasses } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { RadioChip } from '@/components/ui/chip'
 import { Field } from '@/components/ui/input'
@@ -27,30 +29,42 @@ import {
   flagStatusDisplay,
   isTerminalStatus,
 } from '@/lib/ui/flag-status'
-import { relativeTime } from '@/lib/ui/relative-time'
+import {
+  outcomeDisplay,
+  recoveryStatusDisplay,
+} from '@/lib/ui/recovery-status'
+import { relativeTime, relativeTimeUntil } from '@/lib/ui/relative-time'
+import { buildRecoveryMessage, buildWhatsAppUrl, formatZAR } from '@/lib/whatsapp-template'
 import {
   addFlagNoteAction,
   reopenFlagAction,
   updateFlagAction,
 } from './actions'
+import {
+  closeRecoveryTaskAction,
+  markGuestNotifiedAction,
+  markGuestPaidAction,
+  markGuestRefusedAction,
+} from './recovery/[taskId]/actions'
 
 /**
  * GET /properties/[id]/flags/[flagId]
  *
- * Flag detail + triage view. Sections:
- *   1. Header card -- category, severity, status, responsibility,
- *      description.
- *   2. Triage form -- radio chips for status / severity /
- *      responsibility, plus an optional close-reason text input
- *      that's required only when closing as "No action".
- *   3. Activity timeline -- combined view of the implicit
- *      lifecycle (raised by X) plus audit_events rows (status
- *      changes, notes, reopens) in chronological order.
- *   4. Add-note form.
- *   5. Reopen affordance (visible only for closed / no_action flags).
+ * Flag detail + triage view. Sections (in order):
+ *   1. Header card  — category, status, severity, responsibility,
+ *      description, close reason.
+ *   2. Triage form  — status / severity / responsibility chips +
+ *      close-reason textarea.
+ *   3. Guest recovery — only shown when eligible (responsibility =
+ *      Guest, OR category = guest_damage, OR a recovery task already
+ *      exists). Inline card with guest contact, amounts, deadline,
+ *      WhatsApp + transition actions, and a mini activity log.
+ *   4. Reopen affordance — only for closed / no_action flags.
+ *   5. Activity timeline — flag-level history.
+ *   6. Add-note form.
  *
- * Data loaded in parallel: property + flag + audit_events. RLS
- * scopes all three to the user's company.
+ * Data loaded in parallel: property, flag, audit_events, recovery
+ * task (with embedded stay + attempts).
  */
 
 type FlagCategoryRel = { id: string; key: string } | { id: string; key: string }[] | null
@@ -81,9 +95,54 @@ type AuditEventRow = {
   created_at: string
 }
 
+type StayEmbed = {
+  id: string
+  guest_first_name: string | null
+  guest_phone: string | null
+  guest_email: string | null
+}
+
+type RecoveryAttempt = {
+  id: string
+  attempt_type: string
+  attempt_method: string | null
+  message_sent_at: string | null
+  outcome: string | null
+  amount_recovered: number | string | null
+  notes: string | null
+  recorded_at: string
+  recorded_by: string | null
+}
+
+type RecoveryTask = {
+  id: string
+  status: string
+  description: string | null
+  estimated_amount: number | string | null
+  actual_amount: number | string | null
+  deadline_at: string
+  closed_at: string | null
+  final_chargeable_party: string | null
+  created_at: string
+  created_by: string
+  stay: StayEmbed | StayEmbed[] | null
+  recovery_attempts: RecoveryAttempt[] | null
+}
+
 function pickEmbedded<T>(value: T | T[] | null | undefined): T | null {
   if (!value) return null
   return Array.isArray(value) ? (value[0] ?? null) : value
+}
+
+/** Coerce PostgREST decimal-as-string to a number where present. */
+function asNumber(value: unknown): number | null {
+  if (value == null) return null
+  if (typeof value === 'number') return value
+  if (typeof value === 'string') {
+    const n = Number(value)
+    return Number.isFinite(n) ? n : null
+  }
+  return null
 }
 
 export default async function FlagDetailPage({
@@ -95,6 +154,11 @@ export default async function FlagDetailPage({
     updated?: string
     note_added?: string
     reopened?: string
+    recovery_created?: string
+    notified?: string
+    paid?: string
+    refused?: string
+    closed?: string
     error?: string
   }>
 }) {
@@ -103,7 +167,17 @@ export default async function FlagDetailPage({
   if (!ctx.company) redirect('/onboard')
 
   const { id: propertyId, flagId } = await params
-  const { updated, note_added, reopened, error } = await searchParams
+  const {
+    updated,
+    note_added,
+    reopened,
+    recovery_created,
+    notified,
+    paid,
+    refused,
+    closed,
+    error,
+  } = await searchParams
 
   const supabase = await createClient()
 
@@ -147,8 +221,32 @@ export default async function FlagDetailPage({
     .order('created_at', { ascending: true })
     .returns<AuditEventRow[]>()
 
-  const [{ data: property }, { data: flag }, { data: auditEvents }] =
-    await Promise.all([propertyPromise, flagPromise, auditPromise])
+  const recoveryPromise = supabase
+    .from('guest_recovery_tasks')
+    .select(
+      `
+      id, status, description, estimated_amount, actual_amount,
+      deadline_at, closed_at, final_chargeable_party,
+      created_at, created_by,
+      stay:stays (id, guest_first_name, guest_phone, guest_email),
+      recovery_attempts (
+        id, attempt_type, attempt_method, message_sent_at,
+        outcome, amount_recovered, notes, recorded_at, recorded_by
+      )
+      `,
+    )
+    .eq('parent_flag_id', flagId)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .returns<RecoveryTask[]>()
+
+  const [
+    { data: property },
+    { data: flag },
+    { data: auditEvents },
+    { data: recoveryRows },
+  ] = await Promise.all([propertyPromise, flagPromise, auditPromise, recoveryPromise])
 
   if (!property || !flag) notFound()
 
@@ -161,7 +259,21 @@ export default async function FlagDetailPage({
   const currentUserId = ctx.user.id
   const CatIcon: LucideIcon = cat?.icon ?? FlagIcon
 
-  // Build the activity timeline.
+  // Recovery eligibility:
+  //   - Existing task always shows.
+  //   - No task, but responsibility is Guest OR category is guest_damage
+  //     → show the create-task CTA.
+  // Per user spec: don't gate by category alone — a Maintenance flag
+  // whose responsibility was set to Guest in triage is eligible.
+  const recoveryTask = recoveryRows?.[0] ?? null
+  const stayEmbed = recoveryTask ? pickEmbedded(recoveryTask.stay) : null
+  const recoveryAttempts = recoveryTask?.recovery_attempts ?? []
+  const isCategoryGuestDamage = categoryRow?.key === 'guest_damage'
+  const isResponsibilityGuest = flag.chargeable_party_decision === 'guest'
+  const showRecoverySection =
+    Boolean(recoveryTask) || isCategoryGuestDamage || isResponsibilityGuest
+
+  // Build the flag-level activity timeline.
   type Item =
     | { kind: 'raised'; at: Date; actorId: string | null; description: string | null }
     | { kind: 'update'; at: Date; actorId: string | null; before: Record<string, unknown>; after: Record<string, unknown> }
@@ -225,6 +337,31 @@ export default async function FlagDetailPage({
       {reopened ? (
         <div className="mb-5">
           <Alert tone="success">Flag reopened. Status is back to &lsquo;raised&rsquo;.</Alert>
+        </div>
+      ) : null}
+      {recovery_created ? (
+        <div className="mb-5">
+          <Alert tone="success">Recovery task created. Send the WhatsApp message below to notify the guest.</Alert>
+        </div>
+      ) : null}
+      {notified ? (
+        <div className="mb-5">
+          <Alert tone="success">Marked guest notified. Now waiting for their response.</Alert>
+        </div>
+      ) : null}
+      {paid ? (
+        <div className="mb-5">
+          <Alert tone="success">Marked as paid. Recovery resolved.</Alert>
+        </div>
+      ) : null}
+      {refused ? (
+        <div className="mb-5">
+          <Alert tone="success">Marked as refused. Recovery moved to fallback decision.</Alert>
+        </div>
+      ) : null}
+      {closed ? (
+        <div className="mb-5">
+          <Alert tone="success">Recovery task closed.</Alert>
         </div>
       ) : null}
       {error ? (
@@ -384,6 +521,56 @@ export default async function FlagDetailPage({
         </div>
       </Card>
 
+      {/* Guest recovery (eligibility-gated) */}
+      {showRecoverySection ? (
+        <section id="recovery" className="mb-8 scroll-mt-20">
+          <div className="mb-3">
+            <h2 className="text-lg font-semibold text-slate-900">Guest recovery</h2>
+            <p className="text-sm text-slate-600">
+              {recoveryTask
+                ? 'Track notification, payment, or refusal. Each step is logged.'
+                : 'Recover cost from the guest by sending a message and tracking the outcome.'}
+            </p>
+          </div>
+
+          {recoveryTask ? (
+            <RecoveryTaskCard
+              task={recoveryTask}
+              stay={stayEmbed}
+              attempts={recoveryAttempts}
+              propertyId={property.id}
+              flagId={flag.id}
+              propertyName={property.name}
+              companyName={ctx.company.name}
+              flagDescription={flag.description}
+              currentUserId={currentUserId}
+            />
+          ) : (
+            <Card>
+              <div className="p-5 flex items-start gap-3">
+                <div className="p-2 rounded-md bg-slate-100">
+                  <MessageCircle size={16} className="text-slate-700" aria-hidden />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-slate-900">No recovery task yet</p>
+                  <p className="text-sm text-slate-600 mt-0.5">
+                    Capture the guest&rsquo;s WhatsApp number, generate a message, and
+                    log whether they paid or refused.
+                  </p>
+                </div>
+                <Link
+                  href={`/properties/${property.id}/flags/${flag.id}/recovery/new`}
+                  className={buttonClasses('primary', 'sm')}
+                >
+                  <Plus size={14} aria-hidden />
+                  Create recovery task
+                </Link>
+              </div>
+            </Card>
+          )}
+        </section>
+      ) : null}
+
       {/* Reopen affordance */}
       {isClosed ? (
         <Card className="mb-8 border-amber-200 bg-amber-50/40">
@@ -426,7 +613,7 @@ export default async function FlagDetailPage({
         <ol className="relative border-l-2 border-slate-200 ml-4 pl-6 space-y-5">
           {items.map((item, idx) => (
             <TimelineItem
-              key={'k' in item ? '' : idx}
+              key={idx}
               item={item}
               idx={idx}
               currentUserId={currentUserId}
@@ -470,7 +657,7 @@ export default async function FlagDetailPage({
 }
 
 // ----------------------------------------------------------------
-// Internal: a single timeline row.
+// Flag activity timeline item
 // ----------------------------------------------------------------
 function TimelineItem({
   item,
@@ -587,4 +774,323 @@ function summarizeUpdate(
     out.push('No visible change')
   }
   return out
+}
+
+// ----------------------------------------------------------------
+// Recovery task card (inline on flag detail page)
+// ----------------------------------------------------------------
+function RecoveryTaskCard({
+  task,
+  stay,
+  attempts,
+  propertyId,
+  flagId,
+  propertyName,
+  companyName,
+  flagDescription,
+  currentUserId,
+}: {
+  task: RecoveryTask
+  stay: StayEmbed | null
+  attempts: RecoveryAttempt[]
+  propertyId: string
+  flagId: string
+  propertyName: string
+  companyName: string
+  flagDescription: string | null
+  currentUserId: string
+}) {
+  const taskStatus = recoveryStatusDisplay(task.status)
+  const estimated = asNumber(task.estimated_amount)
+  const actual = asNumber(task.actual_amount)
+  const StatusIcon = taskStatus.icon
+
+  const messageDescription = task.description ?? flagDescription ?? null
+  const guestFirstName = stay?.guest_first_name ?? 'there'
+  const message = buildRecoveryMessage({
+    guestFirstName,
+    propertyName,
+    companyName,
+    description: messageDescription,
+    estimatedAmount: estimated,
+  })
+  const whatsappUrl = buildWhatsAppUrl(stay?.guest_phone ?? null, message)
+
+  return (
+    <Card>
+      <div className="p-5">
+        {/* Header: guest info + status badge */}
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+          <div className="min-w-0">
+            <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Recovery task</p>
+            <h3 className="text-base font-semibold text-slate-900 truncate">
+              {stay?.guest_first_name ?? 'Unknown guest'}
+            </h3>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-0.5">
+              {stay?.guest_phone ? (
+                <a
+                  href={`tel:${stay.guest_phone}`}
+                  className="text-sm text-slate-700 hover:text-slate-900 hover:underline"
+                >
+                  {stay.guest_phone}
+                </a>
+              ) : (
+                <span className="text-sm text-slate-400 italic">No phone</span>
+              )}
+              {stay?.guest_email ? (
+                <a
+                  href={`mailto:${stay.guest_email}`}
+                  className="text-sm text-slate-600 hover:text-slate-900 hover:underline"
+                >
+                  {stay.guest_email}
+                </a>
+              ) : null}
+            </div>
+          </div>
+          <Badge tone={taskStatus.tone}>
+            <StatusIcon size={11} className="mr-1 -ml-0.5" aria-hidden />
+            {taskStatus.label}
+          </Badge>
+        </div>
+
+        {/* Amounts + deadline */}
+        <dl className="grid grid-cols-3 gap-3 pt-3 border-t border-slate-100">
+          <div>
+            <dt className="text-[10px] uppercase tracking-wider text-slate-500">Estimated</dt>
+            <dd className="text-sm font-medium text-slate-900 mt-0.5 tabular-nums">
+              {estimated != null ? formatZAR(estimated) : '—'}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-wider text-slate-500">Actual</dt>
+            <dd className="text-sm font-medium text-slate-900 mt-0.5 tabular-nums">
+              {actual != null ? formatZAR(actual) : '—'}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-wider text-slate-500">Deadline</dt>
+            <dd className="text-sm font-medium text-slate-900 mt-0.5">
+              {relativeTimeUntil(task.deadline_at)}
+            </dd>
+          </div>
+        </dl>
+
+        {/* Description */}
+        {task.description ? (
+          <div className="mt-3 pt-3 border-t border-slate-100">
+            <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Incident</p>
+            <p className="text-sm text-slate-700 leading-snug whitespace-pre-wrap">{task.description}</p>
+          </div>
+        ) : null}
+
+        {/* Actions */}
+        <div className="mt-4 pt-4 border-t border-slate-100">
+          <RecoveryActions
+            task={task}
+            whatsappUrl={whatsappUrl}
+            message={message}
+            propertyId={propertyId}
+            flagId={flagId}
+            estimatedAmount={estimated}
+          />
+        </div>
+
+        {/* Mini timeline */}
+        <div className="mt-4 pt-4 border-t border-slate-100">
+          <p className="text-[10px] font-semibold text-slate-700 uppercase tracking-wider mb-2.5">
+            Recovery activity
+          </p>
+          <ol className="space-y-2.5">
+            <li className="flex items-start gap-2 text-sm">
+              <span className="shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full bg-slate-900" aria-hidden />
+              <div className="min-w-0 flex-1">
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">
+                    {task.created_by === currentUserId ? 'You' : 'Team member'}
+                  </span>{' '}
+                  created the recovery task
+                </p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {relativeTime(task.created_at)}
+                </p>
+              </div>
+            </li>
+            {attempts
+              .slice()
+              .sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime())
+              .map((a) => {
+                const outcome = outcomeDisplay(a.outcome)
+                const isYou = a.recorded_by === currentUserId
+                const actorLabel = isYou ? 'You' : a.recorded_by ? 'Team member' : 'System'
+                return (
+                  <li key={a.id} className="flex items-start gap-2 text-sm">
+                    <span className="shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full bg-slate-400" aria-hidden />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-slate-700">
+                        <span className="font-medium text-slate-900">{actorLabel}</span>{' '}
+                        {summarizeAttempt(a)}
+                      </p>
+                      {a.notes ? (
+                        <p className="mt-1 text-sm text-slate-700 bg-slate-50 border border-slate-200 rounded p-2">
+                          {a.notes}
+                        </p>
+                      ) : null}
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <Badge tone={outcome.tone}>{outcome.label}</Badge>
+                        <span className="text-[11px] text-slate-500">{relativeTime(a.recorded_at)}</span>
+                      </div>
+                    </div>
+                  </li>
+                )
+              })}
+          </ol>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+function summarizeAttempt(a: RecoveryAttempt): string {
+  if (a.attempt_method === 'whatsapp_deeplink' || a.attempt_method === 'whatsapp') {
+    return 'sent the WhatsApp message'
+  }
+  if (a.outcome === 'paid_full' || a.outcome === 'paid_partial') {
+    const amount = asNumber(a.amount_recovered)
+    return amount != null
+      ? `marked the guest paid (${formatZAR(amount)})`
+      : 'marked the guest paid'
+  }
+  if (a.outcome === 'refused') {
+    return 'marked the guest refused'
+  }
+  if (a.outcome === 'no_response') {
+    return 'recorded no response'
+  }
+  return 'recorded an attempt'
+}
+
+// ----------------------------------------------------------------
+// Recovery action buttons (status-dependent)
+// ----------------------------------------------------------------
+function RecoveryActions({
+  task,
+  whatsappUrl,
+  message,
+  propertyId,
+  flagId,
+  estimatedAmount,
+}: {
+  task: RecoveryTask
+  whatsappUrl: string | null
+  message: string
+  propertyId: string
+  flagId: string
+  estimatedAmount: number | null
+}) {
+  const taskId = task.id
+
+  if (task.status === 'new') {
+    return (
+      <div className="flex flex-wrap items-center gap-2.5">
+        {whatsappUrl ? (
+          <a
+            href={whatsappUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={buttonClasses('secondary', 'sm')}
+          >
+            <MessageCircle size={14} aria-hidden />
+            Open WhatsApp
+          </a>
+        ) : (
+          <span className="text-xs text-slate-500 italic">No phone on file — can&rsquo;t open WhatsApp.</span>
+        )}
+        <form action={markGuestNotifiedAction}>
+          <input type="hidden" name="property_id" value={propertyId} />
+          <input type="hidden" name="flag_id" value={flagId} />
+          <input type="hidden" name="task_id" value={taskId} />
+          <input type="hidden" name="message_body" value={message} />
+          <Button type="submit" size="sm">Mark guest notified</Button>
+        </form>
+        <p className="text-[11px] text-slate-500 w-full mt-1">
+          Open WhatsApp sends nothing on its own — confirm with &ldquo;Mark guest notified&rdquo; after you send.
+        </p>
+      </div>
+    )
+  }
+
+  if (task.status === 'guest_notified') {
+    return (
+      <div className="space-y-3">
+        {whatsappUrl ? (
+          <a
+            href={whatsappUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-slate-600 hover:text-slate-900 hover:underline inline-flex items-center gap-1"
+          >
+            <MessageCircle size={12} aria-hidden />
+            Open WhatsApp again
+          </a>
+        ) : null}
+        <div className="flex flex-wrap items-end gap-3">
+          <form action={markGuestPaidAction} className="flex items-end gap-2">
+            <input type="hidden" name="property_id" value={propertyId} />
+            <input type="hidden" name="flag_id" value={flagId} />
+            <input type="hidden" name="task_id" value={taskId} />
+            <div>
+              <label
+                htmlFor={`amount-${taskId}`}
+                className="block text-xs font-medium text-slate-700 mb-1"
+              >
+                Amount paid (R)
+              </label>
+              <input
+                id={`amount-${taskId}`}
+                name="amount_recovered"
+                type="number"
+                min={0}
+                step={0.01}
+                required
+                defaultValue={estimatedAmount ?? ''}
+                className="block w-32 h-9 px-2.5 text-sm text-slate-900 border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:border-emerald-600"
+              />
+            </div>
+            <Button type="submit" size="sm">Mark paid</Button>
+          </form>
+          <form action={markGuestRefusedAction}>
+            <input type="hidden" name="property_id" value={propertyId} />
+            <input type="hidden" name="flag_id" value={flagId} />
+            <input type="hidden" name="task_id" value={taskId} />
+            <Button type="submit" size="sm" variant="secondary">Mark refused</Button>
+          </form>
+        </div>
+      </div>
+    )
+  }
+
+  if (task.status === 'guest_resolved' || task.status === 'fallback_decision') {
+    return (
+      <div className="flex flex-wrap items-center gap-2.5">
+        <form action={closeRecoveryTaskAction}>
+          <input type="hidden" name="property_id" value={propertyId} />
+          <input type="hidden" name="flag_id" value={flagId} />
+          <input type="hidden" name="task_id" value={taskId} />
+          <Button type="submit" size="sm" variant="secondary">Close recovery task</Button>
+        </form>
+        {task.status === 'fallback_decision' ? (
+          <span className="text-xs text-slate-500">
+            OTA claim and company-absorb fallback ship in v1.1.
+          </span>
+        ) : null}
+      </div>
+    )
+  }
+
+  // closed / ota_*  → read-only summary
+  return (
+    <p className="text-xs text-slate-500">
+      This recovery task is {recoveryStatusDisplay(task.status).label.toLowerCase()}.
+    </p>
+  )
 }
