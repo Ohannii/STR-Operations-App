@@ -152,46 +152,50 @@ export default async function DashboardPage() {
               const status = propertyStatusDisplay(p.status)
               const sub = [p.unit_reference, p.address].filter(Boolean).join(' · ')
               return (
-                <Card
+                <Link
                   key={p.id}
-                  className="hover:border-slate-300 hover:shadow transition-all"
+                  href={`/properties/${p.id}`}
+                  className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+                  aria-label={`Open ${p.name}`}
                 >
-                  <div className="p-5">
-                    <div className="flex items-start justify-between gap-3 mb-4">
-                      <div className="min-w-0">
-                        <h3 className="font-semibold text-slate-900 truncate">
-                          {p.name}
-                        </h3>
-                        {sub ? (
-                          <p className="text-sm text-slate-600 mt-0.5 truncate">{sub}</p>
-                        ) : (
-                          <p className="text-sm text-slate-400 mt-0.5 italic">
-                            No address
-                          </p>
-                        )}
+                  <Card className="h-full hover:border-slate-300 hover:shadow transition-all">
+                    <div className="p-5">
+                      <div className="flex items-start justify-between gap-3 mb-4">
+                        <div className="min-w-0">
+                          <h3 className="font-semibold text-slate-900 truncate">
+                            {p.name}
+                          </h3>
+                          {sub ? (
+                            <p className="text-sm text-slate-600 mt-0.5 truncate">{sub}</p>
+                          ) : (
+                            <p className="text-sm text-slate-400 mt-0.5 italic">
+                              No address
+                            </p>
+                          )}
+                        </div>
+                        <Badge tone={status.tone}>{status.label}</Badge>
                       </div>
-                      <Badge tone={status.tone}>{status.label}</Badge>
+                      <dl className="grid grid-cols-2 gap-3 pt-3 border-t border-slate-100">
+                        <div>
+                          <dt className="text-[10px] uppercase tracking-wider text-slate-500">
+                            Bedrooms
+                          </dt>
+                          <dd className="text-sm font-medium text-slate-900 mt-0.5">
+                            {p.bedrooms ?? '—'}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-[10px] uppercase tracking-wider text-slate-500">
+                            Last inspection
+                          </dt>
+                          <dd className="text-sm font-medium text-slate-500 mt-0.5">
+                            Never
+                          </dd>
+                        </div>
+                      </dl>
                     </div>
-                    <dl className="grid grid-cols-2 gap-3 pt-3 border-t border-slate-100">
-                      <div>
-                        <dt className="text-[10px] uppercase tracking-wider text-slate-500">
-                          Bedrooms
-                        </dt>
-                        <dd className="text-sm font-medium text-slate-900 mt-0.5">
-                          {p.bedrooms ?? '—'}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt className="text-[10px] uppercase tracking-wider text-slate-500">
-                          Last inspection
-                        </dt>
-                        <dd className="text-sm font-medium text-slate-500 mt-0.5">
-                          Never
-                        </dd>
-                      </div>
-                    </dl>
-                  </div>
-                </Card>
+                  </Card>
+                </Link>
               )
             })}
           </div>

@@ -6,16 +6,20 @@ import { createClient } from '@/lib/supabase/server'
  * (if any).
  *
  * Pages use this to decide "are you logged in? do you have a company yet?"
- * without making each page write the same three queries.
+ * without making each page write the same queries.
  *
  * Returns null when there is no logged-in user — caller redirects to /login.
  *
- * Multi-membership note: the schema permits a user to belong to multiple
- * companies (UNIQUE company_id+user_id is per pair). v1.0 UI is single-
- * company, so we deterministically pick the OLDEST active membership.
- * If the bootstrap accidentally creates duplicates (see the /onboard
- * action's idempotency check), we still return a usable context instead
- * of silently failing with PGRST116 from .maybeSingle().
+ * Performance: combines membership + company lookup into a single
+ * PostgREST round-trip via an embed (companies!inner). Together with
+ * the parallel profile query, an authenticated page sees one auth
+ * call + one parallel pair of DB queries (down from one + parallel +
+ * one sequential companies lookup).
+ *
+ * Multi-membership note: the schema permits a user to belong to
+ * multiple companies. v1.0 UI is single-company, so we
+ * deterministically pick the OLDEST active membership and ignore
+ * the rest.
  */
 
 export type UserContext = {
@@ -38,6 +42,22 @@ export type UserContext = {
   } | null
 }
 
+// Supabase's typed embed returns a single object for many-to-one,
+// but the generic JS client without generated types gives us a
+// loose shape. This tiny helper coerces it without using `any`.
+type EmbeddedCompany = { id: string; name: string }
+
+type MembershipRow = {
+  company_id: string
+  role_key: string
+  companies: EmbeddedCompany | EmbeddedCompany[] | null
+}
+
+function pickEmbedded(value: EmbeddedCompany | EmbeddedCompany[] | null): EmbeddedCompany | null {
+  if (!value) return null
+  return Array.isArray(value) ? (value[0] ?? null) : value
+}
+
 export async function getUserContext(): Promise<UserContext | null> {
   const supabase = await createClient()
 
@@ -46,49 +66,48 @@ export async function getUserContext(): Promise<UserContext | null> {
   } = await supabase.auth.getUser()
   if (!user) return null
 
-  // Two small RLS-scoped reads in parallel.
+  // Two parallel reads:
+  //   - profile (own profile only)
+  //   - membership embedded with company (one round trip)
   const profilePromise = supabase
     .from('profiles')
     .select('id, full_name, email')
     .eq('id', user.id)
     .maybeSingle()
 
-  // Use order+limit instead of maybeSingle() so multiple matching rows
-  // do not error out (PGRST116) and silently become null. The proper
-  // long-term fix is a unique constraint / idempotent RPC; for v1.0 we
-  // tolerate duplicates here.
   const membershipPromise = supabase
     .from('company_memberships')
-    .select('company_id, role_key')
+    .select(
+      `
+      company_id,
+      role_key,
+      companies (
+        id,
+        name
+      )
+      `,
+    )
     .eq('user_id', user.id)
     .eq('is_active', true)
     .is('deleted_at', null)
     .order('created_at', { ascending: true })
     .limit(1)
+    .returns<MembershipRow[]>()
 
-  const [{ data: profile }, { data: memberships, error: membershipError }] =
-    await Promise.all([profilePromise, membershipPromise])
+  const [
+    { data: profile },
+    { data: memberships, error: membershipError },
+  ] = await Promise.all([profilePromise, membershipPromise])
 
   if (membershipError) {
-    // Visible in `pnpm dev` terminal. Not thrown — we want pages to still
-    // render so the user can re-auth or see a clear empty state.
     console.error('[getUserContext] membership lookup error:', membershipError)
   }
 
-  const membership = memberships?.[0] ?? null
-
-  let company: UserContext['company'] = null
-  if (membership) {
-    const { data, error: companyError } = await supabase
-      .from('companies')
-      .select('id, name')
-      .eq('id', membership.company_id)
-      .maybeSingle()
-    if (companyError) {
-      console.error('[getUserContext] company lookup error:', companyError)
-    }
-    company = data
-  }
+  const row = memberships?.[0] ?? null
+  const membership = row
+    ? { company_id: row.company_id, role_key: row.role_key }
+    : null
+  const company = pickEmbedded(row?.companies ?? null)
 
   return {
     user: { id: user.id, email: user.email ?? null },
