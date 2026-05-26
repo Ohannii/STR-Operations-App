@@ -14,6 +14,9 @@ import { createClient } from '@/lib/supabase/server'
  * "members insert flags in own company" policy plus the matching
  * GRANT INSERT on the flags table do the heavy lifting.
  *
+ * Performance: the category lookup and the property lookup are
+ * independent — we run them in parallel rather than sequentially.
+ *
  * Errors flow back via ?error= query string with the chosen category
  * preserved so the user doesn't have to re-pick after a typo.
  */
@@ -47,15 +50,25 @@ export async function createFlagAction(formData: FormData) {
 
   const supabase = await createClient()
 
-  // Look up the flag_category by key. The seed rows have
-  // company_id IS NULL; the "anyone reads system flag_categories"
-  // policy lets us read them.
-  const { data: category, error: catErr } = await supabase
-    .from('flag_categories')
-    .select('id')
-    .eq('key', categoryKey)
-    .is('company_id', null)
-    .maybeSingle()
+  // Parallel lookups: category-by-key (publicly readable system seed)
+  // and the target property (RLS scopes it to the user's company).
+  const [
+    { data: category, error: catErr },
+    { data: property, error: propErr },
+  ] = await Promise.all([
+    supabase
+      .from('flag_categories')
+      .select('id')
+      .eq('key', categoryKey)
+      .is('company_id', null)
+      .maybeSingle(),
+    supabase
+      .from('properties')
+      .select('id, company_id')
+      .eq('id', propertyId)
+      .is('deleted_at', null)
+      .maybeSingle(),
+  ])
 
   if (catErr) {
     console.error('[flags/new] category lookup error:', catErr)
@@ -64,17 +77,6 @@ export async function createFlagAction(formData: FormData) {
   if (!category) {
     redirect(`${formUrl}&error=${encodeURIComponent('Unknown flag type.')}`)
   }
-
-  // Resolve the property's company_id so we satisfy the
-  // is_company_member() check in the INSERT policy. RLS already
-  // scopes the SELECT, so a wrong-company id returns null and we
-  // bounce.
-  const { data: property, error: propErr } = await supabase
-    .from('properties')
-    .select('id, company_id')
-    .eq('id', propertyId)
-    .is('deleted_at', null)
-    .maybeSingle()
 
   if (propErr) {
     console.error('[flags/new] property lookup error:', propErr)

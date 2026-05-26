@@ -7,13 +7,11 @@ import {
   ClipboardCheck,
   Flag,
   Info,
-  Plus,
   type LucideIcon,
 } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
-import { buttonClasses } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
 import { getUserContext } from '@/lib/auth/get-user-context'
@@ -22,7 +20,6 @@ import {
   getFlagCategoryDisplay,
   QUICK_ADD_KEYS,
   severityDisplay,
-  type FlagCategoryKey,
 } from '@/lib/ui/flag-category'
 import { propertyStatusDisplay } from '@/lib/ui/property-status'
 import { relativeTime } from '@/lib/ui/relative-time'
@@ -44,7 +41,28 @@ import { relativeTime } from '@/lib/ui/relative-time'
  *   4. Inspection history — empty placeholder; ships with the
  *      turnover inspection workflow.
  *   5. Property metadata footer for context.
+ *
+ * Performance: the property and flags queries run in parallel
+ * (independent — both keyed by `id` from params). The flags query
+ * embeds flag_categories via PostgREST so we don't need a follow-up
+ * `flag_categories.in(ids)` lookup.
  */
+
+// Loose row shape for the embedded flag_categories relation.
+type FlagRow = {
+  id: string
+  status: string
+  severity: string
+  description: string | null
+  raised_at: string
+  flag_category: { id: string; key: string } | { id: string; key: string }[] | null
+}
+
+function pickCategory(value: FlagRow['flag_category']): { id: string; key: string } | null {
+  if (!value) return null
+  return Array.isArray(value) ? (value[0] ?? null) : value
+}
+
 export default async function PropertyPage({
   params,
   searchParams,
@@ -61,44 +79,44 @@ export default async function PropertyPage({
 
   const supabase = await createClient()
 
-  // RLS scopes this to the user's company. If the property exists in
-  // another company or doesn't exist at all, we get null and 404.
-  const { data: property } = await supabase
+  // Parallel reads. RLS scopes both to the user's company; misses
+  // are silent (null + empty array) so we use a simple notFound on
+  // the property and an empty-state on flags.
+  const propertyPromise = supabase
     .from('properties')
     .select('id, name, address, unit_reference, status, bedrooms, notes, created_at')
     .eq('id', id)
     .is('deleted_at', null)
     .maybeSingle()
 
-  if (!property) notFound()
-
-  // Open flags = anything not in a terminal state.
-  // Per FLAG_AND_ACTION_MODEL.md: 'raised' | 'classified' | 'actioned'
-  // are active; 'closed' | 'no_action' are terminal.
-  const { data: openFlags, error: flagsError } = await supabase
+  const flagsPromise = supabase
     .from('flags')
-    .select('id, flag_category_id, status, severity, description, raised_at')
-    .eq('property_id', property.id)
+    .select(
+      `
+      id,
+      status,
+      severity,
+      description,
+      raised_at,
+      flag_category:flag_categories (
+        id,
+        key
+      )
+      `,
+    )
+    .eq('property_id', id)
     .not('status', 'in', '(closed,no_action)')
     .is('deleted_at', null)
     .order('raised_at', { ascending: false })
     .limit(50)
+    .returns<FlagRow[]>()
 
-  // Pull the category names for any flags we found. flag_categories
-  // is publicly readable (system seeds). Tiny in-memory join.
-  const categoryIds = Array.from(
-    new Set((openFlags ?? []).map((f) => f.flag_category_id))
-  )
-  let categoryByKey: Record<string, { id: string; key: string }> = {}
-  if (categoryIds.length > 0) {
-    const { data: cats } = await supabase
-      .from('flag_categories')
-      .select('id, key')
-      .in('id', categoryIds)
-    if (cats) {
-      categoryByKey = Object.fromEntries(cats.map((c) => [c.id, c]))
-    }
-  }
+  const [
+    { data: property },
+    { data: openFlags, error: flagsError },
+  ] = await Promise.all([propertyPromise, flagsPromise])
+
+  if (!property) notFound()
 
   const status = propertyStatusDisplay(property.status)
   const sub = [property.unit_reference, property.address].filter(Boolean).join(' · ')
@@ -174,6 +192,8 @@ export default async function PropertyPage({
             if (!cat) return null
             const Icon = cat.icon
             const isSafety = key === 'safety_urgent'
+            const tileTitle = cat.tileLabel ?? cat.label
+            const tileSub = cat.tileSubtitle ?? cat.blurb
             return (
               <Link
                 key={key}
@@ -200,7 +220,7 @@ export default async function PropertyPage({
                       : 'text-sm font-semibold text-slate-900'
                   }
                 >
-                  {cat.label}
+                  {tileTitle}
                 </p>
                 <p
                   className={
@@ -209,13 +229,7 @@ export default async function PropertyPage({
                       : 'text-[11px] text-slate-500 mt-0.5 leading-snug'
                   }
                 >
-                  {key === 'guest_damage'
-                    ? 'Most recent guest'
-                    : key === 'inventory_missing'
-                    ? 'Or item damaged'
-                    : key === 'safety_urgent'
-                    ? 'Same-day priority'
-                    : cat.blurb.split(' ').slice(0, 5).join(' ')}
+                  {tileSub}
                 </p>
               </Link>
             )
@@ -249,7 +263,7 @@ export default async function PropertyPage({
         ) : (
           <ul className="space-y-2.5">
             {openFlags.map((flag) => {
-              const categoryRow = categoryByKey[flag.flag_category_id]
+              const categoryRow = pickCategory(flag.flag_category)
               const cat = categoryRow ? getFlagCategoryDisplay(categoryRow.key) : undefined
               const Icon = cat?.icon ?? Flag
               const sev = severityDisplay(flag.severity)
