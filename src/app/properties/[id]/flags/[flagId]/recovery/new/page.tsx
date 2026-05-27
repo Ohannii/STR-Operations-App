@@ -105,8 +105,7 @@ export default async function NewRecoveryTaskPage({
             Start recovery tracking
           </h1>
           <p className="text-sm text-slate-600 mt-0.5">
-            Optional. Use this for WhatsApp follow-up or formal paid/refused tracking on
-            the flag{' '}
+            For WhatsApp follow-up or paid/refused tracking on the flag{' '}
             <span className="font-medium text-slate-900">{cat?.label ?? 'Flag'}</span>{' '}
             in <span className="font-medium text-slate-900">{property.name}</span>.
           </p>

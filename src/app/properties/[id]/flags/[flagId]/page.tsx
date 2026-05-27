@@ -521,17 +521,15 @@ export default async function FlagDetailPage({
         </div>
       </Card>
 
-      {/* Guest recovery (eligibility-gated; optional unless task exists) */}
+      {/* Guest recovery (eligibility-gated; lightweight CTA when no task) */}
       {showRecoverySection ? (
         <section id="recovery" className="mb-8 scroll-mt-20">
           <div className="mb-3">
-            <h2 className="text-lg font-semibold text-slate-900">
-              {recoveryTask ? 'Guest recovery' : 'Optional guest recovery'}
-            </h2>
+            <h2 className="text-lg font-semibold text-slate-900">Guest recovery</h2>
             <p className="text-sm text-slate-600">
               {recoveryTask
-                ? 'Track notification, payment, or refusal. Each step is logged for the audit trail.'
-                : 'Responsibility = Guest is already enough to mark this as guest-chargeable. Only start a recovery task when you need WhatsApp follow-up, paid/refused tracking, or a formal audit trail.'}
+                ? 'Track notification, payment, or refusal. Each step is logged.'
+                : 'For WhatsApp follow-up or paid/refused tracking on this flag.'}
             </p>
           </div>
 
@@ -554,15 +552,9 @@ export default async function FlagDetailPage({
                   <MessageCircle size={16} className="text-slate-700" aria-hidden />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-900">
-                    Recovery tracking is optional
-                  </p>
+                  <p className="text-sm font-medium text-slate-900">No recovery task yet</p>
                   <p className="text-sm text-slate-600 mt-0.5">
-                    For most flags, leaving{' '}
-                    <span className="font-medium text-slate-800">Responsibility = Guest</span>{' '}
-                    is enough — the cost stays captured on the flag itself. Start formal
-                    tracking here only when you want to send a WhatsApp message and log
-                    paid / refused outcomes.
+                    Start one for WhatsApp follow-up or to log paid / refused outcomes.
                   </p>
                 </div>
                 <Link
