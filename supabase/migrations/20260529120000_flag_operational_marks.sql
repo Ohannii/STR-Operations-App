@@ -113,3 +113,89 @@ create policy "members update company operational marks"
 -- 4. Grants
 -- ----------------------------------------------------------------
 grant select, insert, update on public.flag_operational_marks to authenticated;
+
+
+-- ----------------------------------------------------------------
+-- 5. Cross-tenant integrity trigger
+-- ----------------------------------------------------------------
+-- Belt-and-braces guard: flag_operational_marks.company_id MUST match
+-- the parent flag's company_id. The RLS INSERT policy already requires
+-- the caller to be a member of company_id, but it does NOT verify that
+-- flag_id belongs to the same company. Without this trigger, a buggy
+-- client could supply company_id = (user's own company) plus flag_id
+-- pointing at a flag in a different company, and the INSERT would
+-- succeed.
+--
+-- The trigger runs on every INSERT and UPDATE regardless of role,
+-- so even service_role cannot bypass it without disabling the trigger
+-- itself.
+create or replace function public.flag_operational_marks_check_company()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_flag_company_id uuid;
+begin
+  select company_id into v_flag_company_id
+  from public.flags
+  where id = NEW.flag_id;
+
+  if v_flag_company_id is null then
+    raise exception 'flag_operational_marks: parent flag % not found',
+      NEW.flag_id;
+  end if;
+
+  if NEW.company_id is distinct from v_flag_company_id then
+    raise exception
+      'flag_operational_marks: company_id (%) must match parent flag company_id (%)',
+      NEW.company_id, v_flag_company_id;
+  end if;
+
+  return NEW;
+end;
+$$;
+
+create trigger trg_flag_operational_marks_check_company
+  before insert or update on public.flag_operational_marks
+  for each row execute function public.flag_operational_marks_check_company();
+
+
+-- ----------------------------------------------------------------
+-- 6. Note on the `kind` column — deliberate app-level vocabulary
+-- ----------------------------------------------------------------
+-- The `kind` column has NO database-level CHECK constraint. This is
+-- by design:
+--
+--   * The vocabulary lives in docs/CHIP_VOCABULARY.md and is mirrored
+--     in src/lib/ui/chip-vocabulary.ts. Both are committed to git so
+--     they evolve together with the rest of the app.
+--
+--   * Adding a new chip kind requires only updating the doc + the UI
+--     code -- NO database migration. This lets the vocabulary evolve
+--     additively without schema churn.
+--
+--   * Unknown `kind` values inserted by code that's out of sync with
+--     the vocabulary are NOT catastrophic: the UI's getChipDisplay()
+--     returns undefined for unknown kinds and the chip simply doesn't
+--     render. RLS still enforces company scope on inserts, so a stray
+--     kind is bounded to the inserter's company. Blast radius is "a
+--     row sits in the DB invisible in the UI" -- not a security issue.
+--
+-- If the vocabulary stabilises and we want stricter validation, the
+-- migration that adds it should look like:
+--
+--   alter table public.flag_operational_marks
+--     add constraint flag_operational_marks_kind_check
+--     check (kind in (
+--       'asana_pending', 'asana_logged',
+--       'guest_notify_pending', 'guest_notified',
+--       'owner_notify_pending', 'owner_notified',
+--       'maintenance_pending', 'maintenance_assigned', 'maintenance_done',
+--       'replacement_needed', 'replaced',
+--       'awaiting_owner_approval', 'owner_approved',
+--       'needs_reclean'
+--     ));
+--
+-- That migration must also include data backfill / cleanup for any
+-- non-conforming rows that exist by the time it ships.
