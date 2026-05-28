@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
 import {
   ArrowLeft,
+  Check,
   Flag as FlagIcon,
   MessageCircle,
   MessageSquare,
@@ -18,6 +19,7 @@ import { Field } from '@/components/ui/input'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { createClient } from '@/lib/supabase/server'
 import {
+  CHIP_WORKFLOW_GROUPS,
   eligibleChipKinds,
   getChipDisplay,
 } from '@/lib/ui/chip-vocabulary'
@@ -565,47 +567,100 @@ export default async function FlagDetailPage({
           "where is this issue now?" Each chip is a toggle: click to set,
           click again to clear. Predecessor chips auto-clear when a
           successor is set (e.g., setting Maintenance done clears
-          Maintenance pending + Maintenance assigned). Each toggle goes
-          through its own one-button form posting to toggleFlagMarkAction.
+          Maintenance pending + Maintenance assigned).
+
+          Workflow grouping (Asana / Guest notification / Owner notification
+          / Maintenance / Replacement / Owner approval / Cleaning) gives the
+          eye anchor points so the chip set scans fast on mobile. Groups
+          with no eligible chips for this flag are hidden entirely.
+
+          The "Mark resolved" button at the bottom is a one-tap shortcut
+          that submits to updateFlagAction with status=closed — same path
+          as the Triage form's status radio, but without the multi-step
+          form interaction. Only shown when the flag isn't already terminal.
+
           See docs/CHIP_VOCABULARY.md for the vocabulary. */}
       <section id="operational" className="mb-8 scroll-mt-20">
         <div className="mb-3">
           <h2 className="text-lg font-semibold text-slate-900">Operational status</h2>
           <p className="text-sm text-slate-600">
-            Mark progress on this flag. Each chip is independent; tap to set, tap again to clear.
+            Mark progress on this flag. Each chip is independent; tap to set,
+            tap again to clear. Predecessors auto-clear when you advance the workflow.
           </p>
         </div>
         <Card>
-          <div className="p-5">
-            <div className="flex flex-wrap gap-2">
-              {chipKindsForFlag.map((kind) => {
-                const chip = getChipDisplay(kind)
-                if (!chip) return null
-                const isActive = activeChipKinds.has(kind)
-                return (
-                  <form
-                    key={kind}
-                    action={toggleFlagMarkAction}
-                    className="contents"
+          <div className="p-5 space-y-5">
+            {CHIP_WORKFLOW_GROUPS.map((group) => {
+              // Only render chips eligible for this flag's context.
+              const visibleKinds = group.kinds.filter((k) =>
+                chipKindsForFlag.includes(k),
+              )
+              if (visibleKinds.length === 0) return null
+              return (
+                <div key={group.id}>
+                  <h3 className="text-[10px] font-semibold text-slate-600 uppercase tracking-wider mb-2">
+                    {group.label}
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    {visibleKinds.map((kind) => {
+                      const chip = getChipDisplay(kind)
+                      if (!chip) return null
+                      const isActive = activeChipKinds.has(kind)
+                      return (
+                        <form
+                          key={kind}
+                          action={toggleFlagMarkAction}
+                          className="contents"
+                        >
+                          <input type="hidden" name="property_id" value={property.id} />
+                          <input type="hidden" name="flag_id" value={flag.id} />
+                          <input type="hidden" name="kind" value={kind} />
+                          <ToggleChip
+                            active={isActive}
+                            label={chip.label}
+                            tone={chip.tone}
+                            icon={chip.icon}
+                          />
+                        </form>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })}
+
+            {/* Mark resolved — one-tap closeout. Only when flag isn't
+                already terminal. Submits via the existing updateFlagAction
+                (preserves severity + responsibility, sets status=closed).
+                If the user needs the "No action" pathway with a reason,
+                the Triage form's status radio handles that. */}
+            {!isClosed ? (
+              <div className="pt-4 border-t border-slate-100">
+                <form action={updateFlagAction} className="flex">
+                  <input type="hidden" name="property_id" value={property.id} />
+                  <input type="hidden" name="flag_id" value={flag.id} />
+                  <input type="hidden" name="status" value="closed" />
+                  <input type="hidden" name="severity" value={flag.severity} />
+                  <input
+                    type="hidden"
+                    name="chargeable_party_decision"
+                    value={flag.chargeable_party_decision ?? 'pending_decision'}
+                  />
+                  <input type="hidden" name="no_action_reason" value="" />
+                  <button
+                    type="submit"
+                    className="inline-flex items-center justify-center gap-2 w-full h-11 px-5 text-sm font-semibold rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 border border-emerald-600 shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2"
                   >
-                    <input type="hidden" name="property_id" value={property.id} />
-                    <input type="hidden" name="flag_id" value={flag.id} />
-                    <input type="hidden" name="kind" value={kind} />
-                    <ToggleChip
-                      active={isActive}
-                      label={chip.label}
-                      tone={chip.tone}
-                      icon={chip.icon}
-                    />
-                  </form>
-                )
-              })}
-            </div>
-            <p className="mt-3 text-xs text-slate-500">
-              Chips are independent of the flag&rsquo;s lifecycle status above.
-              They track the operational side: Asana, notifications, maintenance,
-              replacements, owner approval.
-            </p>
+                    <Check size={16} aria-hidden />
+                    Mark resolved
+                  </button>
+                </form>
+                <p className="mt-2 text-[11px] text-slate-500 text-center">
+                  Closes the flag with the current responsibility and severity.
+                  Use the Triage form above for &ldquo;No action&rdquo; with a reason.
+                </p>
+              </div>
+            ) : null}
           </div>
         </Card>
       </section>

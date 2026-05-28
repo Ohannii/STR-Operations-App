@@ -307,3 +307,59 @@ export function eligibleChipKinds(context: {
 }): ChipKind[] {
   return ALL_CHIP_KINDS.filter((k) => isChipEligible(k, context))
 }
+
+/**
+ * Workflow groupings for the flag detail page. The Operational Status
+ * card renders one sub-heading per group, with the group's chips
+ * underneath. A group is hidden entirely if none of its chips are
+ * eligible for the current flag (e.g., the Cleaning group hides for
+ * a Maintenance flag).
+ *
+ * Replaces the flat 14-chip row that was scan-heavy. Workflow grouping
+ * lets the eye anchor on concepts (Asana / Notifications / Maintenance /
+ * etc.) rather than a wall of chips. Mirrors the Replit prototype's
+ * child-actions layout without overhauling the data model.
+ */
+export type ChipWorkflowGroup = {
+  id: string
+  label: string
+  kinds: ChipKind[]
+}
+
+export const CHIP_WORKFLOW_GROUPS: ChipWorkflowGroup[] = [
+  {
+    id: 'asana',
+    label: 'Asana',
+    kinds: ['asana_pending', 'asana_logged'],
+  },
+  {
+    id: 'guest_notification',
+    label: 'Guest notification',
+    kinds: ['guest_notify_pending', 'guest_notified'],
+  },
+  {
+    id: 'owner_notification',
+    label: 'Owner notification',
+    kinds: ['owner_notify_pending', 'owner_notified'],
+  },
+  {
+    id: 'maintenance',
+    label: 'Maintenance',
+    kinds: ['maintenance_pending', 'maintenance_assigned', 'maintenance_done'],
+  },
+  {
+    id: 'replacement',
+    label: 'Replacement',
+    kinds: ['replacement_needed', 'replaced'],
+  },
+  {
+    id: 'owner_approval',
+    label: 'Owner approval',
+    kinds: ['awaiting_owner_approval', 'owner_approved'],
+  },
+  {
+    id: 'cleaning',
+    label: 'Cleaning',
+    kinds: ['needs_reclean'],
+  },
+]
