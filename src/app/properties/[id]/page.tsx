@@ -13,9 +13,11 @@ import { AppShell } from '@/components/app-shell'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
+import { StaticChip } from '@/components/ui/chip'
 import { EmptyState } from '@/components/ui/empty-state'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { createClient } from '@/lib/supabase/server'
+import { getChipDisplay, type ChipKind } from '@/lib/ui/chip-vocabulary'
 import {
   getFlagCategoryDisplay,
   QUICK_ADD_KEYS,
@@ -117,6 +119,29 @@ export default async function PropertyPage({
   ] = await Promise.all([propertyPromise, flagsPromise])
 
   if (!property) notFound()
+
+  // Operational chip marks for the open-flag cards (Session 6).
+  // Two-phase: we need the flag IDs from the first query before we
+  // can filter marks. Acceptable extra round-trip; rendering the chip
+  // row on each card is worth the visibility win.
+  const openFlagIds = (openFlags ?? []).map((f) => f.id)
+  let activeMarksByFlagId: Record<string, ChipKind[]> = {}
+  if (openFlagIds.length > 0) {
+    const { data: marks } = await supabase
+      .from('flag_operational_marks')
+      .select('flag_id, kind')
+      .in('flag_id', openFlagIds)
+      .is('cleared_at', null)
+      .returns<{ flag_id: string; kind: string }[]>()
+    activeMarksByFlagId = (marks ?? []).reduce<Record<string, ChipKind[]>>(
+      (acc, m) => {
+        if (!acc[m.flag_id]) acc[m.flag_id] = []
+        acc[m.flag_id].push(m.kind as ChipKind)
+        return acc
+      },
+      {},
+    )
+  }
 
   const status = propertyStatusDisplay(property.status)
   const sub = [property.unit_reference, property.address].filter(Boolean).join(' · ')
@@ -267,6 +292,7 @@ export default async function PropertyPage({
               const cat = categoryRow ? getFlagCategoryDisplay(categoryRow.key) : undefined
               const Icon = cat?.icon ?? Flag
               const sev = severityDisplay(flag.severity)
+              const activeChips = activeMarksByFlagId[flag.id] ?? []
               return (
                 <li key={flag.id}>
                   <Link
@@ -298,6 +324,22 @@ export default async function PropertyPage({
                           ) : (
                             <p className="text-sm text-slate-400 italic">No description</p>
                           )}
+                          {activeChips.length > 0 ? (
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              {activeChips.map((kind) => {
+                                const chip = getChipDisplay(kind)
+                                if (!chip) return null
+                                return (
+                                  <StaticChip
+                                    key={kind}
+                                    label={chip.label}
+                                    tone={chip.tone}
+                                    icon={chip.icon}
+                                  />
+                                )
+                              })}
+                            </div>
+                          ) : null}
                           <p className="text-[11px] text-slate-500 mt-1.5">
                             Raised {relativeTime(flag.raised_at)}
                           </p>

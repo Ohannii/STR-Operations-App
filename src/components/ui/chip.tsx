@@ -1,3 +1,5 @@
+import { Check, type LucideIcon } from 'lucide-react'
+import type { ButtonHTMLAttributes } from 'react'
 import { cn } from '@/lib/ui/cn'
 
 export type ChipTone = 'slate' | 'red' | 'amber' | 'sky' | 'blue' | 'emerald' | 'orange'
@@ -64,5 +66,97 @@ export function RadioChip({
         {label}
       </span>
     </label>
+  )
+}
+
+// ============================================================
+// ToggleChip — used by the operational-marks system (Session 6).
+// ============================================================
+//
+// Renders as an HTML <button>, intended to live inside a single-button
+// <form> that posts to a server action. The visual treatment:
+//   - INACTIVE (chip not set): outlined, slate text, mobile-friendly
+//     touch target, low visual weight.
+//   - ACTIVE (chip is set on the flag): solid color matching the
+//     chip's semantic tone, white text, small Check icon.
+//
+// Click toggles state via the server action; this component does not
+// manage state itself.
+
+const TOGGLE_ACTIVE_TONE: Record<ChipTone, string> = {
+  slate:   'bg-slate-900 border-slate-900 text-white',
+  red:     'bg-red-600 border-red-600 text-white',
+  amber:   'bg-amber-500 border-amber-500 text-white',
+  sky:     'bg-sky-600 border-sky-600 text-white',
+  blue:    'bg-blue-600 border-blue-600 text-white',
+  emerald: 'bg-emerald-600 border-emerald-600 text-white',
+  orange:  'bg-orange-600 border-orange-600 text-white',
+}
+
+export interface ToggleChipProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  active: boolean
+  label: string
+  tone?: ChipTone
+  icon?: LucideIcon
+}
+
+export function ToggleChip({
+  active,
+  label,
+  tone = 'slate',
+  icon: Icon,
+  className,
+  ...rest
+}: ToggleChipProps) {
+  return (
+    <button
+      type="submit"
+      aria-pressed={active}
+      className={cn(
+        'inline-flex items-center gap-1.5 px-3 h-9 rounded-md text-sm font-medium',
+        'border transition-colors select-none',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2',
+        'disabled:cursor-not-allowed disabled:opacity-50',
+        active
+          ? TOGGLE_ACTIVE_TONE[tone]
+          : 'bg-white border-slate-300 text-slate-700 hover:border-slate-400 hover:bg-slate-50',
+        className,
+      )}
+      {...rest}
+    >
+      {Icon ? <Icon size={14} aria-hidden /> : null}
+      <span>{label}</span>
+      {active ? <Check size={12} aria-hidden /> : null}
+    </button>
+  )
+}
+
+// ============================================================
+// StaticChip — read-only chip badge for compact rendering inside
+// flag cards on the Action Centre. No click, no form.
+// ============================================================
+
+export function StaticChip({
+  label,
+  tone = 'slate',
+  icon: Icon,
+  className,
+}: {
+  label: string
+  tone?: ChipTone
+  icon?: LucideIcon
+  className?: string
+}) {
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium',
+        TOGGLE_ACTIVE_TONE[tone],
+        className,
+      )}
+    >
+      {Icon ? <Icon size={10} aria-hidden /> : null}
+      {label}
+    </span>
   )
 }

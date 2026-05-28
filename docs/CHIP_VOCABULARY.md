@@ -49,57 +49,89 @@ a data backfill plan, so the vocabulary below should evolve additively.
 
 ## Initial chip kinds (Session 6 first cut)
 
-The first batch ships ten chips covering the most common operational state.
-Sessions 7+ may extend this list (e.g., inventory item-level marks, OTA
-claim status). Sessions never remove a kind without an explicit deprecation
-plan.
+The first batch ships **fourteen chips** covering the most common
+operational state. Most workflows use a **pending → completed** pair
+so staff can actively mark intent ("this needs Asana logging")
+rather than letting absence-of-completed-chip do the job — because
+absence is not a deliberate operational state and would muddle
+dashboard counts. The two exceptions are documented under the table.
+
+Sessions 7+ may extend this list (e.g., inventory item-level marks,
+OTA claim status). Sessions never remove a kind without an explicit
+deprecation plan.
+
+### Workflow pairs (pending → completed)
+
+| Pending kind | Completed kind | Completed `replaces` |
+|---|---|---|
+| `asana_pending` | `asana_logged` | `['asana_pending']` |
+| `guest_notify_pending` | `guest_notified` | `['guest_notify_pending']` |
+| `owner_notify_pending` | `owner_notified` | `['owner_notify_pending']` |
+| `maintenance_pending` | `maintenance_assigned` → `maintenance_done` | `assigned` replaces `['pending']`; `done` replaces `['pending', 'assigned']` |
+| `replacement_needed` | `replaced` | `['replacement_needed']` |
+| `awaiting_owner_approval` | `owner_approved` | `['awaiting_owner_approval']` |
+
+### Single-state chips
+
+| `kind` | When it's set |
+|---|---|
+| `needs_reclean` | Cleaning team has been notified the area needs re-cleaning. Toggle off when the reclean is done. Cleaning is fast / same-day so a separate `recleaned` companion is not needed in v1.0. |
+
+### Full vocabulary with display + metadata shapes
 
 | `kind` | Display label | When it's set | Metadata shape |
 |---|---|---|---|
-| `guest_notified` | "Guest notified" | Manager has sent the guest a message (WhatsApp, email, or other) about the flag. Replaces the recovery-task workflow for 90% of cases. | `{ method: 'whatsapp' \| 'email' \| 'sms' \| 'phone' \| 'in_person', whatsapp_url?: string }` |
-| `owner_notified` | "Owner notified" | Owner has been told about the issue (verbally, WhatsApp, email). | `{ method: 'whatsapp' \| 'email' \| 'sms' \| 'phone' \| 'in_person' }` |
-| `asana_logged` | "Asana logged" | A corresponding task has been created in Asana for the company's existing workflow tooling. | `{ url?: string }` |
-| `maintenance_pending` | "Maintenance pending" | A maintenance job is needed but not yet assigned. | `{ }` (none) |
-| `maintenance_assigned` | "Maintenance assigned" | A maintenance person / vendor has been booked. Replaces `maintenance_pending`. | `{ assignee?: string, scheduled_for?: string (ISO date) }` |
-| `maintenance_done` | "Maintenance done" | The maintenance work is complete and verified. | `{ done_at?: string (ISO date), completed_by?: string }` |
-| `replaced` | "Replaced" | An inventory item flagged as missing or damaged has been replaced. Becomes part of the apartment's replacement history. | `{ replaced_at?: string, cost?: number, vendor?: string, item_label?: string }` |
+| `asana_pending` | "Asana pending" | Staff deliberately mark that this flag needs to be logged in Asana. Without this chip, the flag is NOT counted in "Ready for Asana" dashboard tiles. | `{ }` (none) |
+| `asana_logged` | "Asana logged" | A corresponding task has been created in Asana. Clears `asana_pending`. | `{ url?: string }` |
+| `guest_notify_pending` | "Guest notify pending" | Staff have decided the guest needs to be notified about this flag but the message hasn't been sent yet. Within the 24-hour guest damage window, this surfaces what's at risk. | `{ }` (none) |
+| `guest_notified` | "Guest notified" | The guest has been messaged (WhatsApp, email, in-person). Clears `guest_notify_pending`. Replaces the heavy recovery-task workflow for 90% of cases. | `{ method?: 'whatsapp' \| 'email' \| 'sms' \| 'phone' \| 'in_person', whatsapp_url?: string }` |
+| `owner_notify_pending` | "Owner notify pending" | Staff have decided the owner needs to be told about this flag but the message hasn't been sent yet. | `{ }` (none) |
+| `owner_notified` | "Owner notified" | Owner has been told (verbally, WhatsApp, email). Clears `owner_notify_pending`. | `{ method?: 'whatsapp' \| 'email' \| 'sms' \| 'phone' \| 'in_person' }` |
+| `maintenance_pending` | "Maintenance pending" | A maintenance job is needed but not yet assigned to a person/vendor. | `{ }` (none) |
+| `maintenance_assigned` | "Maintenance assigned" | A maintenance person / vendor has been booked. Clears `maintenance_pending`. | `{ assignee?: string, scheduled_for?: string (ISO date) }` |
+| `maintenance_done` | "Maintenance done" | The maintenance work is complete and verified. Clears both `maintenance_pending` and `maintenance_assigned`. | `{ done_at?: string (ISO date), completed_by?: string }` |
+| `replacement_needed` | "Replacement needed" | An item needs replacing (missing / damaged / broken-beyond-repair). | `{ }` (none) |
+| `replaced` | "Replaced" | The item has been replaced. Becomes part of the apartment's replacement history. Clears `replacement_needed`. | `{ replaced_at?: string, cost?: number, vendor?: string, item_label?: string }` |
 | `awaiting_owner_approval` | "Owner approval pending" | The cost exceeds an internal limit and needs the owner's sign-off before proceeding. | `{ amount?: number, requested_at?: string }` |
-| `owner_approved` | "Owner approved" | The owner has signed off on the cost (verbally, in writing, via WhatsApp). Replaces `awaiting_owner_approval`. | `{ approved_at?: string, method?: string, evidence_path?: string }` |
-| `needs_reclean` | "Needs reclean" | Cleaning team has been notified that the area needs re-cleaning before this flag closes. | `{ notified_at?: string }` |
+| `owner_approved` | "Owner approved" | The owner has signed off on the cost. Clears `awaiting_owner_approval`. | `{ approved_at?: string, method?: string, evidence_path?: string }` |
+| `needs_reclean` | "Needs reclean" | Cleaning team has been notified that the area needs re-cleaning. | `{ notified_at?: string }` |
 
 Display labels are operator-grade plain English (matching the
 operator-grade flag-category labels established in Session 3 polish).
-The icons each chip uses live in the UI code (`src/lib/ui/chip-vocabulary.ts`
-when Session 6 ships), not here — this file documents semantics only.
+Icons + tones live in `src/lib/ui/chip-vocabulary.ts`; this file
+documents semantics only. All pending chips share Hourglass icon +
+amber tone for visual consistency; completed chips inherit the
+workflow's signature icon.
 
 ---
 
 ## Compositions worth knowing
 
-Some chip patterns chain together to express common workflow shapes.
-The app does not enforce these chains — they are conventions used by
-the dashboard summary cards (Session 7) to count operational state:
+These are the read-side derivations the dashboard summary cards
+(Session 7) will use. The app does not enforce these chains; they are
+conventions for counting operational state.
 
-- **Cost recovery pending:**
-  Flag has `chargeable_party_decision = 'guest'`
-  AND `guest_notified` is active
-  AND no `cost_recovered` chip yet *(reserved future kind)*
+Because pending and completed are now explicit chip pairs, "Ready for"
+and "X pending" counts read straight from chip presence — no
+absence-as-state heuristics.
 
-- **Ready for Asana:**
-  Flag status is `classified` or `actioned`
-  AND `asana_logged` is NOT active
-  AND `no_action` flag-status is not set
+- **Ready for Asana:** flags with active `asana_pending` chip.
+- **Asana logged this week:** flags with active `asana_logged` chip
+  marked in the last 7 days.
+- **Guest notification pending:** flags with active
+  `guest_notify_pending` chip.
+- **Owner notification pending:** flags with active
+  `owner_notify_pending` chip.
+- **Owner approval blocking:** flags with active
+  `awaiting_owner_approval` chip.
+- **Maintenance in flight:** flags with active `maintenance_pending`
+  OR `maintenance_assigned` chip.
+- **Needs replacement:** flags with active `replacement_needed` chip.
 
-- **Owner approval blocking:**
-  `awaiting_owner_approval` is active
-  AND `owner_approved` is NOT active.
-
-- **Maintenance in flight:**
-  `maintenance_pending` OR `maintenance_assigned` is active
-  AND `maintenance_done` is NOT active.
-
-These are read-side derivations, not separate state. The dashboard
-summary tiles count flags matching each composition.
+These are all read-side derivations, not separate state. Each is a
+single chip-active filter — no absence checks, no composite logic.
+That keeps the dashboard tiles cheap (single index-scan per tile) and
+the meaning unambiguous.
 
 ---
 
