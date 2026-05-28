@@ -737,6 +737,65 @@ For owner viewers:
 
 ---
 
+## Added in v1.0 post-merge (Session 6 — operational marks)
+
+### `flag_operational_marks`
+
+Lightweight operational state attached to flags. Each row represents one
+chip toggle. Full vocabulary + semantics in `CHIP_VOCABULARY.md`.
+
+```
+id           uuid pk default gen_random_uuid()
+company_id   uuid not null fk → companies(id) on delete cascade
+flag_id      uuid not null fk → flags(id) on delete cascade
+kind         text not null               -- application-controlled string
+                                          -- (see CHIP_VOCABULARY.md)
+marked_at    timestamptz not null default now()
+marked_by    uuid not null fk → profiles(id)
+notes        text null
+metadata     jsonb null                  -- chip-specific extra fields
+                                          -- (assignee, scheduled date,
+                                          --  Asana URL, amount, etc.)
+cleared_at   timestamptz null            -- null = currently active mark
+cleared_by   uuid null fk → profiles(id)
+created_at   timestamptz not null default now()
+updated_at   timestamptz not null default now()
+```
+
+**Partial unique index — critical:**
+
+```sql
+create unique index flag_operational_marks_one_active_per_kind
+  on public.flag_operational_marks (flag_id, kind)
+  where cleared_at is null;
+```
+
+Not a plain `UNIQUE (flag_id, kind, cleared_at)` constraint, because
+PostgreSQL treats NULL as distinct in unique constraints — that would
+let multiple active marks slip through (this is the same NULL-distinct
+issue that bit the `flag_categories` constraint earlier; we used
+`UNIQUE NULLS NOT DISTINCT` there, partial index here is cleaner).
+
+The partial index expresses exactly what we mean: "at most one active
+mark per (flag, kind)". Historical / cleared rows are unconstrained
+and can stack freely.
+
+**Indexes:**
+
+- `idx_flag_operational_marks_flag_id` for "all marks for this flag" lookups
+- `idx_flag_operational_marks_company_id` for tenant scope
+- The partial unique index above also serves as a fast lookup
+  for active marks by (flag_id, kind)
+
+**RLS / grants pattern** (defined in the Session 6 migration):
+
+- SELECT for company members
+- INSERT for company members where `marked_by = auth.uid()`
+- UPDATE for company members (to set `cleared_at` when toggling off)
+- No DELETE — append-only history pattern
+
+---
+
 ## Things deliberately deferred
 
 - Multi-currency support (single-currency MVP — ZAR).
@@ -749,3 +808,7 @@ For owner viewers:
 - OTA evidence pack exports (v1.5+ presentation layer; data is in place from v1.0).
 - Real-time push notifications.
 - AI-assisted features (see `AI_FEATURE_ROADMAP.md`).
+- Asset catalog / asset instances split (research doc recommends this;
+  we keep the single `inventory_items` per-property table for v1.0,
+  promote to catalog+instances in v1.5+ if commercial scale needs it).
+- Native mobile (Expo React Native) for the inspection app (post v1.0).

@@ -1,6 +1,134 @@
 # TASK_LOG.md
 
-## Current objective
+## Current state — regroup 2026-05-28
+
+**v1.0 Build Sessions 1-5 are merged.** App now has the full inspection-loop
+foundation minus the inspection workflow itself: auth, onboarding, dashboard,
+property management, Apartment Action Centre, flag raise / triage / activity
+log, and optional formal guest recovery tracking.
+
+**Branch:** `main`, clean, up to date with `origin/main`.
+**Migrations applied to staging:** 10 (extensions, core schema, indexes, system
+seeds, RLS enable, auth + RLS, table grants, flag UPDATE + audit_events RLS,
+guest recovery RLS + RPC). Production project does not exist.
+
+**Next session:** Session 6 — operational marks (chips). See revised roadmap
+below.
+
+## v1.0 Build progress (Sessions 1-5) — chronological summary
+
+Each session shipped as its own PR with the same checkpoint pattern: branch →
+write → `pnpm build` → push → dry-run `db push` → real `db push` → smoke →
+merge.
+
+1. **Session 1 — Schema foundation + auth wiring + minimal RLS (PRs #5, #6).**
+   32 tables created in five migrations (extensions, core schema, indexes,
+   system seeds, RLS enable). `handle_new_user()` trigger mirrors signups to
+   `profiles`. `create_company_with_admin()` RPC solves the membership
+   bootstrap deadlock atomically. 13 RLS policies for the minimum dashboard
+   read path. System seeds: 11 role keys + 11 flag categories.
+2. **Session 2 — Table grants (PR #7).** Supabase does not auto-grant
+   DML privileges to `anon`/`authenticated`. Added explicit SELECT (anon +
+   authenticated) on `roles` and `flag_categories`; SELECT + INSERT/UPDATE
+   on the 6 tables the v1.0 UI touches. Fixed the "permission denied" bug
+   that blocked the first smoke test.
+3. **Session 3 — First visible screens + Apartment Action Centre + UI kit
+   (PRs #7-#8).** `/login` `/signup` `/onboard` `/dashboard` `/properties/new`
+   `/properties/[id]` `/properties/[id]/flags/new`. Component kit (Button,
+   Card, Input, Badge, Alert, EmptyState, RadioChip), AppShell + AuthShell,
+   `clsx` + `lucide-react` added. Operator-grade labels for flag categories.
+   Per-property Apartment Action Centre with quick-add tiles for raising
+   flags. Performance pass: parallel queries + PostgREST embeds.
+4. **Session 4 — Flag triage + activity log (PR #9).** `/properties/[id]/flags/[flagId]`
+   detail page. Status / severity / responsibility chips, close-with-reason,
+   reopen. Vertical activity timeline combining lifecycle events from
+   `flags.*_at` columns with `audit_events` (notes + status changes +
+   reopens). Migration added UPDATE on `flags` and SELECT + INSERT on
+   `audit_events`.
+5. **Session 5 — Optional guest recovery (PR #10).** `guest_recovery_tasks`
+   + `recovery_attempts` tables + `create_recovery_task_from_flag()` RPC
+   + `/recovery/new` form + status-dependent action buttons on the flag
+   detail page. Migration added SELECT for `stays`, SELECT/INSERT/UPDATE
+   for `guest_recovery_tasks`, SELECT/INSERT for `recovery_attempts`.
+   Honest WhatsApp template ("Evidence can be shared on request",
+   not "Photos attached"). Defensive money rounding to defeat the
+   step="0.01" + IEEE-754 R200 → R199.98 browser bug. **Section
+   ultimately demoted before merge to a small inline link**, because
+   chips (Session 6) are the right daily-driver surface — recovery
+   tracking is the rare formal-escalation path, not the default.
+
+## Why Session 5's UI was demoted
+
+The Replit prototype + the founder's actual operational reality
+(Asana already handles recovery; the app's job is apartment status and
+operational chips) made clear that creating a formal recovery task is
+the wrong default for 90% of guest-related flags. The `guest_recovery_tasks`
+data layer is still valuable for genuine escalation, but the visible
+UI surface gives the impression that recovery is the next action on
+every guest-eligible flag — wrong message. Pre-merge demotion swapped
+the card+button for a small grey inline link that's discoverable but
+not promoted.
+
+## v1.0 Product bar (locked)
+
+> Anni walks into Test Unit 1 after a guest checkout, opens the app on her
+> phone, runs a turnover inspection with photo evidence per section, flags
+> 3 issues, marks chips like *Guest Notify Pending*, *Asana Pending*,
+> *Maintenance Assigned*, and the dashboard shows clean operational state
+> for the apartment. The whole thing takes 8 minutes.
+
+This is the user-visible success criterion for v1.0. Inspections, photo
+evidence, and operational chips are the three load-bearing concepts.
+
+## Real-world inspection workflow (locked context for Session 10)
+
+Sessions 6-9 set up the data + UI scaffolding; Session 10 builds the
+inspection workflow itself. The inspection flow is more complex than
+the doc previously implied:
+
+- Guest checks out. Cleaners go in and clean.
+- Inspection often happens in **multiple passes**: damage/inventory pass
+  may start before cleaners finish (because of the 24-hour guest
+  notification window for damages), with the cleanliness/pre-arrival-proof
+  pass following after cleaners sign off.
+- Inspections must **pause and resume** between passes.
+- Multiple staff may contribute (inspector + cleaning supervisor).
+- **Pre-arrival evidence pack** = many photos (~75 per turnover), retained
+  for the operational window only (roughly 2-4 weeks after the next guest
+  checks out unless attached to an open dispute or audit).
+- Inventory differs per apartment — standard templates with per-apartment
+  customisation, not a global catalog.
+- Scale target: 500+ check-outs/month per company; this app must also
+  serve as SaaS to other PMS companies on the same multi-tenant schema.
+
+## Revised roadmap (Sessions 6-12)
+
+| # | Branch | Scope | Schema? |
+|---|---|---|---|
+| 6 | `build/v1-0-operational-marks` | `flag_operational_marks` table + chip UI on flag cards + flag detail. 10 initial chip kinds (see `CHIP_VOCABULARY.md`). | Yes — one new table |
+| 7 | `build/v1-0-action-centre-grouping` | Group open flags by category on Action Centre. Dashboard summary cards (Ready for Asana, Owner Approval Pending, Open Recovery, Overdue, Inspections In Progress). | No |
+| 8 | `build/v1-0-evidence-camera` | Supabase Storage RLS, photo capture (file input + camera), client-side compression, pre-generated thumbnails via Edge Function. Attach photos to flags (validation scope; bulk capture for inspections lands in Session 10). | Storage policies; no table schema |
+| 9 | `build/v1-0-inventory-and-edit` | Inventory items UI per property (add / edit / "mark replaced" chip); replacement history view; property metadata edit. | Possibly small extensions |
+| 10 | `build/v1-0-turnover-inspection` | Guided turnover inspection (multi-pass, pause/resume, section-based Mark-All-OK, photo evidence per item, pre-arrival proof bundle, post-stay verification, inspection history view). PDF/HTML export. The biggest session in v1.0. | Possibly `inspection_section_states` table |
+| 11 | `build/v1-0-owner-monthly` | Owner-chargeable accumulation per property + monthly summary preview + export. | No |
+| 12 | `build/v1-0-asana-export` | "Ready for Asana" view → text/PDF export for paste; auto-set `asana_logged` chip on export. | No |
+
+After Session 12 v1.0 is field-test-ready on staging.
+
+## Architectural decisions (locked 2026-05-28)
+
+1. **Stay Next.js web for v1.0**, responsive PWA + camera input. Native
+   Expo React Native is post-v1.0 (v1.5+).
+2. **Supabase Storage for v1.0**, with pre-generated thumbnails. Cloudflare
+   R2 is the documented migration target if cost demands it.
+3. **Chips primary, recovery secondary.** Recovery task workflow exists for
+   genuine escalation but is hidden behind a small inline link until used.
+4. **`inventory_items` per-property** (existing) — no asset_catalog +
+   asset_instances split yet. Promote in v1.5 if commercial scale needs it.
+
+---
+
+## Original objective (kept for history)
 
 **Supabase staging connection complete (2026-05-24).** The skeleton is connected to Supabase staging (`str-ops-staging`, eu-west-2, London). Health check at `/api/health` confirmed reachable. PR #3 merged to main. No schema, no auth, no data — verified connection only.
 

@@ -1,6 +1,163 @@
 # CHANGELOG.md
 
-## 2026-05-24 — Supabase staging connection verified (PR #3)
+## 2026-05-28 — Regroup + docs catch-up
+
+Docs PR that consolidates the planning state after five v1.0 product
+build sessions shipped. Tight scope: TASK_LOG catch-up + revised
+Sessions 6-12 roadmap, CHANGELOG entries for PRs #5-#10, new
+`CHIP_VOCABULARY.md` (single source of truth for Session 6's
+operational marks), `flag_operational_marks` table spec appended to
+`DATABASE_SCHEMA_PLAN.md`, cost-and-scale rules locked into
+`PHOTO_AND_EVIDENCE_SYSTEM.md` (pre-generated thumbnails, no
+per-request transforms, TUS resumable uploads, retention policy,
+separate storage backup, R2 migration path). Five files touched.
+No code, no schema migration, no deploy.
+
+Key roadmap pivot: Session 6 is operational marks/chips (not Evidence
+Camera). The chip layer was the missing default UI surface; recovery
+task work from Session 5 stays available as the rare formal-escalation
+path but the visible CTA was demoted before merge. Architecture
+decisions locked: stay Next.js web for v1.0 (native Expo post-v1.0),
+Supabase Storage for v1.0 (R2 path open), inventory_items per-property
+(no asset_catalog split yet).
+
+---
+
+## 2026-05-28 — Session 5: optional guest recovery + WhatsApp helper (PR #10)
+
+Adds the optional formal guest recovery workflow:
+- `guest_recovery_tasks` + `recovery_attempts` tables with SELECT,
+  INSERT, UPDATE RLS for company members; partial-via-parent RLS for
+  `recovery_attempts`.
+- `create_recovery_task_from_flag()` SECURITY DEFINER RPC that
+  atomically creates a minimal stays row + the recovery task and
+  defaults the flag's `chargeable_party_decision = 'guest'` if not set.
+- `/properties/[id]/flags/[flagId]/recovery/new` form.
+- Inline recovery card on flag detail with status-dependent actions
+  (Open WhatsApp / Mark notified / Mark paid / Mark refused / Close
+  recovery task).
+- WhatsApp deep-link helper (`buildWhatsAppUrl`, `buildRecoveryMessage`,
+  `formatZAR`). Message wording is honest: "Evidence can be shared on
+  request" — NOT "Photos attached" (Evidence Camera ships Session 8).
+- Money bug fix: `step="any"` on number inputs + `Math.round(value * 100) / 100`
+  in server actions + defensive rounding in `formatZAR()`. Defeats the
+  browser FP-step-grid bug that turned typed "200" into stored 199.98.
+- **Pre-merge demotion of the recovery section** (per regroup discussion):
+  when no recovery task exists, the prominent card+button is replaced
+  by a single small grey inline link. Chips (Session 6) become the
+  daily-driver surface; recovery stays for rare formal-escalation cases.
+
+---
+
+## 2026-05-27 — Session 4: flag triage + activity log (PR #9)
+
+- Flag detail page at `/properties/[id]/flags/[flagId]`: header card,
+  triage form (status / severity / responsibility radio chips +
+  close-reason textarea), reopen affordance for closed flags, vertical
+  activity timeline (lifecycle events from `flags.*_at` columns +
+  audit_events for notes / state changes / reopens), add-note form.
+- Three server actions: `updateFlagAction` (status/severity/responsibility
+  with paired audit event for the diff), `addFlagNoteAction` (writes
+  a `flag_note` audit event), `reopenFlagAction` (clears closed_at +
+  no_action_reason, status back to 'raised').
+- Migration: UPDATE policy + grant on `flags`; SELECT + INSERT policies
+  + grants on `audit_events` (with `actor_id = auth.uid()` anti-forgery
+  guard). No DELETE anywhere.
+- New `RadioChip` component for pill-style radio inputs (reused later
+  on the raise-flag form too).
+- Action Centre's open-flag cards are now clickable links to the
+  detail page.
+
+---
+
+## 2026-05-26 — Session 3: Apartment Action Centre + flag raise + UI kit (PRs #7, #8)
+
+- `/properties/[id]` Apartment Action Centre page: property header
+  with status, six quick-add tiles (Maintenance / Damage / Inventory /
+  Cleaning / Safety / Note), open flags list, inspection-history
+  placeholder, "Coming for this apartment" mini-roadmap.
+- `/properties/[id]/flags/new` guided form with category select
+  (pre-selected from quick-add tile), severity chips, description
+  textarea, photo-deferred info banner.
+- Migration: SELECT + INSERT policies + grant on `flags` for company
+  members (no UPDATE yet — that came in Session 4).
+- Polish: operator-grade flag labels everywhere (Maintenance / Item
+  missing / Item damaged / Guest damage / Cleaning / Safety / Note /
+  etc.), replacing the "Broken thing" / "Guest broke it" playful
+  labels. Tile-specific copy (Maintenance / Damage / Inventory /
+  Cleaning / Safety / Note) for the quick-add tiles.
+- UI kit established: Button + buttonClasses, Card / CardHeader /
+  CardBody / CardFooter, Input / Label / Field, Badge (7 semantic
+  tones), Alert (error / success / info), EmptyState, RadioChip (added
+  Session 4). AppShell + AuthShell. Added `clsx` and `lucide-react`.
+- Performance pass: `getUserContext` combines membership + company in
+  one PostgREST embed; Action Centre runs property + flags queries in
+  parallel; flags query embeds `flag_categories` via PostgREST so the
+  follow-up `IN (ids)` lookup is gone. Net: Action Centre dropped from
+  6 sequential phases to 3.
+
+---
+
+## 2026-05-26 — Table grants for the authenticated role (PR #7)
+
+Fixes the "permission denied for table" bug surfaced by the Session 2
+first smoke test. Supabase does not auto-grant DML privileges to
+`anon` / `authenticated` on tables created in `public`. The two-gate
+principle: Postgres GRANT first, then RLS.
+
+Added: schema USAGE on public to anon/authenticated; SELECT on `roles`
+and `flag_categories` to anon/authenticated (matching the public-read
+RLS policies); SELECT on `companies` / `profiles` / `company_memberships`
+/ `property_assignments` / `property_owner_links` to authenticated;
+SELECT + INSERT on `properties` to authenticated. No DELETE anywhere.
+No role narrowing beyond company member. Other tables stay denied
+until their UIs ship.
+
+---
+
+## 2026-05-25 — Session 2: first visible app screens + Session 1 follow-ups (PR #7)
+
+Five files of foundation + the auth-and-onboarding screens:
+- `src/lib/supabase/middleware.ts` + `src/proxy.ts` (Next.js 16
+  renamed `middleware.ts` to `proxy.ts`): session refresh on every
+  request + cheap redirect rules (logged-out → /login; logged-in on
+  auth pages → /dashboard). DOES NOT check the company at the proxy
+  layer to keep it fast; pages handle "no company → /onboard".
+- `src/lib/auth/get-user-context.ts`: bundles user + profile +
+  membership + company into one helper.
+- `/login`, `/signup`, `/auth/callback` (PKCE for email confirmation),
+  `/auth/signout`, `/onboard` (calls `create_company_with_admin` RPC),
+  `/dashboard` (property list scoped by RLS), `/properties/new`
+  (property creation form).
+- Bug fix mid-session: `getUserContext().maybeSingle()` was returning
+  null + PGRST116 error when accidental double-submit created two
+  memberships, causing an infinite loop between /dashboard and /onboard.
+  Replaced with `.order(created_at asc).limit(1)`; added app-side
+  idempotency check in `createCompanyAction`; made empty error
+  strings render visibly so silent failures stop being silent.
+
+---
+
+## 2026-05-25 — Session 1: schema foundation + auth wiring + RLS (PRs #5, #6)
+
+Two PRs, six migrations applied to staging:
+- **PR #5 — Schema foundation.** 32 tables across five migrations
+  (extensions / core schema / indexes / system seeds / RLS enable).
+  All business tables have `company_id`, RLS enabled, no policies yet
+  (deny-by-default). Indexing plan applied. System seeds: 11 roles
+  + 11 flag categories with `UNIQUE NULLS NOT DISTINCT (company_id, key)`
+  on flag_categories (caught during pre-merge review — regular UNIQUE
+  treats NULL as distinct and would let duplicates through). Idempotent
+  `ON CONFLICT DO NOTHING` on both seed inserts.
+- **PR #6 — Auth wiring + minimum dashboard RLS.** `handle_new_user()`
+  trigger on `auth.users` mirrors signups to `profiles`.
+  `create_company_with_admin()` SECURITY DEFINER RPC solves the
+  membership bootstrap deadlock (creates company + admin membership +
+  default approval policy atomically). `is_company_member()` helper
+  function for RLS policies (avoids recursion). 13 RLS policies for
+  the minimum dashboard read+write path.
+
+---
 
 ### Session goal
 
