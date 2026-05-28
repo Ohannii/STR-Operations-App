@@ -8,6 +8,65 @@ This document defines exactly how a photo flows from a phone camera to a verifia
 
 ---
 
+## Cost-and-scale rules (LOCKED before Session 8 ships)
+
+These rules come from the founder's research on photo-heavy SaaS
+economics (`Building a Mobile-First Photo-Heavy STR Inspection SaaS`,
+attached in regroup 2026-05-28). They are non-negotiable before any
+photo code ships.
+
+1. **Pre-generated thumbnails. NEVER per-request transforms.**
+   Supabase charges $5 per 1,000 image transformations after the
+   100/month included quota. At 250 check-ins/month × 75 photos = ~$93/mo
+   in transforms alone, just for thumbnail rendering. The strategy is:
+   when a photo lands in Storage, an Edge Function (or queue worker)
+   generates a 120 KB thumbnail and writes both the master and the
+   thumbnail to Storage. The UI references the thumbnail directly via
+   signed URL. No image transform request fires per page view.
+
+2. **Compress on device before upload.** Long edge ≤ 2000 px, JPEG ~80%
+   quality. ~1.5 MB master per photo target. Reduces upload time and
+   per-photo storage cost.
+
+3. **TUS resumable uploads.** Field uploads happen on imperfect mobile
+   networks. TUS allows uploads to resume across network drops without
+   re-uploading. Use Supabase Storage's TUS endpoint for any photo
+   upload, not the simple HTTP POST path.
+
+4. **Bucket is private.** Always use signed URLs with short TTLs
+   (~5 min for views; longer for download links if needed). Never
+   public buckets except for marketing assets.
+
+5. **Retention is policy, not accident.** Pre-arrival evidence packs
+   are kept for the operational window only — roughly 2-4 weeks after
+   the next guest checks out, unless attached to an open dispute or
+   audit. Compressed masters: 12 months hot, then archive. Originals:
+   30 days hot if retained at all. See `PHOTO_RETENTION_POLICY.md`
+   for the full classification rules; this section is the cost-driver
+   summary.
+
+6. **Storage backup is separate from DB backup.** Supabase database
+   backups DO NOT include Storage objects. The deployment plan must
+   include a separate storage replication or versioning strategy
+   before production cutover.
+
+7. **R2 migration path documented.** Supabase Storage is the v1.0
+   choice for least moving parts. If costs cross ~R2,000/month on
+   storage+egress or transforms start dominating, the migration target
+   is Cloudflare R2 (no egress fees + cheaper per-GB). Migration is
+   non-trivial but well-bounded; metadata stays in Supabase Postgres
+   either way.
+
+8. **Scale baseline.** At 500 check-outs/month (the founder's stated
+   v1.0+ growth target) × ~75 photos per turnover ≈ 37,500 new photos
+   per month. Storage cost is low (~$10-20/mo). Transform cost is the
+   trap (~$187/mo if every render triggers a transform). Rules 1 and 2
+   are the discipline that keeps this affordable.
+
+---
+
+---
+
 ## Requirements recap
 
 - 20+ photos per apartment per day is realistic.
