@@ -5,7 +5,6 @@ import {
   Flag as FlagIcon,
   MessageCircle,
   MessageSquare,
-  Plus,
   RotateCcw,
   type LucideIcon,
 } from 'lucide-react'
@@ -521,53 +520,46 @@ export default async function FlagDetailPage({
         </div>
       </Card>
 
-      {/* Guest recovery (eligibility-gated; lightweight CTA when no task) */}
-      {showRecoverySection ? (
+      {/* Active recovery task -- full section only when a task already exists.
+          When a task is in flight it deserves the visible surface and the
+          status-dependent action buttons inside RecoveryTaskCard. */}
+      {showRecoverySection && recoveryTask ? (
         <section id="recovery" className="mb-8 scroll-mt-20">
           <div className="mb-3">
             <h2 className="text-lg font-semibold text-slate-900">Guest recovery</h2>
             <p className="text-sm text-slate-600">
-              {recoveryTask
-                ? 'Track notification, payment, or refusal. Each step is logged.'
-                : 'For WhatsApp follow-up or paid/refused tracking on this flag.'}
+              Track notification, payment, or refusal. Each step is logged.
             </p>
           </div>
-
-          {recoveryTask ? (
-            <RecoveryTaskCard
-              task={recoveryTask}
-              stay={stayEmbed}
-              attempts={recoveryAttempts}
-              propertyId={property.id}
-              flagId={flag.id}
-              propertyName={property.name}
-              companyName={ctx.company.name}
-              flagDescription={flag.description}
-              currentUserId={currentUserId}
-            />
-          ) : (
-            <Card>
-              <div className="p-5 flex flex-col sm:flex-row sm:items-start gap-3">
-                <div className="shrink-0 p-2 rounded-md bg-slate-100 w-fit">
-                  <MessageCircle size={16} className="text-slate-700" aria-hidden />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-900">No recovery task yet</p>
-                  <p className="text-sm text-slate-600 mt-0.5">
-                    Start one for WhatsApp follow-up or to log paid / refused outcomes.
-                  </p>
-                </div>
-                <Link
-                  href={`/properties/${property.id}/flags/${flag.id}/recovery/new`}
-                  className={buttonClasses('secondary', 'sm', 'shrink-0')}
-                >
-                  <Plus size={14} aria-hidden />
-                  Start recovery tracking
-                </Link>
-              </div>
-            </Card>
-          )}
+          <RecoveryTaskCard
+            task={recoveryTask}
+            stay={stayEmbed}
+            attempts={recoveryAttempts}
+            propertyId={property.id}
+            flagId={flag.id}
+            propertyName={property.name}
+            companyName={ctx.company.name}
+            flagDescription={flag.description}
+            currentUserId={currentUserId}
+          />
         </section>
+      ) : null}
+
+      {/* Demoted inline CTA for the rare formal-escalation case --
+          only when eligible AND no task exists. Day-to-day operational
+          progress (Guest Notified, Asana Logged, Maintenance Assigned,
+          etc.) lands on lightweight flag-level chips in Session 6. The
+          recovery task workflow is reserved for cases that genuinely
+          need a WhatsApp + paid/refused audit trail. */}
+      {showRecoverySection && !recoveryTask ? (
+        <div className="mb-8">
+          <Link
+            href={`/properties/${property.id}/flags/${flag.id}/recovery/new`}
+            className="text-xs text-slate-500 hover:text-slate-700 hover:underline inline-flex items-center gap-1"
+          >
+            Need formal guest recovery tracking? Start tracking →
+          </Link>
+        </div>
       ) : null}
 
       {/* Reopen affordance */}
