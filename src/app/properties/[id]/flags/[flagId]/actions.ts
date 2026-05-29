@@ -43,6 +43,12 @@ type FlagSnapshot = {
 export async function updateFlagAction(formData: FormData) {
   const propertyId = String(formData.get('property_id') ?? '').trim()
   const flagId = String(formData.get('flag_id') ?? '').trim()
+  // Session 7: optional return_to lets the Action Centre's inline
+  // Mark Resolved form land back on the Action Centre instead of
+  // the flag detail page. Validated to start with `/` to prevent
+  // open-redirect abuse.
+  const returnToRaw = String(formData.get('return_to') ?? '').trim()
+  const returnTo = returnToRaw.startsWith('/') ? returnToRaw : null
 
   if (!propertyId || !flagId) {
     redirect(`/dashboard?error=${encodeURIComponent('Missing flag reference.')}`)
@@ -167,6 +173,12 @@ export async function updateFlagAction(formData: FormData) {
     console.error('[flag/update] audit write failed:', auditErr)
   }
 
+  // Session 7: return_to (when present and safe) wins over the
+  // default detail-page redirect. The Action Centre's inline Mark
+  // Resolved sends a return URL back to the apartment dashboard.
+  if (returnTo) {
+    redirect(returnTo)
+  }
   redirect(`${detailUrl}?updated=1#activity`)
 }
 

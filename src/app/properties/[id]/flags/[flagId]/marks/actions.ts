@@ -31,6 +31,11 @@ export async function toggleFlagMarkAction(formData: FormData) {
   const propertyId = String(formData.get('property_id') ?? '').trim()
   const flagId = String(formData.get('flag_id') ?? '').trim()
   const kindRaw = String(formData.get('kind') ?? '').trim()
+  // Session 7: optional return_to lets the Action Centre redirect back
+  // to itself with the same `?open=` expansion state after a chip
+  // toggle. Validated to start with `/` to prevent open-redirect abuse.
+  const returnToRaw = String(formData.get('return_to') ?? '').trim()
+  const returnTo = returnToRaw.startsWith('/') ? returnToRaw : null
 
   const detailUrl = `/properties/${propertyId}/flags/${flagId}`
 
@@ -38,6 +43,9 @@ export async function toggleFlagMarkAction(formData: FormData) {
     redirect(`/dashboard?error=${encodeURIComponent('Missing flag reference.')}`)
   }
   if (!ALL_CHIP_KINDS.includes(kindRaw as ChipKind)) {
+    if (returnTo) {
+      redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=${encodeURIComponent('Unknown chip kind.')}`)
+    }
     redirect(`${detailUrl}?error=${encodeURIComponent('Unknown chip kind.')}#operational`)
   }
   const kind = kindRaw as ChipKind
@@ -60,9 +68,15 @@ export async function toggleFlagMarkAction(formData: FormData) {
 
   if (flagErr) {
     console.error('[marks/toggle] flag read error:', flagErr)
+    if (returnTo) {
+      redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=${encodeURIComponent(flagErr.message)}`)
+    }
     redirect(`${detailUrl}?error=${encodeURIComponent(flagErr.message)}#operational`)
   }
   if (!flag) {
+    if (returnTo) {
+      redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=${encodeURIComponent('Flag not found.')}`)
+    }
     redirect(`${detailUrl}?error=${encodeURIComponent('Flag not found.')}#operational`)
   }
 
@@ -77,6 +91,9 @@ export async function toggleFlagMarkAction(formData: FormData) {
 
   if (readErr) {
     console.error('[marks/toggle] active-check error:', readErr)
+    if (returnTo) {
+      redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=${encodeURIComponent(readErr.message)}`)
+    }
     redirect(`${detailUrl}?error=${encodeURIComponent(readErr.message)}#operational`)
   }
 
@@ -97,6 +114,9 @@ export async function toggleFlagMarkAction(formData: FormData) {
 
     if (clearErr) {
       console.error('[marks/toggle] clear error:', clearErr)
+      if (returnTo) {
+        redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=${encodeURIComponent(clearErr.message)}`)
+      }
       redirect(`${detailUrl}?error=${encodeURIComponent(clearErr.message)}#operational`)
     }
   } else {
@@ -134,9 +154,20 @@ export async function toggleFlagMarkAction(formData: FormData) {
 
     if (insertErr) {
       console.error('[marks/toggle] insert error:', insertErr)
+      if (returnTo) {
+        redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=${encodeURIComponent(insertErr.message)}`)
+      }
       redirect(`${detailUrl}?error=${encodeURIComponent(insertErr.message)}#operational`)
     }
   }
 
+  // Session 7: return_to (when present and safe) wins over the
+  // default detail-page redirect. The Action Centre supplies a
+  // return URL that preserves the `?open=` expansion state so the
+  // user lands back at the same flag, still expanded, with the new
+  // chip state visible.
+  if (returnTo) {
+    redirect(returnTo)
+  }
   redirect(`${detailUrl}?mark_toggled=1#operational`)
 }
