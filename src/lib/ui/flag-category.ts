@@ -219,3 +219,48 @@ export function severityDisplay(severity: string): { label: string; tone: BadgeT
   }
   return { label: severity, tone: 'slate' }
 }
+
+// ============================================================
+// Flag category groups for the Action Centre layout (Session 7)
+// ============================================================
+//
+// The Action Centre groups open flags into collapsible category
+// sections (Replit-style). Several underlying flag_categories can
+// share one display group — e.g., inventory_missing and
+// inventory_damaged both land in "Inventory"; condition_note,
+// no_action_record, and follow_up_required all land in "Notes /
+// Record-only".
+//
+// Groups appear in the listed order. A group is hidden entirely
+// when it has zero flags in scope (UI doesn't render an empty
+// "Inventory (0)" header).
+
+export type FlagCategoryGroup = {
+  id: string
+  label: string
+  keys: FlagCategoryKey[]
+}
+
+export const FLAG_CATEGORY_GROUPS: FlagCategoryGroup[] = [
+  { id: 'damage',          label: 'Damage',              keys: ['guest_damage'] },
+  { id: 'maintenance',     label: 'Maintenance',         keys: ['maintenance_issue'] },
+  { id: 'inventory',       label: 'Inventory',           keys: ['inventory_missing', 'inventory_damaged'] },
+  { id: 'cleaning',        label: 'Cleaning',            keys: ['cleaning_issue'] },
+  { id: 'safety',          label: 'Safety',              keys: ['safety_urgent'] },
+  { id: 'owner_chargeable',label: 'Owner-chargeable',    keys: ['owner_chargeable', 'company_responsibility'] },
+  { id: 'notes',           label: 'Notes / Record-only', keys: ['condition_note', 'no_action_record', 'follow_up_required'] },
+]
+
+/**
+ * Given a flag_categories.key, return the display group id it lives
+ * in, or null if it doesn't map to any known group. Used by the
+ * Action Centre's category-grouping logic.
+ */
+export function flagCategoryGroupId(categoryKey: string): string | null {
+  for (const group of FLAG_CATEGORY_GROUPS) {
+    if (group.keys.includes(categoryKey as FlagCategoryKey)) {
+      return group.id
+    }
+  }
+  return null
+}

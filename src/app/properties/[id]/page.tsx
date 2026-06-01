@@ -1,30 +1,44 @@
 import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
 import {
+  AlertCircle,
   ArrowLeft,
   Camera,
+  Check,
+  ChevronDown,
   ChevronRight,
   ClipboardCheck,
   Flag,
+  Hourglass,
   Info,
+  MessageCircle,
   type LucideIcon,
 } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
-import { StaticChip } from '@/components/ui/chip'
+import { StaticChip, ToggleChip } from '@/components/ui/chip'
 import { EmptyState } from '@/components/ui/empty-state'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { createClient } from '@/lib/supabase/server'
-import { getChipDisplay, type ChipKind } from '@/lib/ui/chip-vocabulary'
 import {
+  CHIP_WORKFLOW_GROUPS,
+  eligibleChipKinds,
+  getChipDisplay,
+  type ChipKind,
+} from '@/lib/ui/chip-vocabulary'
+import {
+  FLAG_CATEGORY_GROUPS,
+  flagCategoryGroupId,
   getFlagCategoryDisplay,
   QUICK_ADD_KEYS,
   severityDisplay,
 } from '@/lib/ui/flag-category'
 import { propertyStatusDisplay } from '@/lib/ui/property-status'
 import { relativeTime } from '@/lib/ui/relative-time'
+import { updateFlagAction } from './flags/[flagId]/actions'
+import { toggleFlagMarkAction } from './flags/[flagId]/marks/actions'
 
 /**
  * GET /properties/[id]
@@ -57,6 +71,8 @@ type FlagRow = {
   severity: string
   description: string | null
   raised_at: string
+  // Session 7: needed for inline chip eligibility on Action Centre.
+  chargeable_party_decision: string | null
   flag_category: { id: string; key: string } | { id: string; key: string }[] | null
 }
 
@@ -70,14 +86,29 @@ export default async function PropertyPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ raised?: string }>
+  searchParams: Promise<{
+    raised?: string
+    open?: string
+    error?: string
+  }>
 }) {
   const ctx = await getUserContext()
   if (!ctx) redirect('/login')
   if (!ctx.company) redirect('/onboard')
 
   const { id } = await params
-  const { raised } = await searchParams
+  const { raised, open, error } = await searchParams
+
+  // Session 7: which flag cards are expanded inline. URL is the
+  // source of truth so chip-toggle + Mark-Resolved actions can
+  // round-trip through a server action without losing the visual
+  // state. Empty/whitespace tokens get filtered.
+  const expandedIds = new Set(
+    (open ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  )
 
   const supabase = await createClient()
 
@@ -100,6 +131,7 @@ export default async function PropertyPage({
       severity,
       description,
       raised_at,
+      chargeable_party_decision,
       flag_category:flag_categories (
         id,
         key
@@ -113,10 +145,20 @@ export default async function PropertyPage({
     .limit(50)
     .returns<FlagRow[]>()
 
+  // Session 7 summary tile: open recovery tasks for this property.
+  // Head-only count query — no row data needed.
+  const openRecoveryCountPromise = supabase
+    .from('guest_recovery_tasks')
+    .select('id', { count: 'exact', head: true })
+    .eq('property_id', id)
+    .not('status', 'in', '(closed,guest_resolved,ota_resolved)')
+    .is('deleted_at', null)
+
   const [
     { data: property },
     { data: openFlags, error: flagsError },
-  ] = await Promise.all([propertyPromise, flagsPromise])
+    { count: openRecoveryCount },
+  ] = await Promise.all([propertyPromise, flagsPromise, openRecoveryCountPromise])
 
   if (!property) notFound()
 
@@ -143,6 +185,51 @@ export default async function PropertyPage({
     )
   }
 
+  // ----------------------------------------------------------------
+  // Session 7: derive summary tile counts from the data we already
+  // have (no extra queries needed for these three; the recovery
+  // count came from the parallel head-only query above).
+  // ----------------------------------------------------------------
+  const nowMs = Date.now()
+  const overdueCutoffMs = nowMs - 48 * 60 * 60 * 1000 // 48 hours ago
+
+  let readyForAsanaCount = 0
+  let ownerApprovalPendingCount = 0
+  let overdueCount = 0
+  for (const f of openFlags ?? []) {
+    const marks = activeMarksByFlagId[f.id] ?? []
+    if (marks.includes('asana_pending')) readyForAsanaCount++
+    if (marks.includes('awaiting_owner_approval')) ownerApprovalPendingCount++
+    // Overdue: still in early lifecycle states AND raised more than
+    // 48h ago. Actioned/closed flags are not "overdue" — they're
+    // being handled or resolved.
+    if (
+      (f.status === 'raised' || f.status === 'classified') &&
+      new Date(f.raised_at).getTime() < overdueCutoffMs
+    ) {
+      overdueCount++
+    }
+  }
+
+  // ----------------------------------------------------------------
+  // Session 7: group open flags by display category. A flag whose
+  // category doesn't map to a known group lands in a fallback "Other"
+  // bucket so nothing disappears silently.
+  // ----------------------------------------------------------------
+  const flagsByGroupId = new Map<string, FlagRow[]>()
+  const otherFlags: FlagRow[] = []
+  for (const f of openFlags ?? []) {
+    const cat = pickCategory(f.flag_category)
+    const groupId = cat ? flagCategoryGroupId(cat.key) : null
+    if (groupId) {
+      const arr = flagsByGroupId.get(groupId) ?? []
+      arr.push(f)
+      flagsByGroupId.set(groupId, arr)
+    } else {
+      otherFlags.push(f)
+    }
+  }
+
   const status = propertyStatusDisplay(property.status)
   const sub = [property.unit_reference, property.address].filter(Boolean).join(' · ')
 
@@ -163,6 +250,11 @@ export default async function PropertyPage({
       {raised ? (
         <div className="mb-5">
           <Alert tone="success">Flag raised. It&rsquo;s in the Open flags list below.</Alert>
+        </div>
+      ) : null}
+      {error ? (
+        <div className="mb-5">
+          <Alert tone="error">{decodeURIComponent(error)}</Alert>
         </div>
       ) : null}
 
@@ -262,7 +354,47 @@ export default async function PropertyPage({
         </div>
       </section>
 
-      {/* Open flags */}
+      {/* Operational snapshot tiles (Session 7).
+          Four counts that answer "what should the team do next?" All
+          derived from the data we already loaded — no extra queries
+          except the open-recovery head-count which ran in parallel
+          with the flags query. */}
+      <section className="mb-8">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <SnapshotTile
+            icon={ClipboardCheck}
+            label="Ready for Asana"
+            count={readyForAsanaCount}
+            tone={readyForAsanaCount > 0 ? 'sky' : 'slate'}
+          />
+          <SnapshotTile
+            icon={Hourglass}
+            label="Owner approval pending"
+            count={ownerApprovalPendingCount}
+            tone={ownerApprovalPendingCount > 0 ? 'amber' : 'slate'}
+          />
+          <SnapshotTile
+            icon={MessageCircle}
+            label="Open recovery"
+            count={openRecoveryCount ?? 0}
+            tone={(openRecoveryCount ?? 0) > 0 ? 'amber' : 'slate'}
+          />
+          <SnapshotTile
+            icon={AlertCircle}
+            label="Overdue issues"
+            count={overdueCount}
+            tone={overdueCount > 0 ? 'red' : 'slate'}
+          />
+        </div>
+      </section>
+
+      {/* Open flags — grouped by category, expand-in-place (Session 7).
+          Each card has a collapsed summary + an expanded inline panel
+          with workflow-grouped chips + Mark Resolved. Expansion state
+          lives in the URL (?open=id1,id2). Chip toggles and Mark
+          Resolved round-trip through their server actions but pass a
+          return_to so the user lands back here with the same expansion.
+       */}
       <section className="mb-10">
         <div className="flex items-end justify-between mb-3">
           <div>
@@ -286,71 +418,31 @@ export default async function PropertyPage({
             description="Tap a tile above to raise the first one."
           />
         ) : (
-          <ul className="space-y-2.5">
-            {openFlags.map((flag) => {
-              const categoryRow = pickCategory(flag.flag_category)
-              const cat = categoryRow ? getFlagCategoryDisplay(categoryRow.key) : undefined
-              const Icon = cat?.icon ?? Flag
-              const sev = severityDisplay(flag.severity)
-              const activeChips = activeMarksByFlagId[flag.id] ?? []
+          <div className="space-y-6">
+            {FLAG_CATEGORY_GROUPS.map((group) => {
+              const groupFlags = flagsByGroupId.get(group.id) ?? []
+              if (groupFlags.length === 0) return null
               return (
-                <li key={flag.id}>
-                  <Link
-                    href={`/properties/${property.id}/flags/${flag.id}`}
-                    className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
-                    aria-label={`Open flag: ${cat?.label ?? 'Flag'}`}
-                  >
-                    <Card className="hover:border-slate-300 hover:shadow-sm transition-all">
-                      <div className="p-4 flex items-start gap-3">
-                        <div
-                          className={
-                            cat?.tone === 'red'
-                              ? 'shrink-0 w-9 h-9 rounded-lg bg-red-100 text-red-700 flex items-center justify-center'
-                              : 'shrink-0 w-9 h-9 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center'
-                          }
-                        >
-                          <Icon size={16} aria-hidden />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2 mb-1">
-                            <span className="text-sm font-semibold text-slate-900">
-                              {cat?.label ?? 'Flag'}
-                            </span>
-                            <Badge tone={sev.tone}>{sev.label}</Badge>
-                            <Badge tone="slate">{flag.status}</Badge>
-                          </div>
-                          {flag.description ? (
-                            <p className="text-sm text-slate-700 leading-snug">{flag.description}</p>
-                          ) : (
-                            <p className="text-sm text-slate-400 italic">No description</p>
-                          )}
-                          {activeChips.length > 0 ? (
-                            <div className="flex flex-wrap gap-1 mt-2">
-                              {activeChips.map((kind) => {
-                                const chip = getChipDisplay(kind)
-                                if (!chip) return null
-                                return (
-                                  <StaticChip
-                                    key={kind}
-                                    label={chip.label}
-                                    tone={chip.tone}
-                                    icon={chip.icon}
-                                  />
-                                )
-                              })}
-                            </div>
-                          ) : null}
-                          <p className="text-[11px] text-slate-500 mt-1.5">
-                            Raised {relativeTime(flag.raised_at)}
-                          </p>
-                        </div>
-                      </div>
-                    </Card>
-                  </Link>
-                </li>
+                <CategorySection
+                  key={group.id}
+                  groupLabel={group.label}
+                  flags={groupFlags}
+                  propertyId={property.id}
+                  expandedIds={expandedIds}
+                  activeMarksByFlagId={activeMarksByFlagId}
+                />
               )
             })}
-          </ul>
+            {otherFlags.length > 0 ? (
+              <CategorySection
+                groupLabel="Other"
+                flags={otherFlags}
+                propertyId={property.id}
+                expandedIds={expandedIds}
+                activeMarksByFlagId={activeMarksByFlagId}
+              />
+            ) : null}
+          </div>
         )}
       </section>
 
@@ -433,5 +525,295 @@ function RoadmapMiniCard({
         </div>
       </div>
     </Card>
+  )
+}
+
+// ============================================================
+// Session 7 — Operational snapshot tile
+// ============================================================
+// Compact count + label tile with a tone (slate when zero, semantic
+// color when there's something to act on). Used as the four cards
+// just under the quick-add row.
+
+function SnapshotTile({
+  icon: Icon,
+  label,
+  count,
+  tone,
+}: {
+  icon: LucideIcon
+  label: string
+  count: number
+  tone: 'slate' | 'sky' | 'amber' | 'red'
+}) {
+  const isActive = count > 0
+  const numClass =
+    tone === 'slate'
+      ? 'text-slate-300'
+      : tone === 'sky'
+      ? 'text-sky-700'
+      : tone === 'amber'
+      ? 'text-amber-700'
+      : 'text-red-700'
+  return (
+    <Card>
+      <div className="p-3 sm:p-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[11px] font-medium text-slate-600 uppercase tracking-wide truncate">
+            {label}
+          </span>
+          <Icon
+            size={14}
+            className={isActive ? 'text-slate-500 shrink-0' : 'text-slate-300 shrink-0'}
+            aria-hidden
+          />
+        </div>
+        <p
+          className={`text-2xl font-semibold tabular-nums ${
+            isActive ? numClass : 'text-slate-300'
+          }`}
+        >
+          {count}
+        </p>
+      </div>
+    </Card>
+  )
+}
+
+// ============================================================
+// Session 7 — Category section + inline-expand flag card
+// ============================================================
+// CategorySection renders one category group as a heading + the
+// inline flag cards inside it. FlagCardInline handles both the
+// collapsed summary and the expanded operational panel (workflow
+// chip groups + Mark Resolved + View details link).
+//
+// State preservation: the URL's `?open=` carries the set of
+// expanded flag IDs. The summary header is a <Link> that navigates
+// to the new ?open state. Chip toggles and Mark Resolved pass a
+// `return_to` so their server actions land back here without losing
+// the expansion. For Mark Resolved we remove the flag from `?open`
+// because it's about to leave the open list anyway.
+
+function CategorySection({
+  groupLabel,
+  flags,
+  propertyId,
+  expandedIds,
+  activeMarksByFlagId,
+}: {
+  groupLabel: string
+  flags: FlagRow[]
+  propertyId: string
+  expandedIds: Set<string>
+  activeMarksByFlagId: Record<string, ChipKind[]>
+}) {
+  return (
+    <div>
+      <div className="flex items-baseline gap-2 mb-2">
+        <h3 className="text-xs font-semibold text-slate-700 uppercase tracking-wider">
+          {groupLabel}
+        </h3>
+        <span className="text-xs text-slate-500 tabular-nums">({flags.length})</span>
+      </div>
+      <ul className="space-y-2.5">
+        {flags.map((flag) => (
+          <FlagCardInline
+            key={flag.id}
+            flag={flag}
+            propertyId={propertyId}
+            expandedIds={expandedIds}
+            activeChipKinds={activeMarksByFlagId[flag.id] ?? []}
+          />
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function buildOpenQuery(ids: string[]): string {
+  return ids.length > 0 ? `?open=${ids.join(',')}` : ''
+}
+
+function FlagCardInline({
+  flag,
+  propertyId,
+  expandedIds,
+  activeChipKinds,
+}: {
+  flag: FlagRow
+  propertyId: string
+  expandedIds: Set<string>
+  activeChipKinds: ChipKind[]
+}) {
+  const categoryRow = pickCategory(flag.flag_category)
+  const cat = categoryRow ? getFlagCategoryDisplay(categoryRow.key) : undefined
+  const Icon = cat?.icon ?? Flag
+  const sev = severityDisplay(flag.severity)
+  const isExpanded = expandedIds.has(flag.id)
+
+  // The summary <Link> toggles this flag in/out of ?open=. Stable
+  // order preserved across re-renders by sorting the resulting set.
+  const expandedArr = Array.from(expandedIds)
+  const nextOpenIds = isExpanded
+    ? expandedArr.filter((idValue) => idValue !== flag.id).sort()
+    : [...expandedArr, flag.id].sort()
+  const toggleHref = `/properties/${propertyId}${buildOpenQuery(nextOpenIds)}#flag-${flag.id}`
+
+  // return_to URLs:
+  //   - chip toggles preserve the current expansion (so the flag
+  //     stays expanded after a chip toggle)
+  //   - Mark Resolved removes the flag from `?open=` because it's
+  //     leaving the open list when closed
+  const currentOpenQuery = buildOpenQuery(expandedArr.sort())
+  const chipReturnTo = `/properties/${propertyId}${currentOpenQuery}#flag-${flag.id}`
+  const resolvedReturnTo = `/properties/${propertyId}${buildOpenQuery(
+    expandedArr.filter((idValue) => idValue !== flag.id).sort(),
+  )}`
+
+  const activeChipSet = new Set(activeChipKinds)
+  const eligibleKinds = isExpanded
+    ? eligibleChipKinds({
+        chargeable_party_decision: flag.chargeable_party_decision,
+        category_key: categoryRow?.key ?? null,
+      })
+    : []
+
+  return (
+    <li id={`flag-${flag.id}`}>
+      <Card className="overflow-hidden">
+        {/* Collapsed summary header (also the expand/collapse control) */}
+        <Link
+          href={toggleHref}
+          aria-expanded={isExpanded}
+          aria-label={`${isExpanded ? 'Collapse' : 'Expand'} flag: ${cat?.label ?? 'Flag'}`}
+          className="block p-4 hover:bg-slate-50/60 focus-visible:outline-none focus-visible:bg-slate-50 transition-colors"
+        >
+          <div className="flex items-start gap-3">
+            <div
+              className={
+                cat?.tone === 'red'
+                  ? 'shrink-0 w-9 h-9 rounded-lg bg-red-100 text-red-700 flex items-center justify-center'
+                  : 'shrink-0 w-9 h-9 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center'
+              }
+            >
+              <Icon size={16} aria-hidden />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2 mb-1">
+                <span className="text-sm font-semibold text-slate-900">
+                  {cat?.label ?? 'Flag'}
+                </span>
+                <Badge tone={sev.tone}>{sev.label}</Badge>
+                <Badge tone="slate">{flag.status}</Badge>
+              </div>
+              {flag.description ? (
+                <p className="text-sm text-slate-700 leading-snug">{flag.description}</p>
+              ) : (
+                <p className="text-sm text-slate-400 italic">No description</p>
+              )}
+              {activeChipKinds.length > 0 ? (
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {activeChipKinds.map((kind) => {
+                    const chip = getChipDisplay(kind)
+                    if (!chip) return null
+                    return (
+                      <StaticChip
+                        key={kind}
+                        label={chip.label}
+                        tone={chip.tone}
+                        icon={chip.icon}
+                      />
+                    )
+                  })}
+                </div>
+              ) : null}
+              <p className="text-[11px] text-slate-500 mt-1.5">
+                Raised {relativeTime(flag.raised_at)}
+              </p>
+            </div>
+            <ChevronDown
+              size={18}
+              className={`shrink-0 text-slate-400 transition-transform ${
+                isExpanded ? 'rotate-180' : ''
+              }`}
+              aria-hidden
+            />
+          </div>
+        </Link>
+
+        {/* Expanded panel — workflow chip groups + Mark Resolved */}
+        {isExpanded ? (
+          <div className="border-t border-slate-100 p-4 space-y-4 bg-slate-50/40">
+            {CHIP_WORKFLOW_GROUPS.map((group) => {
+              const visibleKinds = group.kinds.filter((k) => eligibleKinds.includes(k))
+              if (visibleKinds.length === 0) return null
+              return (
+                <div key={group.id}>
+                  <h4 className="text-[10px] font-semibold text-slate-600 uppercase tracking-wider mb-2">
+                    {group.label}
+                  </h4>
+                  <div className="flex flex-wrap gap-2">
+                    {visibleKinds.map((kind) => {
+                      const chip = getChipDisplay(kind)
+                      if (!chip) return null
+                      const isActive = activeChipSet.has(kind)
+                      return (
+                        <form
+                          key={kind}
+                          action={toggleFlagMarkAction}
+                          className="contents"
+                        >
+                          <input type="hidden" name="property_id" value={propertyId} />
+                          <input type="hidden" name="flag_id" value={flag.id} />
+                          <input type="hidden" name="kind" value={kind} />
+                          <input type="hidden" name="return_to" value={chipReturnTo} />
+                          <ToggleChip
+                            active={isActive}
+                            label={chip.label}
+                            tone={chip.tone}
+                            icon={chip.icon}
+                          />
+                        </form>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })}
+
+            {/* Footer actions — View details + Mark resolved */}
+            <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-100">
+              <Link
+                href={`/properties/${propertyId}/flags/${flag.id}`}
+                className="text-xs text-slate-600 hover:text-slate-900 hover:underline inline-flex items-center gap-1"
+              >
+                View details <ChevronRight size={12} aria-hidden />
+              </Link>
+              <form action={updateFlagAction}>
+                <input type="hidden" name="property_id" value={propertyId} />
+                <input type="hidden" name="flag_id" value={flag.id} />
+                <input type="hidden" name="status" value="closed" />
+                <input type="hidden" name="severity" value={flag.severity} />
+                <input
+                  type="hidden"
+                  name="chargeable_party_decision"
+                  value={flag.chargeable_party_decision ?? 'pending_decision'}
+                />
+                <input type="hidden" name="no_action_reason" value="" />
+                <input type="hidden" name="return_to" value={resolvedReturnTo} />
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-1.5 h-9 px-4 text-sm font-semibold rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 border border-emerald-600 shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2"
+                >
+                  <Check size={14} aria-hidden />
+                  Mark resolved
+                </button>
+              </form>
+            </div>
+          </div>
+        ) : null}
+      </Card>
+    </li>
   )
 }
