@@ -159,8 +159,20 @@ export function EvidenceCapture({
       }
       setCameraReady(true)
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Could not access camera.'
-      setCameraError(`${msg} You can still use "From gallery" to attach photos.`)
+      // Common shapes: NotAllowedError (permission denied),
+      // NotFoundError (no camera), SecurityError (insecure context).
+      // We don't surface the technical name — operators just see
+      // a clear human message + a one-tap fallback path.
+      const name = err instanceof Error ? err.name : ''
+      const msg =
+        name === 'NotAllowedError'
+          ? 'Camera permission was denied. Use "From gallery" instead, or grant camera access in your browser settings.'
+          : name === 'NotFoundError'
+            ? 'No camera was detected on this device. Use "From gallery" to attach photos.'
+            : name === 'SecurityError'
+              ? 'Camera blocked by the browser. Make sure this app is on HTTPS, then retry — or use "From gallery".'
+              : 'Could not access the camera. Use "From gallery" to attach photos.'
+      setCameraError(msg)
     }
   }, [])
 
@@ -346,7 +358,9 @@ export function EvidenceCapture({
         // PUT the master and thumb directly to Supabase Storage.
         // Use the raw signed URL — supabase-js's uploadToSignedUrl
         // requires the bucket/path arg pattern; the raw URL is
-        // simpler and works the same.
+        // simpler and works the same. Master + thumb run in parallel
+        // because they're independent objects — roughly halves the
+        // per-photo upload time on a single phone connection.
         const put = async (signedUrl: string, blob: Blob) => {
           const res = await fetch(signedUrl, {
             method: 'PUT',
@@ -357,8 +371,10 @@ export function EvidenceCapture({
             throw new Error(`Upload failed (${res.status}).`)
           }
         }
-        await put(slot.masterUpload.signedUrl, item.master as Blob)
-        await put(slot.thumbUpload.signedUrl, item.thumb as Blob)
+        await Promise.all([
+          put(slot.masterUpload.signedUrl, item.master as Blob),
+          put(slot.thumbUpload.signedUrl, item.thumb as Blob),
+        ])
 
         const finalNote = (item.note?.trim() || attachAllNote.trim() || null) as string | null
 
@@ -482,8 +498,18 @@ export function EvidenceCapture({
                   </div>
                 ) : null}
                 {cameraError ? (
-                  <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-white/80">
-                    {cameraError}
+                  <div className="absolute inset-0 flex flex-col items-center justify-center px-6 text-center gap-3">
+                    <p className="text-sm text-white/85 max-w-sm leading-relaxed">
+                      {cameraError}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => galleryInputRef.current?.click()}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-white text-slate-900 px-4 py-2 text-sm font-semibold hover:bg-slate-100 active:bg-slate-200 transition"
+                    >
+                      <ImageIcon size={14} aria-hidden />
+                      Use gallery instead
+                    </button>
                   </div>
                 ) : null}
               </div>
@@ -546,7 +572,7 @@ export function EvidenceCapture({
                   disabled={pending.length === 0}
                   className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-3 py-2 text-sm font-semibold text-white disabled:opacity-40 active:bg-emerald-600 transition"
                 >
-                  Done
+                  Next
                 </button>
 
                 <input

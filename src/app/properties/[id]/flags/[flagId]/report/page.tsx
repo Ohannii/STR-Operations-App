@@ -4,7 +4,6 @@ import { AlertCircle, ArrowLeft, FileText } from 'lucide-react'
 import { PrintButton } from '@/components/photos/print-button'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import {
-  MASTER_TTL_SECONDS,
   THUMB_TTL_SECONDS,
   signEvidencePaths,
 } from '@/lib/photos/signed-urls'
@@ -200,21 +199,18 @@ export default async function FlagReportPage({
 
   if (!property || !flag) notFound()
 
-  // Sign all photo URLs in two batches: thumbs for the grid in the
-  // summary block, masters for the per-photo evidence sections.
+  // Sign thumbnails only — the printed report renders the thumbs
+  // (sufficient resolution at print scale), and the on-demand
+  // /photos/[photoId]/view route handles masters when the user
+  // clicks through. Avoids signing N master URLs per render.
   const photoRows = photos ?? []
   const thumbPaths = photoRows
     .map((p) => p.thumbnail_path)
     .filter((p): p is string => Boolean(p))
-  const masterPaths = photoRows.map((p) => p.storage_path)
-  const [thumbUrls, masterUrls] = await Promise.all([
+  const thumbUrls =
     thumbPaths.length > 0
-      ? signEvidencePaths(thumbPaths, THUMB_TTL_SECONDS)
-      : Promise.resolve<Record<string, string>>({}),
-    masterPaths.length > 0
-      ? signEvidencePaths(masterPaths, MASTER_TTL_SECONDS)
-      : Promise.resolve<Record<string, string>>({}),
-  ])
+      ? await signEvidencePaths(thumbPaths, THUMB_TTL_SECONDS)
+      : {}
 
   // Resolve profile names for actors we'll mention in footers.
   const actorIds = Array.from(
@@ -463,10 +459,9 @@ export default async function FlagReportPage({
           ) : (
             <ol className="mt-4 space-y-6">
               {photoRows.map((photo, idx) => {
-                const masterUrl = masterUrls[photo.storage_path]
-                const thumbUrl =
-                  (photo.thumbnail_path && thumbUrls[photo.thumbnail_path]) ||
-                  masterUrl
+                const thumbUrl = photo.thumbnail_path
+                  ? thumbUrls[photo.thumbnail_path]
+                  : undefined
                 const uploader = nameById.get(photo.uploaded_by) ?? 'Unknown'
                 const capturedDisplay = photo.captured_at ?? photo.uploaded_at
                 return (
@@ -490,6 +485,7 @@ export default async function FlagReportPage({
                         <img
                           src={thumbUrl}
                           alt={photo.notes ?? `Evidence photo ${idx + 1}`}
+                          loading="lazy"
                           className="block mx-auto max-h-[60vh] print:max-h-[80vh] w-auto"
                         />
                       ) : (

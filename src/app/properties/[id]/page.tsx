@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardCheck,
+  FileText,
   Flag,
   Hourglass,
   Info,
@@ -331,24 +332,53 @@ export default async function PropertyPage({
             </Badge>
           </div>
 
-          {/* Session 8: pre-arrival evidence capture. Sits inside the
+          {/* Session 8: pre-arrival evidence pack. Sits inside the
               property header so it's the first big control the eye
               hits on entering the apartment. Camera-first; gallery
-              fallback inside the modal. */}
-          <div className="mt-4 pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-slate-900">Pre-arrival evidence</p>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Baseline photos of the apartment before the next guest. Camera stays
-                open — capture a full sweep in one go.
-              </p>
+              fallback inside the modal.
+
+              Once at least one photo is attached, the section
+              expands to three actions: add more photos, raise a
+              flag (jumps to the quick-add tiles below), or open
+              the pre-arrival evidence pack report. */}
+          <div className="mt-4 pt-4 border-t border-slate-100">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-slate-900">
+                  Pre-arrival evidence pack
+                </p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Baseline photos of the apartment before the next guest. Camera stays
+                  open — capture a full sweep in one go.
+                </p>
+              </div>
+              <EvidenceCapture
+                propertyId={property.id}
+                launchLabel={
+                  (preArrivalPhotoCount ?? 0) > 0 ? 'Add more' : 'Take pre-arrival photos'
+                }
+              />
             </div>
-            <EvidenceCapture
-              propertyId={property.id}
-              launchLabel={
-                (preArrivalPhotoCount ?? 0) > 0 ? 'Add more' : 'Take pre-arrival photos'
-              }
-            />
+            {(preArrivalPhotoCount ?? 0) > 0 ? (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Link
+                  href={`/properties/${property.id}/pre-arrival/report`}
+                  target="_blank"
+                  rel="noopener"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition"
+                >
+                  <FileText size={13} aria-hidden />
+                  Open pre-arrival pack
+                </Link>
+                <Link
+                  href={`/properties/${property.id}#raise-flag`}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 transition"
+                >
+                  <Flag size={13} aria-hidden />
+                  Spotted an issue — raise a flag
+                </Link>
+              </div>
+            ) : null}
           </div>
 
           {property.notes ? (
@@ -360,7 +390,7 @@ export default async function PropertyPage({
       </Card>
 
       {/* Quick-add tiles */}
-      <section className="mb-10">
+      <section id="raise-flag" className="mb-10 scroll-mt-20">
         <div className="mb-3">
           <h2 className="text-lg font-semibold text-slate-900">Raise a flag</h2>
           <p className="text-sm text-slate-600">

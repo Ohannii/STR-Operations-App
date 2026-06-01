@@ -23,7 +23,6 @@ import { RadioChip, ToggleChip } from '@/components/ui/chip'
 import { Field } from '@/components/ui/input'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import {
-  MASTER_TTL_SECONDS,
   THUMB_TTL_SECONDS,
   signEvidencePaths,
 } from '@/lib/photos/signed-urls'
@@ -324,21 +323,20 @@ export default async function FlagDetailPage({
   if (!property || !flag) notFound()
 
   // Session 8: sign thumbnail URLs in bulk (one round trip).
-  // Master URLs are signed only when the user clicks a thumbnail —
-  // we keep them short-TTL so the bandwidth cost is bounded.
+  // Master URLs are NOT pre-signed at render — clicking a tile
+  // navigates to /properties/[id]/photos/[photoId]/view which
+  // signs the master on demand and 302-redirects to storage. This
+  // keeps the cost-per-render bounded regardless of how many photos
+  // are attached, and avoids master URLs expiring before the user
+  // clicks them.
   const photoRows = evidencePhotos ?? []
   const thumbPaths = photoRows
     .map((p) => p.thumbnail_path)
     .filter((p): p is string => Boolean(p))
-  const masterPaths = photoRows.map((p) => p.storage_path)
-  const [thumbUrlMap, masterUrlMap] = await Promise.all([
+  const thumbUrlMap =
     thumbPaths.length > 0
-      ? signEvidencePaths(thumbPaths, THUMB_TTL_SECONDS)
-      : Promise.resolve<Record<string, string>>({}),
-    masterPaths.length > 0
-      ? signEvidencePaths(masterPaths, MASTER_TTL_SECONDS)
-      : Promise.resolve<Record<string, string>>({}),
-  ])
+      ? await signEvidencePaths(thumbPaths, THUMB_TTL_SECONDS)
+      : {}
 
   const categoryRow = pickEmbedded(flag.flag_category)
   const cat = categoryRow ? getFlagCategoryDisplay(categoryRow.key) : undefined
@@ -872,7 +870,6 @@ export default async function FlagDetailPage({
                     ? thumbUrlMap[photo.thumbnail_path] ?? null
                     : null
                 }
-                masterUrl={masterUrlMap[photo.storage_path] ?? null}
               />
             ))}
           </ul>
@@ -954,23 +951,24 @@ function EvidencePhotoTile({
   propertyId,
   flagId,
   thumbUrl,
-  masterUrl,
 }: {
   photo: EvidencePhotoRow
   propertyId: string
   flagId: string
   thumbUrl: string | null
-  masterUrl: string | null
 }) {
   const capturedDisplay = photo.captured_at ?? photo.uploaded_at
   // Anchor for the return_to: brings the user back to this exact
   // grid tile after a caption edit / delete.
   const returnTo = `/properties/${propertyId}/flags/${flagId}#evidence`
+  // Click-to-view route signs the master on demand and 302s to
+  // storage. Cheaper than pre-signing 20 master URLs at render.
+  const viewHref = `/properties/${propertyId}/photos/${photo.id}/view`
   return (
     <li className="group relative rounded-lg overflow-hidden border border-slate-200 bg-slate-50">
-      {thumbUrl && masterUrl ? (
+      {thumbUrl ? (
         <a
-          href={masterUrl}
+          href={viewHref}
           target="_blank"
           rel="noopener"
           aria-label="Open full photo"
