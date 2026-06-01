@@ -103,6 +103,7 @@ export default async function PropertyPage({
     pack_started?: string
     pack_submitted?: string
     pack_discarded?: string
+    capture_now?: string
   }>
 }) {
   const ctx = await getUserContext()
@@ -117,6 +118,7 @@ export default async function PropertyPage({
     pack_started,
     pack_submitted,
     pack_discarded,
+    capture_now,
   } = await searchParams
 
   // Session 7: which flag cards are expanded inline. URL is the
@@ -475,9 +477,10 @@ export default async function PropertyPage({
                     propertyId={property.id}
                     evidencePackId={draftPack.id}
                     launchLabel={
-                      draftPackPhotoCount > 0 ? 'Add photos' : 'Take photos'
+                      draftPackPhotoCount > 0 ? 'Continue capturing' : 'Take photos'
                     }
-                    raiseFlagHref={`/properties/${property.id}#raise-flag`}
+                    raiseFlagHref={`/properties/${property.id}/flags/new`}
+                    autoOpen={capture_now === '1'}
                   />
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2">

@@ -44,7 +44,15 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Camera, Image as ImageIcon, Loader2, Pencil, Trash2, X } from 'lucide-react'
+import {
+  Camera,
+  Flag,
+  Image as ImageIcon,
+  Loader2,
+  Pencil,
+  Trash2,
+  X,
+} from 'lucide-react'
 import { compressForEvidence } from '@/lib/photos/compress'
 import {
   attachEvidencePhoto,
@@ -96,8 +104,21 @@ type Props = {
    * from the review screen. Rendered as a tertiary action. The
    * pack/flag context this capture session is in is the natural
    * "return path" the user lands on once they're back.
+   *
+   * Note: as of the Session 8 pre-merge revision, the raise-flag
+   * UX is handled internally (the component navigates after
+   * attaching pending photos) — this prop's presence still gates
+   * whether the affordance shows, but the target URL is computed
+   * from propertyId + flag/new.
    */
   raiseFlagHref?: string | null
+  /**
+   * When true, the modal opens automatically on mount. Used by the
+   * Action Centre after the user clicks "Start pre-arrival pack" —
+   * the server action redirects with capture_now=1 so the camera
+   * surface comes up immediately, no second tap required.
+   */
+  autoOpen?: boolean
 }
 
 /** Tiny client-side id generator (don't import randomUUID — that's Node). */
@@ -115,6 +136,7 @@ export function EvidenceCapture({
   launchLabel,
   launchVariant = 'primary',
   raiseFlagHref,
+  autoOpen = false,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [pending, setPending] = useState<Pending[]>([])
@@ -327,6 +349,23 @@ export function EvidenceCapture({
     setBatchError(null)
   }, [])
 
+  // Auto-open on mount when the parent passes autoOpen=true. Used
+  // by the Action Centre after Start pre-arrival pack — server
+  // redirects with capture_now=1, the Action Centre threads that
+  // here, and the camera surface comes up without a second tap.
+  // Misconfigured callers (no flagId + no packId) are guarded by
+  // the disabled launch button check above; we re-check before
+  // auto-opening so a stale URL doesn't surface a useless modal.
+  useEffect(() => {
+    if (autoOpen && !open && !isMisconfigured) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      openModal()
+    }
+    // intentionally only react to autoOpen flipping true on mount;
+    // we don't want re-renders to surprise-reopen the modal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpen])
+
   const closeModal = useCallback(() => {
     stopCamera()
     setOpen(false)
@@ -343,20 +382,18 @@ export function EvidenceCapture({
   // --------------------------------------------------------------
   // Attach pipeline
   // --------------------------------------------------------------
+  //
+  // uploadOne handles a single photo: sign + parallel PUTs + attach
+  // row. Returns true on success, false on failure. Updates per-
+  // photo state via setPending so the UI strip stays live.
+  //
+  // runUploads runs uploadOne with bounded concurrency. UPLOAD_CONCURRENCY=3
+  // is the sweet spot for mobile — sequential is too slow for 10+ photo
+  // batches, full-parallel saturates the radio and causes timeouts.
+  // Returns true if ALL ready photos succeeded.
 
-  const handleAttach = useCallback(async () => {
-    const readyItems = pending.filter((p) => p.state === 'ready' && p.master && p.thumb)
-    if (readyItems.length === 0) {
-      setBatchError('Nothing to attach yet. Wait for the photos to finish processing.')
-      return
-    }
-    setStage('uploading')
-    setBatchError(null)
-
-    // Sequential upload keeps mobile-network pressure low and gives
-    // a predictable progress indicator. Parallel would be faster on
-    // wifi but riskier on flaky signal.
-    for (const item of readyItems) {
+  const uploadOne = useCallback(
+    async (item: Pending): Promise<boolean> => {
       setPending((prev) =>
         prev.map((p) =>
           p.id === item.id ? { ...p, state: 'uploading', error: undefined } : p,
@@ -371,12 +408,7 @@ export function EvidenceCapture({
 
         if (!slot.ok) throw new Error(slot.error)
 
-        // PUT the master and thumb directly to Supabase Storage.
-        // Use the raw signed URL — supabase-js's uploadToSignedUrl
-        // requires the bucket/path arg pattern; the raw URL is
-        // simpler and works the same. Master + thumb run in parallel
-        // because they're independent objects — roughly halves the
-        // per-photo upload time on a single phone connection.
+        // Master + thumb in parallel; they're independent objects.
         const put = async (signedUrl: string, blob: Blob) => {
           const res = await fetch(signedUrl, {
             method: 'PUT',
@@ -392,7 +424,9 @@ export function EvidenceCapture({
           put(slot.thumbUpload.signedUrl, item.thumb as Blob),
         ])
 
-        const finalNote = (item.note?.trim() || attachAllNote.trim() || null) as string | null
+        const finalNote = (item.note?.trim() || attachAllNote.trim() || null) as
+          | string
+          | null
 
         const attached = await attachEvidencePhoto({
           photoId: slot.photoId,
@@ -414,6 +448,7 @@ export function EvidenceCapture({
         setPending((prev) =>
           prev.map((p) => (p.id === item.id ? { ...p, state: 'uploaded' } : p)),
         )
+        return true
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Upload failed.'
         setPending((prev) =>
@@ -421,11 +456,73 @@ export function EvidenceCapture({
             p.id === item.id ? { ...p, state: 'error', error: msg } : p,
           ),
         )
+        return false
+      }
+    },
+    [propertyId, flagId, evidencePackId, attachAllNote],
+  )
+
+  const runUploads = useCallback(
+    async (items: Pending[]): Promise<boolean> => {
+      if (items.length === 0) return true
+      const UPLOAD_CONCURRENCY = 3
+      const queue = [...items]
+      let allOk = true
+      const workers = Array.from(
+        { length: Math.min(UPLOAD_CONCURRENCY, queue.length) },
+        async () => {
+          while (true) {
+            const next = queue.shift()
+            if (!next) return
+            const ok = await uploadOne(next)
+            if (!ok) allOk = false
+          }
+        },
+      )
+      await Promise.all(workers)
+      return allOk
+    },
+    [uploadOne],
+  )
+
+  const handleAttach = useCallback(async () => {
+    const readyItems = pending.filter((p) => p.state === 'ready' && p.master && p.thumb)
+    if (readyItems.length === 0) {
+      setBatchError('Nothing to attach yet. Wait for the photos to finish processing.')
+      return
+    }
+    setStage('uploading')
+    setBatchError(null)
+    await runUploads(readyItems)
+    setStage('done')
+  }, [pending, runUploads])
+
+  // Raise-flag shortcut: attaches any pending-and-ready photos to
+  // the current pack first (so they're not silently lost), then
+  // navigates to the flag-creation page. If any upload fails, we
+  // stay on the review screen and surface the error — no silent
+  // photo loss.
+  const handleRaiseFlag = useCallback(async () => {
+    const readyItems = pending.filter((p) => p.state === 'ready' && p.master && p.thumb)
+    if (readyItems.length > 0) {
+      setStage('uploading')
+      setBatchError(null)
+      const allOk = await runUploads(readyItems)
+      if (!allOk) {
+        setBatchError(
+          'Some photos failed to attach. Retry or remove them, then tap Raise flag again.',
+        )
+        setStage('reviewing')
+        return
       }
     }
-
-    setStage('done')
-  }, [pending, propertyId, flagId, evidencePackId, attachAllNote])
+    // Stop the camera + clear in-memory state before leaving so we
+    // don't keep a getUserMedia stream alive across the navigation.
+    stopCamera()
+    if (typeof window !== 'undefined') {
+      window.location.href = `/properties/${propertyId}/flags/new`
+    }
+  }, [pending, runUploads, propertyId, stopCamera])
 
   const finishAndReload = useCallback(() => {
     closeModal()
@@ -485,9 +582,15 @@ export function EvidenceCapture({
           aria-modal="true"
           aria-label="Evidence capture"
         >
-          {/* Top bar */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-slate-950/70 backdrop-blur">
-            <p className="text-sm font-medium">
+          {/* Top bar.
+              The Raise-flag button sits here (not deep in the
+              review screen) so an inspector can pivot to recording
+              a defect after taking 1 or 40 photos without hunting.
+              On tap: pending photos are attached first (so they
+              don't silently disappear), THEN we navigate to the
+              flag-creation page. */}
+          <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-white/10 bg-slate-950/70 backdrop-blur">
+            <p className="text-sm font-medium truncate">
               {stage === 'shooting'
                 ? `${pending.length} photo${pending.length === 1 ? '' : 's'}`
                 : stage === 'reviewing'
@@ -496,15 +599,28 @@ export function EvidenceCapture({
                     ? `Uploading ${uploadingCount}…  (${uploadedCount}/${pending.length} done)`
                     : `Attached ${uploadedCount} photo${uploadedCount === 1 ? '' : 's'}`}
             </p>
-            <button
-              type="button"
-              onClick={closeModal}
-              className="rounded-full p-1.5 hover:bg-white/10 transition"
-              aria-label="Close camera"
-              disabled={isMidUpload}
-            >
-              <X size={20} aria-hidden />
-            </button>
+            <div className="flex items-center gap-2">
+              {raiseFlagHref && (stage === 'shooting' || stage === 'reviewing') ? (
+                <button
+                  type="button"
+                  onClick={handleRaiseFlag}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-amber-400 text-slate-950 px-2.5 py-1.5 text-xs font-semibold hover:bg-amber-300 active:bg-amber-500 transition"
+                  title="Attach pending photos to the pack, then open the flag workflow"
+                >
+                  <Flag size={13} aria-hidden />
+                  Raise flag
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={closeModal}
+                className="rounded-full p-1.5 hover:bg-white/10 transition"
+                aria-label="Close camera"
+                disabled={isMidUpload}
+              >
+                <X size={20} aria-hidden />
+              </button>
+            </div>
           </div>
 
           {/* Body */}
@@ -700,28 +816,6 @@ export function EvidenceCapture({
 
               {batchError ? (
                 <p className="mt-3 text-sm text-red-400">{batchError}</p>
-              ) : null}
-
-              {/* Raise-flag affordance on the review screen.
-                  Honest scope: this LINKS to the existing flag-
-                  creation workflow. The current pack photos stay
-                  on the pack — they're not auto-copied to the new
-                  flag. The flag's own evidence section is the
-                  right place to attach flag-specific photos. */}
-              {raiseFlagHref ? (
-                <div className="mt-4 rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2.5">
-                  <p className="text-xs text-amber-100 leading-relaxed">
-                    Spotted an issue in these photos? Raise a flag — the photos
-                    above stay attached to the pack, and you can attach flag-
-                    specific photos directly from the new flag.
-                  </p>
-                  <a
-                    href={raiseFlagHref}
-                    className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-400 text-slate-950 px-3 py-1.5 text-xs font-semibold hover:bg-amber-300 transition"
-                  >
-                    Raise a flag →
-                  </a>
-                </div>
               ) : null}
 
               <div className="mt-5 flex items-center justify-between gap-3">

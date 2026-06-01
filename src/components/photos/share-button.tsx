@@ -17,6 +17,19 @@ import { Share2 } from 'lucide-react'
  *     where supported.
  *   - If navigator.share rejects (user cancelled or unavailable),
  *     fail silently. The print button is still there.
+ *
+ * Important UX note on PDFs:
+ *   This is a URL-share (Web Share API "level 1"). Sharing the
+ *   actual PDF bytes requires either:
+ *     (a) navigator.share with `files: [pdfFile]` ("level 2") —
+ *         requires a PDF blob, which we don't generate this
+ *         session (no PDF library), or
+ *     (b) the user printing first, then sharing the saved PDF
+ *         file manually from their device.
+ *   For Session 8 we ship (b): the helper copy near this button
+ *   makes the two-step flow obvious. Adding a real PDF generator
+ *   is a focused follow-up — we deliberately don't import a
+ *   200KB-ish html2pdf/jsPDF bundle for one page.
  */
 export function ShareButton({
   title,
@@ -59,9 +72,10 @@ export function ShareButton({
         }
       }}
       className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition"
+      title="Share a link. For a PDF: tap Print/Save as PDF first, then share the saved file."
     >
       <Share2 size={14} aria-hidden />
-      Share
+      Share link
     </button>
   )
 }

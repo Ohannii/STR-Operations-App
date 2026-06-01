@@ -121,8 +121,13 @@ export async function startPreArrivalPackAction(formData: FormData) {
 
   revalidatePath(`/properties/${propertyId}`)
 
-  if (returnTo) redirect(returnTo)
-  redirect(`/properties/${propertyId}?pack_started=1`)
+  // Land on the Action Centre with capture_now=1 so the
+  // EvidenceCapture modal auto-opens — Start pack flows straight
+  // into the camera surface without a second tap.
+  if (returnTo) {
+    redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}capture_now=1`)
+  }
+  redirect(`/properties/${propertyId}?pack_started=1&capture_now=1`)
 }
 
 

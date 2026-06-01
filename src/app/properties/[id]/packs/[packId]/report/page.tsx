@@ -200,6 +200,15 @@ export default async function PackReportPage({
             <PrintButton />
           </div>
         </div>
+        {/* Two-step PDF flow: print/save as PDF locally, then share
+            the saved file. Sharing the PDF bytes directly from the
+            web app requires a real PDF generator we deliberately
+            haven't added yet (see ShareButton header comment). */}
+        <p className="max-w-4xl mx-auto px-6 pb-2 -mt-1 text-xs text-slate-500">
+          To send as PDF: tap <span className="font-medium">Print / Save as PDF</span> first, save the
+          file, then share it via WhatsApp / email from your device. &ldquo;Share link&rdquo; sends a
+          web link, useful for internal teams.
+        </p>
       </div>
 
       <article className="max-w-4xl mx-auto px-6 py-8 print:p-0 print:max-w-none">
