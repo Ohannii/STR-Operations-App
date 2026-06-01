@@ -6,27 +6,32 @@ import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
 import {
   ALL_CHIP_KINDS,
-  getChipDisplay,
+  chipMutexKinds,
   type ChipKind,
 } from '@/lib/ui/chip-vocabulary'
 
 /**
  * Server action invoked by the chip toggle buttons on the flag
- * detail page.
+ * detail page AND on the Action Centre's inline expanded card.
  *
  * Semantics:
  *   - If an active mark of this kind already exists on this flag,
  *     it gets cleared (cleared_at = now(), cleared_by = user).
  *     History row is preserved.
- *   - If no active mark exists, a new row is inserted. The chip's
- *     `replaces` array (e.g., maintenance_done replaces both
- *     maintenance_pending and maintenance_assigned) is processed
- *     first — any active marks of those kinds are cleared in the
- *     same action.
+ *   - If no active mark exists, the action first clears every
+ *     other active mark in the same CHIP_WORKFLOW_GROUPS entry —
+ *     this is what enforces the "one active chip per workflow"
+ *     rule, symmetrically. Setting asana_pending while asana_logged
+ *     is active clears asana_logged, and vice versa. Setting any
+ *     of the three maintenance chips clears the other two.
+ *   - Then a new row is inserted for the chosen kind.
  *
  * RLS enforces company scope; the partial unique index on
  * (flag_id, kind) where cleared_at is null prevents duplicate
- * active marks even under concurrent clicks.
+ * active marks of the same kind even under concurrent clicks.
+ * Workflow-group mutex is application-level (postgres-side
+ * enforcement would require a more elaborate constraint and is
+ * deliberately out of scope for v1.0).
  */
 export async function toggleFlagMarkAction(formData: FormData) {
   const propertyId = String(formData.get('property_id') ?? '').trim()
@@ -124,26 +129,29 @@ export async function toggleFlagMarkAction(formData: FormData) {
       redirect(`${detailUrl}?error=${encodeURIComponent(clearErr.message)}#operational`)
     }
   } else {
-    // Toggle ON: first clear any predecessors per the `replaces` list,
-    // then insert the new mark.
-    const chip = getChipDisplay(kind)
-    if (chip?.replaces && chip.replaces.length > 0) {
-      const { error: replaceErr } = await supabase
+    // Toggle ON: first clear any other active chips in the SAME
+    // workflow group (mutex semantics — symmetric in both directions:
+    // asana_pending → asana_logged and asana_logged → asana_pending
+    // both leave a single active chip). Then insert the new mark.
+    const mutexKinds = chipMutexKinds(kind)
+    if (mutexKinds.length > 0) {
+      const { error: mutexErr } = await supabase
         .from('flag_operational_marks')
         .update({
           cleared_at: now,
           cleared_by: ctx.user.id,
         })
         .eq('flag_id', flagId)
-        .in('kind', chip.replaces)
+        .in('kind', mutexKinds)
         .is('cleared_at', null)
-      if (replaceErr) {
-        // Predecessor clearing failure is non-fatal — we can still
-        // record the new mark. Log it and continue. The partial unique
-        // index protects against duplicate active rows; if a
-        // predecessor stayed active, the insert below may fail with
-        // a constraint violation, which the user will see clearly.
-        console.error('[marks/toggle] predecessor clear error:', replaceErr)
+      if (mutexErr) {
+        // Mutex clearing failure is non-fatal — we can still record
+        // the new mark. Log it and continue. The partial unique
+        // index protects against duplicate active rows of the same
+        // kind; if a sibling stayed active in the same group, the
+        // worst case is two active workflow chips, which the user
+        // can correct with another click.
+        console.error('[marks/toggle] mutex clear error:', mutexErr)
       }
     }
 

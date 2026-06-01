@@ -6,9 +6,14 @@
  *   - a display label (operator-grade English)
  *   - a Lucide icon
  *   - a Badge tone
- *   - optional `replaces`: kinds that should be auto-cleared when this
- *     one is set (predecessor chains, e.g., asana_pending → asana_logged;
- *     maintenance_pending → maintenance_assigned → maintenance_done).
+ *
+ * Chips within the same CHIP_WORKFLOW_GROUPS entry are mutually
+ * exclusive: setting one auto-clears any other active chip in that
+ * group. This is symmetric — moving forward (asana_pending →
+ * asana_logged) and backward / correcting (asana_logged →
+ * asana_pending) both produce a clean single-state outcome.
+ * `chipMutexKinds()` is the helper that exposes this for the server
+ * action layer.
  *
  * Most workflows have a pending → completed pair so staff can actively
  * mark intent ("this needs Asana logging") rather than letting the
@@ -93,16 +98,6 @@ export type ChipDisplay = {
   label: string
   tone: BadgeTone
   icon: LucideIcon
-  /**
-   * Other chip kinds this one supersedes. When the user toggles this
-   * chip on, any active marks of the kinds in this list get
-   * cleared_at = now() in the same server action.
-   *
-   * Example: setting `asana_logged` clears `asana_pending`. Setting
-   * `maintenance_done` clears both `maintenance_pending` and
-   * `maintenance_assigned`.
-   */
-  replaces?: ChipKind[]
 }
 
 // All "pending" chips share the same visual treatment: amber tone
@@ -123,7 +118,6 @@ const CHIP_MAP: Record<ChipKind, ChipDisplay> = {
     label: 'Asana logged',
     tone: 'sky',
     icon: ClipboardCheck,
-    replaces: ['asana_pending'],
   },
 
   // ---------- Guest notification ----------
@@ -138,7 +132,6 @@ const CHIP_MAP: Record<ChipKind, ChipDisplay> = {
     label: 'Guest notified',
     tone: 'emerald',
     icon: UserCheck,
-    replaces: ['guest_notify_pending'],
   },
 
   // ---------- Owner notification ----------
@@ -153,7 +146,6 @@ const CHIP_MAP: Record<ChipKind, ChipDisplay> = {
     label: 'Owner notified',
     tone: 'emerald',
     icon: UserCheck,
-    replaces: ['owner_notify_pending'],
   },
 
   // ---------- Maintenance ----------
@@ -168,14 +160,12 @@ const CHIP_MAP: Record<ChipKind, ChipDisplay> = {
     label: 'Maintenance assigned',
     tone: 'sky',
     icon: Calendar,
-    replaces: ['maintenance_pending'],
   },
   maintenance_done: {
     kind: 'maintenance_done',
     label: 'Maintenance done',
     tone: 'emerald',
     icon: Wrench,
-    replaces: ['maintenance_pending', 'maintenance_assigned'],
   },
 
   // ---------- Replacement ----------
@@ -190,7 +180,6 @@ const CHIP_MAP: Record<ChipKind, ChipDisplay> = {
     label: 'Replaced',
     tone: 'emerald',
     icon: PackageCheck,
-    replaces: ['replacement_needed'],
   },
 
   // ---------- Owner approval ----------
@@ -205,7 +194,6 @@ const CHIP_MAP: Record<ChipKind, ChipDisplay> = {
     label: 'Owner approved',
     tone: 'emerald',
     icon: ShieldCheck,
-    replaces: ['awaiting_owner_approval'],
   },
 
   // ---------- Cleaning ----------
@@ -363,3 +351,27 @@ export const CHIP_WORKFLOW_GROUPS: ChipWorkflowGroup[] = [
     kinds: ['needs_reclean'],
   },
 ]
+
+/**
+ * Returns the OTHER chip kinds in the same workflow group as `kind`,
+ * excluding `kind` itself. Empty array if `kind` is in no group or is
+ * alone in its group (e.g., `needs_reclean`).
+ *
+ * Used by the server action to enforce workflow-group mutual exclusion:
+ * setting any chip in a group auto-clears every other active chip in
+ * that same group. This works symmetrically — going forward
+ * (`asana_pending` → `asana_logged`) and going backward / correcting
+ * (`asana_logged` → `asana_pending`) both yield a single active state.
+ *
+ * Adding a new chip = add it to a CHIP_WORKFLOW_GROUPS entry =
+ * mutex behaviour is automatic. No per-chip `replaces` lists to
+ * maintain.
+ */
+export function chipMutexKinds(kind: ChipKind): ChipKind[] {
+  for (const group of CHIP_WORKFLOW_GROUPS) {
+    if (group.kinds.includes(kind)) {
+      return group.kinds.filter((k) => k !== kind)
+    }
+  }
+  return []
+}
