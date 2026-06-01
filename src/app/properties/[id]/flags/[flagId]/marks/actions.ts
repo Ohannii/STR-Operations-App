@@ -2,6 +2,7 @@
 
 import { redirect } from 'next/navigation'
 import { getUserContext } from '@/lib/auth/get-user-context'
+import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
 import {
   ALL_CHIP_KINDS,
@@ -31,17 +32,20 @@ export async function toggleFlagMarkAction(formData: FormData) {
   const propertyId = String(formData.get('property_id') ?? '').trim()
   const flagId = String(formData.get('flag_id') ?? '').trim()
   const kindRaw = String(formData.get('kind') ?? '').trim()
-  // Session 7: optional return_to lets the Action Centre redirect back
-  // to itself with the same `?open=` expansion state after a chip
-  // toggle. Validated to start with `/` to prevent open-redirect abuse.
-  const returnToRaw = String(formData.get('return_to') ?? '').trim()
-  const returnTo = returnToRaw.startsWith('/') ? returnToRaw : null
 
   const detailUrl = `/properties/${propertyId}/flags/${flagId}`
 
   if (!propertyId || !flagId) {
     redirect(`/dashboard?error=${encodeURIComponent('Missing flag reference.')}`)
   }
+
+  // Session 7: optional return_to lets the Action Centre redirect back
+  // to itself with the same `?open=` expansion state after a chip
+  // toggle. safeReturnTo enforces an internal path scoped to
+  // /properties/{propertyId} -- this rejects protocol-relative URLs
+  // (//evil.com), absolute schemes (http://, https://), backslash
+  // tricks, and any path outside the current property.
+  const returnTo = safeReturnTo(formData.get('return_to'), propertyId)
   if (!ALL_CHIP_KINDS.includes(kindRaw as ChipKind)) {
     if (returnTo) {
       redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}error=${encodeURIComponent('Unknown chip kind.')}`)

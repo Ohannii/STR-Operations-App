@@ -2,6 +2,7 @@
 
 import { redirect } from 'next/navigation'
 import { getUserContext } from '@/lib/auth/get-user-context'
+import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
 import {
   CHARGEABLE_PARTIES,
@@ -45,14 +46,16 @@ export async function updateFlagAction(formData: FormData) {
   const flagId = String(formData.get('flag_id') ?? '').trim()
   // Session 7: optional return_to lets the Action Centre's inline
   // Mark Resolved form land back on the Action Centre instead of
-  // the flag detail page. Validated to start with `/` to prevent
-  // open-redirect abuse.
-  const returnToRaw = String(formData.get('return_to') ?? '').trim()
-  const returnTo = returnToRaw.startsWith('/') ? returnToRaw : null
-
+  // the flag detail page. safeReturnTo enforces an internal path
+  // scoped to /properties/{propertyId} -- this rejects
+  // protocol-relative URLs (//evil.com), absolute schemes
+  // (http://, https://), backslash tricks, and any path outside
+  // the current property.
   if (!propertyId || !flagId) {
     redirect(`/dashboard?error=${encodeURIComponent('Missing flag reference.')}`)
   }
+
+  const returnTo = safeReturnTo(formData.get('return_to'), propertyId)
 
   const detailUrl = `/properties/${propertyId}/flags/${flagId}`
 
