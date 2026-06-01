@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
-import { ArrowLeft, Camera, FileText } from 'lucide-react'
+import { ArrowLeft, Camera, FileText, Trash2 } from 'lucide-react'
 import { PrintButton } from '@/components/photos/print-button'
 import { ShareButton } from '@/components/photos/share-button'
 import { getUserContext } from '@/lib/auth/get-user-context'
@@ -9,6 +9,10 @@ import {
   signEvidencePaths,
 } from '@/lib/photos/signed-urls'
 import { createClient } from '@/lib/supabase/server'
+import {
+  softDeleteEvidencePhoto,
+  updatePhotoNote,
+} from '../../../photos/actions'
 
 /**
  * GET /properties/[id]/packs/[packId]/report
@@ -245,6 +249,18 @@ export default async function PackReportPage({
           </div>
         </header>
 
+        {isDraft ? (
+          <div className="border border-t-0 border-amber-300 bg-amber-50 px-6 py-3 print:hidden">
+            <p className="text-sm text-amber-900">
+              <span className="font-semibold">This pack is still a draft.</span>{' '}
+              Edit captions below, remove photos that shouldn&rsquo;t be in the
+              pack, then return to the apartment and tap{' '}
+              <span className="font-semibold">Submit pack</span>. Submitted packs
+              become an immutable record.
+            </p>
+          </div>
+        ) : null}
+
         <section className="border border-t-0 border-slate-200 print:border-slate-300">
           <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 print:bg-slate-50">
             <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700">
@@ -389,16 +405,109 @@ export default async function PackReportPage({
                       )}
                     </div>
                     <div className="px-5 py-3 text-sm">
-                      {photo.notes ? (
-                        <p className="text-slate-800 leading-relaxed whitespace-pre-wrap">
-                          {photo.notes}
+                      {isDraft ? (
+                        // Pack is still a draft — inline caption editor + delete.
+                        // Submitted packs render the caption as static text below.
+                        // The print:hidden wrapper hides the editor controls when
+                        // printing so saved PDFs show the rendered caption only.
+                        <div className="print:hidden">
+                          <form
+                            action={updatePhotoNote}
+                            className="flex flex-col gap-2"
+                          >
+                            <input
+                              type="hidden"
+                              name="property_id"
+                              value={propertyId}
+                            />
+                            <input
+                              type="hidden"
+                              name="photo_id"
+                              value={photo.id}
+                            />
+                            <input
+                              type="hidden"
+                              name="return_to"
+                              value={`/properties/${propertyId}/packs/${packId}/report`}
+                            />
+                            <label
+                              htmlFor={`note-${photo.id}`}
+                              className="text-[10px] font-semibold uppercase tracking-wider text-slate-500"
+                            >
+                              Caption (optional)
+                            </label>
+                            <textarea
+                              id={`note-${photo.id}`}
+                              name="note"
+                              rows={2}
+                              maxLength={2000}
+                              defaultValue={photo.notes ?? ''}
+                              placeholder="What is this photo of? — optional"
+                              className="w-full px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-slate-900 resize-y"
+                            />
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-xs text-slate-500">
+                                Captured {formatDateTime(capturedDisplay)} ·
+                                Uploaded by {uploader}
+                              </p>
+                              <button
+                                type="submit"
+                                className="inline-flex items-center gap-1 rounded bg-slate-900 text-white px-3 py-1.5 text-xs font-semibold hover:bg-slate-800 active:bg-slate-950 transition"
+                              >
+                                Save caption
+                              </button>
+                            </div>
+                          </form>
+                        </div>
+                      ) : null}
+                      {/* Rendered caption — visible on both screen and
+                          print for submitted packs; print-only for draft
+                          packs (so the saved PDF shows the captions
+                          without the editor UI). */}
+                      <div className={isDraft ? 'hidden print:block' : ''}>
+                        {photo.notes ? (
+                          <p className="text-slate-800 leading-relaxed whitespace-pre-wrap">
+                            {photo.notes}
+                          </p>
+                        ) : (
+                          <p className="text-slate-400 italic">No caption.</p>
+                        )}
+                        <p className="text-xs text-slate-500 mt-2">
+                          Captured {formatDateTime(capturedDisplay)} · Uploaded by {uploader}
                         </p>
-                      ) : (
-                        <p className="text-slate-400 italic">No caption.</p>
-                      )}
-                      <p className="text-xs text-slate-500 mt-2">
-                        Captured {formatDateTime(capturedDisplay)} · Uploaded by {uploader}
-                      </p>
+                      </div>
+
+                      {/* Soft-delete control — only when draft. Once
+                          submitted, the pack is an immutable record. */}
+                      {isDraft ? (
+                        <form
+                          action={softDeleteEvidencePhoto}
+                          className="mt-3 print:hidden"
+                        >
+                          <input
+                            type="hidden"
+                            name="property_id"
+                            value={propertyId}
+                          />
+                          <input
+                            type="hidden"
+                            name="photo_id"
+                            value={photo.id}
+                          />
+                          <input
+                            type="hidden"
+                            name="return_to"
+                            value={`/properties/${propertyId}/packs/${packId}/report`}
+                          />
+                          <button
+                            type="submit"
+                            className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-red-600 transition"
+                          >
+                            <Trash2 size={11} aria-hidden />
+                            Remove this photo from the pack
+                          </button>
+                        </form>
+                      ) : null}
                     </div>
                   </li>
                 )

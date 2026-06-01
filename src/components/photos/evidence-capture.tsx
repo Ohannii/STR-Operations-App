@@ -119,6 +119,14 @@ type Props = {
    * surface comes up immediately, no second tap required.
    */
   autoOpen?: boolean
+  /**
+   * When true, the modal skips getUserMedia entirely and opens the
+   * native file picker on mount. After files are chosen the user
+   * lands in the review screen as usual. This is the bulletproof
+   * fallback for phones / browsers where in-app camera access is
+   * blocked (insecure context, denied permission, browser bug).
+   */
+  startInGalleryMode?: boolean
 }
 
 /** Tiny client-side id generator (don't import randomUUID — that's Node). */
@@ -137,6 +145,7 @@ export function EvidenceCapture({
   launchVariant = 'primary',
   raiseFlagHref,
   autoOpen = false,
+  startInGalleryMode = false,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [pending, setPending] = useState<Pending[]>([])
@@ -216,6 +225,10 @@ export function EvidenceCapture({
   // Start camera when modal opens (and we're in shooting stage).
   // Stop it on close / on unmount.
   //
+  // Skip getUserMedia entirely when startInGalleryMode is true —
+  // we want the gallery picker as the only entry point so phones
+  // / browsers that block in-app camera can't get stuck.
+  //
   // The React 19 react-hooks/set-state-in-effect rule fires because
   // startCamera() synchronously calls setCameraError(null) +
   // setCameraReady(false) before awaiting getUserMedia. That's
@@ -224,7 +237,7 @@ export function EvidenceCapture({
   // would only hide the same calls from the linter without changing
   // behaviour.
   useEffect(() => {
-    if (open && stage === 'shooting') {
+    if (open && stage === 'shooting' && !startInGalleryMode) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       void startCamera()
     } else {
@@ -233,7 +246,26 @@ export function EvidenceCapture({
     return () => {
       stopCamera()
     }
-  }, [open, stage, startCamera, stopCamera])
+  }, [open, stage, startCamera, stopCamera, startInGalleryMode])
+
+  // Auto-trigger the file picker when the modal is opened in
+  // gallery-only mode. The user lands in the file picker
+  // immediately; once they choose photos, ingestBlob pushes them
+  // into the strip and they can move to review like normal.
+  useEffect(() => {
+    if (
+      open &&
+      startInGalleryMode &&
+      stage === 'shooting' &&
+      pending.length === 0
+    ) {
+      const timer = setTimeout(() => {
+        galleryInputRef.current?.click()
+      }, 150)
+      return () => clearTimeout(timer)
+    }
+    return undefined
+  }, [open, startInGalleryMode, stage, pending.length])
 
   // Revoke object URLs when pending items change or modal closes.
   useEffect(() => {
@@ -626,36 +658,61 @@ export function EvidenceCapture({
           {/* Body */}
           {stage === 'shooting' ? (
             <div className="flex-1 flex flex-col">
-              {/* Camera preview */}
-              <div className="relative flex-1 bg-black overflow-hidden">
-                <video
-                  ref={videoRef}
-                  className="absolute inset-0 w-full h-full object-cover"
-                  muted
-                  playsInline
-                />
-                {!cameraReady && !cameraError ? (
-                  <div className="absolute inset-0 flex items-center justify-center text-sm text-white/70">
-                    <Loader2 size={20} className="animate-spin mr-2" aria-hidden />
-                    Starting camera…
-                  </div>
-                ) : null}
-                {cameraError ? (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center px-6 text-center gap-3">
-                    <p className="text-sm text-white/85 max-w-sm leading-relaxed">
-                      {cameraError}
+              {/* Camera preview (skipped entirely when in gallery-only
+                  mode — phones with blocked getUserMedia get a clean
+                  gallery picker UI instead of a dead-camera screen). */}
+              {startInGalleryMode ? (
+                <div className="relative flex-1 bg-slate-900 overflow-hidden flex flex-col items-center justify-center px-6 text-center gap-4">
+                  <ImageIcon size={36} className="text-white/40" aria-hidden />
+                  <div>
+                    <p className="text-base font-medium text-white">
+                      Upload from gallery
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => galleryInputRef.current?.click()}
-                      className="inline-flex items-center gap-1.5 rounded-md bg-white text-slate-900 px-4 py-2 text-sm font-semibold hover:bg-slate-100 active:bg-slate-200 transition"
-                    >
-                      <ImageIcon size={14} aria-hidden />
-                      Use gallery instead
-                    </button>
+                    <p className="text-sm text-white/60 mt-1 max-w-sm">
+                      Choose photos you already took with your phone&rsquo;s
+                      Camera app. You can pick multiple at once.
+                    </p>
                   </div>
-                ) : null}
-              </div>
+                  <button
+                    type="button"
+                    onClick={() => galleryInputRef.current?.click()}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-white text-slate-900 px-4 py-2 text-sm font-semibold hover:bg-slate-100 active:bg-slate-200 transition"
+                  >
+                    <ImageIcon size={14} aria-hidden />
+                    Choose photos
+                  </button>
+                </div>
+              ) : (
+                <div className="relative flex-1 bg-black overflow-hidden">
+                  <video
+                    ref={videoRef}
+                    className="absolute inset-0 w-full h-full object-cover"
+                    muted
+                    playsInline
+                  />
+                  {!cameraReady && !cameraError ? (
+                    <div className="absolute inset-0 flex items-center justify-center text-sm text-white/70">
+                      <Loader2 size={20} className="animate-spin mr-2" aria-hidden />
+                      Starting camera…
+                    </div>
+                  ) : null}
+                  {cameraError ? (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center px-6 text-center gap-3">
+                      <p className="text-sm text-white/85 max-w-sm leading-relaxed">
+                        {cameraError}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => galleryInputRef.current?.click()}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-white text-slate-900 px-4 py-2 text-sm font-semibold hover:bg-slate-100 active:bg-slate-200 transition"
+                      >
+                        <ImageIcon size={14} aria-hidden />
+                        Use gallery instead
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              )}
 
               {/* Photo strip */}
               {pending.length > 0 ? (
@@ -699,15 +756,22 @@ export function EvidenceCapture({
                   Gallery
                 </button>
 
-                <button
-                  type="button"
-                  onClick={handleShutter}
-                  disabled={!cameraReady}
-                  className="h-16 w-16 rounded-full bg-white text-slate-950 disabled:opacity-40 active:scale-95 transition flex items-center justify-center shadow-xl border-4 border-white/30"
-                  aria-label="Take photo"
-                >
-                  <span className="block h-12 w-12 rounded-full bg-white border-2 border-slate-950" />
-                </button>
+                {startInGalleryMode ? (
+                  // No shutter in gallery-only mode — leave the
+                  // space so the bottom bar layout stays balanced
+                  // (Gallery / [spacer] / Next).
+                  <span className="h-16 w-16" aria-hidden />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleShutter}
+                    disabled={!cameraReady}
+                    className="h-16 w-16 rounded-full bg-white text-slate-950 disabled:opacity-40 active:scale-95 transition flex items-center justify-center shadow-xl border-4 border-white/30"
+                    aria-label="Take photo"
+                  >
+                    <span className="block h-12 w-12 rounded-full bg-white border-2 border-slate-950" />
+                  </button>
+                )}
 
                 <button
                   type="button"

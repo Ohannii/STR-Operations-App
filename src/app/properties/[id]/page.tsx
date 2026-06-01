@@ -473,15 +473,29 @@ export default async function PropertyPage({
                       {relativeTime(draftPack.started_at)}
                     </p>
                   </div>
-                  <EvidenceCapture
-                    propertyId={property.id}
-                    evidencePackId={draftPack.id}
-                    launchLabel={
-                      draftPackPhotoCount > 0 ? 'Continue capturing' : 'Take photos'
-                    }
-                    raiseFlagHref={`/properties/${property.id}/flags/new`}
-                    autoOpen={capture_now === '1'}
-                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <EvidenceCapture
+                      propertyId={property.id}
+                      evidencePackId={draftPack.id}
+                      launchLabel={
+                        draftPackPhotoCount > 0 ? 'Continue capturing' : 'Take photos'
+                      }
+                      raiseFlagHref={`/properties/${property.id}/flags/new`}
+                      autoOpen={capture_now === '1'}
+                    />
+                    {/* Gallery-only fallback — works on phones where
+                        in-app camera (getUserMedia) is blocked
+                        (insecure context, denied permission, etc.).
+                        Bypasses getUserMedia entirely. */}
+                    <EvidenceCapture
+                      propertyId={property.id}
+                      evidencePackId={draftPack.id}
+                      launchLabel="Upload from gallery"
+                      launchVariant="subtle"
+                      raiseFlagHref={`/properties/${property.id}/flags/new`}
+                      startInGalleryMode
+                    />
+                  </div>
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <Link
@@ -494,7 +508,7 @@ export default async function PropertyPage({
                     Open pack
                   </Link>
                   <Link
-                    href={`/properties/${property.id}#raise-flag`}
+                    href={`/properties/${property.id}/flags/new`}
                     className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 transition"
                   >
                     <Flag size={13} aria-hidden />

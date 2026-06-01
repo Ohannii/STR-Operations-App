@@ -406,6 +406,20 @@ export async function updatePhotoNote(formData: FormData) {
     redirect(`${url}?error=${encodeURIComponent(error.message)}`)
   }
 
+  // Revalidate the property dashboard + (if applicable) the flag
+  // detail/report so the new caption shows up immediately. The
+  // pack report is the most common return target for pre-arrival
+  // caption edits; revalidatePath with no specific id covers all
+  // packs because the report route uses dynamic segments.
+  revalidatePath(`/properties/${propertyId}`)
+  if (flagId) {
+    revalidatePath(`/properties/${propertyId}/flags/${flagId}`)
+    revalidatePath(`/properties/${propertyId}/flags/${flagId}/report`)
+  }
+  // Pack report paths share the same dynamic ancestor; revalidating
+  // the layout cascade is the broadest safe option.
+  revalidatePath(`/properties/${propertyId}/packs`, 'layout')
+
   if (returnTo) redirect(returnTo)
   redirect(`${detailUrl}?photo_updated=1`)
 }
@@ -461,6 +475,15 @@ export async function softDeleteEvidencePhoto(formData: FormData) {
   if (auditErr) {
     console.error('[photos/delete] audit write failed:', auditErr)
   }
+
+  // Same revalidation pattern as updatePhotoNote — covers
+  // dashboard, flag detail/report, and pack report routes.
+  revalidatePath(`/properties/${propertyId}`)
+  if (flagId) {
+    revalidatePath(`/properties/${propertyId}/flags/${flagId}`)
+    revalidatePath(`/properties/${propertyId}/flags/${flagId}/report`)
+  }
+  revalidatePath(`/properties/${propertyId}/packs`, 'layout')
 
   if (returnTo) redirect(returnTo)
   redirect(`${detailUrl}?photo_deleted=1`)
