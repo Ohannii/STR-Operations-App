@@ -1,5 +1,6 @@
 'use server'
 
+import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { safeReturnTo } from '@/lib/safe-return-to'
@@ -172,6 +173,11 @@ export async function toggleFlagMarkAction(formData: FormData) {
       redirect(`${detailUrl}?error=${encodeURIComponent(insertErr.message)}#operational`)
     }
   }
+
+  // Session 8 fix: explicit revalidation so Action Centre chip
+  // displays reflect the toggle without needing a hard reload.
+  revalidatePath(`/properties/${propertyId}`)
+  revalidatePath(`/properties/${propertyId}/flags/${flagId}`)
 
   // Session 7: return_to (when present and safe) wins over the
   // default detail-page redirect. The Action Centre supplies a

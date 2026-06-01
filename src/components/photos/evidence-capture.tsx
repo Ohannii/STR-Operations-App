@@ -81,10 +81,23 @@ type Props = {
   propertyId: string
   /** Optional — when present, captures attach to this flag. */
   flagId?: string | null
+  /**
+   * Optional — when present (and flagId is not), captures attach
+   * to this draft evidence pack. The server validates the pack is
+   * a draft on this property before signing.
+   */
+  evidencePackId?: string | null
   /** Label customisation for the launch button. */
   launchLabel?: string
   /** Variant for the launch button. */
   launchVariant?: 'primary' | 'subtle'
+  /**
+   * Optional URL to send the user to if they want to raise a flag
+   * from the review screen. Rendered as a tertiary action. The
+   * pack/flag context this capture session is in is the natural
+   * "return path" the user lands on once they're back.
+   */
+  raiseFlagHref?: string | null
 }
 
 /** Tiny client-side id generator (don't import randomUUID — that's Node). */
@@ -98,8 +111,10 @@ function makeClientId(): string {
 export function EvidenceCapture({
   propertyId,
   flagId,
+  evidencePackId,
   launchLabel,
   launchVariant = 'primary',
+  raiseFlagHref,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [pending, setPending] = useState<Pending[]>([])
@@ -351,6 +366,7 @@ export function EvidenceCapture({
         const slot = (await requestPhotoUploadSlot({
           propertyId,
           flagId: flagId ?? null,
+          evidencePackId: evidencePackId ?? null,
         })) as UploadSlot | { ok: false; error: string }
 
         if (!slot.ok) throw new Error(slot.error)
@@ -382,6 +398,7 @@ export function EvidenceCapture({
           photoId: slot.photoId,
           propertyId,
           flagId: flagId ?? null,
+          evidencePackId: slot.evidencePackId,
           masterPath: slot.masterPath,
           thumbPath: slot.thumbPath,
           width: item.width ?? 0,
@@ -408,7 +425,7 @@ export function EvidenceCapture({
     }
 
     setStage('done')
-  }, [pending, propertyId, flagId, attachAllNote])
+  }, [pending, propertyId, flagId, evidencePackId, attachAllNote])
 
   const finishAndReload = useCallback(() => {
     closeModal()
@@ -434,10 +451,14 @@ export function EvidenceCapture({
   // Render
   // --------------------------------------------------------------
 
+  // Pre-arrival pack capture sessions require a packId — fail
+  // closed if a caller forgets it. Flag captures don't need a pack.
+  const isMisconfigured = !flagId && !evidencePackId
+
   const launchClass =
     launchVariant === 'primary'
-      ? 'inline-flex items-center gap-2 rounded-md bg-slate-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 active:bg-slate-950 transition'
-      : 'inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition'
+      ? 'inline-flex items-center gap-2 rounded-md bg-slate-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 active:bg-slate-950 disabled:opacity-50 disabled:cursor-not-allowed transition'
+      : 'inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition'
 
   return (
     <>
@@ -446,6 +467,12 @@ export function EvidenceCapture({
         onClick={openModal}
         className={launchClass}
         aria-label={launchLabel ?? 'Take photos'}
+        disabled={isMisconfigured}
+        title={
+          isMisconfigured
+            ? 'Start a pre-arrival pack first to capture photos here.'
+            : undefined
+        }
       >
         <Camera size={16} aria-hidden />
         {launchLabel ?? 'Take photos'}
@@ -673,6 +700,28 @@ export function EvidenceCapture({
 
               {batchError ? (
                 <p className="mt-3 text-sm text-red-400">{batchError}</p>
+              ) : null}
+
+              {/* Raise-flag affordance on the review screen.
+                  Honest scope: this LINKS to the existing flag-
+                  creation workflow. The current pack photos stay
+                  on the pack — they're not auto-copied to the new
+                  flag. The flag's own evidence section is the
+                  right place to attach flag-specific photos. */}
+              {raiseFlagHref ? (
+                <div className="mt-4 rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2.5">
+                  <p className="text-xs text-amber-100 leading-relaxed">
+                    Spotted an issue in these photos? Raise a flag — the photos
+                    above stay attached to the pack, and you can attach flag-
+                    specific photos directly from the new flag.
+                  </p>
+                  <a
+                    href={raiseFlagHref}
+                    className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-400 text-slate-950 px-3 py-1.5 text-xs font-semibold hover:bg-amber-300 transition"
+                  >
+                    Raise a flag →
+                  </a>
+                </div>
               ) : null}
 
               <div className="mt-5 flex items-center justify-between gap-3">

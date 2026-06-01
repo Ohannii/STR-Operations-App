@@ -55,6 +55,8 @@ export type UploadSlot = {
   retentionClass: RetentionClass
   /** Echoed back so the attach call carries the same context. */
   companyId: string
+  /** Echo of the validated pack id when this is a pre-arrival capture. */
+  evidencePackId: string | null
 }
 
 export type UploadSlotError = {
@@ -80,6 +82,14 @@ export type UploadSlotError = {
 export async function requestPhotoUploadSlot(input: {
   propertyId: string
   flagId?: string | null
+  /**
+   * Session 8 follow-up: pre-arrival photos are scoped to an
+   * evidence pack. When the caller is the pre-arrival capture
+   * surface, packId must be supplied; the server validates the
+   * pack is a draft on this property before signing. Flag-photo
+   * captures don't carry a packId.
+   */
+  evidencePackId?: string | null
 }): Promise<UploadSlot | UploadSlotError> {
   const ctx = await getUserContext()
   if (!ctx || !ctx.company) {
@@ -88,6 +98,9 @@ export async function requestPhotoUploadSlot(input: {
 
   const propertyId = String(input.propertyId ?? '').trim()
   const flagId = input.flagId ? String(input.flagId).trim() : null
+  const evidencePackId = input.evidencePackId
+    ? String(input.evidencePackId).trim()
+    : null
 
   if (!propertyId) {
     return { ok: false, error: 'Missing property reference.' }
@@ -157,6 +170,35 @@ export async function requestPhotoUploadSlot(input: {
     retentionClass = retentionClassForFlagCategory(cat?.key ?? null)
   }
 
+  // Pre-arrival capture: the caller must supply a packId that
+  // refers to a draft pack on this property. Submitted packs
+  // cannot accept new photos.
+  if (!flagId && evidencePackId) {
+    const { data: pack, error: packErr } = await supabase
+      .from('evidence_packs')
+      .select('id, property_id, status')
+      .eq('id', evidencePackId)
+      .is('deleted_at', null)
+      .maybeSingle<{ id: string; property_id: string; status: string }>()
+    if (packErr) {
+      console.error('[photos/sign] pack read error:', packErr)
+      return { ok: false, error: packErr.message }
+    }
+    if (!pack) {
+      return { ok: false, error: 'Evidence pack not found.' }
+    }
+    if (pack.property_id !== propertyId) {
+      return { ok: false, error: 'Pack does not belong to this property.' }
+    }
+    if (pack.status !== 'draft') {
+      return {
+        ok: false,
+        error:
+          'This pack is already submitted. Start a new pre-arrival pack to add more photos.',
+      }
+    }
+  }
+
   const photoId = randomUUID()
   const storageCtx: StorageContext = flagId
     ? {
@@ -209,6 +251,7 @@ export async function requestPhotoUploadSlot(input: {
     thumbUpload: { signedUrl: thumbUpload.signedUrl, token: thumbUpload.token },
     retentionClass,
     companyId: property.company_id,
+    evidencePackId: flagId ? null : evidencePackId,
   }
 }
 
@@ -227,6 +270,7 @@ export type AttachPhotoInput = {
   photoId: string
   propertyId: string
   flagId?: string | null
+  evidencePackId?: string | null
   masterPath: string
   thumbPath: string
   width: number
@@ -248,6 +292,9 @@ export async function attachEvidencePhoto(
   const photoId = String(input.photoId ?? '').trim()
   const propertyId = String(input.propertyId ?? '').trim()
   const flagId = input.flagId ? String(input.flagId).trim() : null
+  const evidencePackId = input.evidencePackId
+    ? String(input.evidencePackId).trim()
+    : null
 
   if (!photoId || !propertyId) {
     return { ok: false, error: 'Missing photo reference.' }
@@ -261,6 +308,7 @@ export async function attachEvidencePhoto(
     company_id: ctx.company.id,
     property_id: propertyId,
     flag_id: flagId,
+    evidence_pack_id: evidencePackId,
     entity_type: flagId ? 'flag' : 'property',
     retention_class: input.retentionClass,
     uploaded_by: ctx.user.id,
@@ -289,6 +337,7 @@ export async function attachEvidencePhoto(
     metadata: {
       flag_id: flagId,
       property_id: propertyId,
+      evidence_pack_id: evidencePackId,
       retention_class: input.retentionClass,
       master_path: input.masterPath,
     },
@@ -304,6 +353,9 @@ export async function attachEvidencePhoto(
   if (flagId) {
     revalidatePath(`/properties/${propertyId}/flags/${flagId}`)
     revalidatePath(`/properties/${propertyId}/flags/${flagId}/report`)
+  }
+  if (evidencePackId) {
+    revalidatePath(`/properties/${propertyId}/packs/${evidencePackId}/report`)
   }
 
   return { ok: true, photoId }

@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
 import { AlertCircle, ArrowLeft, FileText } from 'lucide-react'
 import { PrintButton } from '@/components/photos/print-button'
+import { ShareButton } from '@/components/photos/share-button'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import {
   THUMB_TTL_SECONDS,
@@ -251,7 +252,7 @@ export default async function FlagReportPage({
     <div className="min-h-screen bg-white text-slate-900 print:bg-white">
       {/* On-screen toolbar — hidden when printing. */}
       <div className="print:hidden sticky top-0 z-10 bg-white/95 backdrop-blur border-b border-slate-200">
-        <div className="max-w-4xl mx-auto px-6 py-3 flex items-center justify-between">
+        <div className="max-w-4xl mx-auto px-6 py-3 flex items-center justify-between gap-3">
           <Link
             href={`/properties/${property.id}/flags/${flag.id}`}
             className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 transition"
@@ -259,7 +260,13 @@ export default async function FlagReportPage({
             <ArrowLeft size={14} aria-hidden />
             Back to flag
           </Link>
-          <PrintButton />
+          <div className="flex items-center gap-2">
+            <ShareButton
+              title={`Flag Evidence Report — ${cat?.label ?? 'Flag'}`}
+              text={`${property.name} · ${cat?.label ?? 'Flag'} · ${status.label}`}
+            />
+            <PrintButton />
+          </div>
         </div>
       </div>
 

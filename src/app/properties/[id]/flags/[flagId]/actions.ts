@@ -1,5 +1,6 @@
 'use server'
 
+import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { safeReturnTo } from '@/lib/safe-return-to'
@@ -176,6 +177,15 @@ export async function updateFlagAction(formData: FormData) {
     console.error('[flag/update] audit write failed:', auditErr)
   }
 
+  // Session 8 fix: explicit cache invalidation. Without this, the
+  // Action Centre at /properties/[id] may serve a stale RSC payload
+  // after the redirect — closed flags show as still-open in the
+  // Open Flags list. The action's "home" route is the flag detail
+  // page; the Action Centre is a different route that must be
+  // invalidated explicitly.
+  revalidatePath(`/properties/${propertyId}`)
+  revalidatePath(`/properties/${propertyId}/flags/${flagId}`)
+
   // Session 7: return_to (when present and safe) wins over the
   // default detail-page redirect. The Action Centre's inline Mark
   // Resolved sends a return URL back to the apartment dashboard.
@@ -225,6 +235,9 @@ export async function addFlagNoteAction(formData: FormData) {
     console.error('[flag/note] insert error:', error)
     redirect(`${detailUrl}?error=${encodeURIComponent(error.message)}`)
   }
+
+  revalidatePath(`/properties/${propertyId}`)
+  revalidatePath(`/properties/${propertyId}/flags/${flagId}`)
 
   redirect(`${detailUrl}?note_added=1#activity`)
 }
@@ -303,6 +316,9 @@ export async function reopenFlagAction(formData: FormData) {
   if (auditErr) {
     console.error('[flag/reopen] audit write failed:', auditErr)
   }
+
+  revalidatePath(`/properties/${propertyId}`)
+  revalidatePath(`/properties/${propertyId}/flags/${flagId}`)
 
   redirect(`${detailUrl}?reopened=1#activity`)
 }
