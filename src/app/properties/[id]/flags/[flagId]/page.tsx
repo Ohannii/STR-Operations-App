@@ -2,14 +2,19 @@ import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
 import {
   ArrowLeft,
+  Camera,
   Check,
+  ExternalLink,
+  FileText,
   Flag as FlagIcon,
   MessageCircle,
   MessageSquare,
   RotateCcw,
+  Trash2,
   type LucideIcon,
 } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
+import { EvidenceCapture } from '@/components/photos/evidence-capture'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button, buttonClasses } from '@/components/ui/button'
@@ -17,6 +22,11 @@ import { Card } from '@/components/ui/card'
 import { RadioChip, ToggleChip } from '@/components/ui/chip'
 import { Field } from '@/components/ui/input'
 import { getUserContext } from '@/lib/auth/get-user-context'
+import {
+  MASTER_TTL_SECONDS,
+  THUMB_TTL_SECONDS,
+  signEvidencePaths,
+} from '@/lib/photos/signed-urls'
 import { createClient } from '@/lib/supabase/server'
 import {
   CHIP_WORKFLOW_GROUPS,
@@ -52,6 +62,10 @@ import {
   markGuestPaidAction,
   markGuestRefusedAction,
 } from './recovery/[taskId]/actions'
+import {
+  softDeleteEvidencePhoto,
+  updatePhotoNote,
+} from '../../photos/actions'
 
 /**
  * GET /properties/[id]/flags/[flagId]
@@ -99,6 +113,19 @@ type AuditEventRow = {
   after: unknown
   metadata: unknown
   created_at: string
+}
+
+type EvidencePhotoRow = {
+  id: string
+  storage_path: string
+  thumbnail_path: string | null
+  notes: string | null
+  captured_at: string | null
+  uploaded_at: string
+  uploaded_by: string
+  width: number | null
+  height: number | null
+  size_bytes: number | null
 }
 
 type StayEmbed = {
@@ -166,6 +193,8 @@ export default async function FlagDetailPage({
     refused?: string
     closed?: string
     mark_toggled?: string
+    photo_updated?: string
+    photo_deleted?: string
     error?: string
   }>
 }) {
@@ -184,6 +213,8 @@ export default async function FlagDetailPage({
     refused,
     closed,
     mark_toggled,
+    photo_updated,
+    photo_deleted,
     error,
   } = await searchParams
 
@@ -259,21 +290,55 @@ export default async function FlagDetailPage({
     .is('cleared_at', null)
     .returns<{ id: string; kind: string; marked_at: string; marked_by: string }[]>()
 
+  // Session 8: evidence photos attached to this flag. Ordered by
+  // captured_at descending (falls back to uploaded_at via coalesce
+  // in app code) so newest evidence renders first.
+  const photosPromise = supabase
+    .from('photos')
+    .select(
+      `id, storage_path, thumbnail_path, notes, captured_at,
+       uploaded_at, uploaded_by, width, height, size_bytes`,
+    )
+    .eq('flag_id', flagId)
+    .is('deleted_at', null)
+    .order('captured_at', { ascending: false, nullsFirst: false })
+    .order('uploaded_at', { ascending: false })
+    .returns<EvidencePhotoRow[]>()
+
   const [
     { data: property },
     { data: flag },
     { data: auditEvents },
     { data: recoveryRows },
     { data: activeMarks },
+    { data: evidencePhotos },
   ] = await Promise.all([
     propertyPromise,
     flagPromise,
     auditPromise,
     recoveryPromise,
     marksPromise,
+    photosPromise,
   ])
 
   if (!property || !flag) notFound()
+
+  // Session 8: sign thumbnail URLs in bulk (one round trip).
+  // Master URLs are signed only when the user clicks a thumbnail —
+  // we keep them short-TTL so the bandwidth cost is bounded.
+  const photoRows = evidencePhotos ?? []
+  const thumbPaths = photoRows
+    .map((p) => p.thumbnail_path)
+    .filter((p): p is string => Boolean(p))
+  const masterPaths = photoRows.map((p) => p.storage_path)
+  const [thumbUrlMap, masterUrlMap] = await Promise.all([
+    thumbPaths.length > 0
+      ? signEvidencePaths(thumbPaths, THUMB_TTL_SECONDS)
+      : Promise.resolve<Record<string, string>>({}),
+    masterPaths.length > 0
+      ? signEvidencePaths(masterPaths, MASTER_TTL_SECONDS)
+      : Promise.resolve<Record<string, string>>({}),
+  ])
 
   const categoryRow = pickEmbedded(flag.flag_category)
   const cat = categoryRow ? getFlagCategoryDisplay(categoryRow.key) : undefined
@@ -406,6 +471,16 @@ export default async function FlagDetailPage({
           <Alert tone="success">Operational chip updated.</Alert>
         </div>
       ) : null}
+      {photo_updated ? (
+        <div className="mb-5">
+          <Alert tone="success">Photo caption saved.</Alert>
+        </div>
+      ) : null}
+      {photo_deleted ? (
+        <div className="mb-5">
+          <Alert tone="success">Photo removed from this flag.</Alert>
+        </div>
+      ) : null}
       {error ? (
         <div className="mb-5">
           <Alert tone="error">{decodeURIComponent(error)}</Alert>
@@ -436,6 +511,19 @@ export default async function FlagDetailPage({
                 <Badge tone={charge.tone}>Responsibility: {charge.label}</Badge>
               </div>
             </div>
+            {/* Session 8: report link. Opens in a new tab so the
+                inspector can keep the detail page in place while
+                printing / sharing. */}
+            <Link
+              href={`/properties/${property.id}/flags/${flag.id}/report`}
+              target="_blank"
+              rel="noopener"
+              className="shrink-0 inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition"
+            >
+              <FileText size={14} aria-hidden />
+              Open report
+              <ExternalLink size={12} className="opacity-60" aria-hidden />
+            </Link>
           </div>
 
           {flag.description ? (
@@ -735,6 +823,62 @@ export default async function FlagDetailPage({
         </Card>
       ) : null}
 
+      {/* Session 8: evidence photos. Sits above the activity timeline
+          so the visual proof is the first thing a reader sees once
+          they've grokked the triage state. The capture component is
+          a client component (camera + canvas + uploads), everything
+          else stays server-rendered. */}
+      <section id="evidence" className="mb-8 scroll-mt-20">
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">Evidence</h2>
+            <p className="text-sm text-slate-600">
+              Photos attached to this flag. Tap a thumbnail to open the full
+              shot in a new tab. Captions are optional and editable.
+            </p>
+          </div>
+          <EvidenceCapture
+            propertyId={property.id}
+            flagId={flag.id}
+            launchLabel="Take photos"
+          />
+        </div>
+
+        {photoRows.length === 0 ? (
+          <Card>
+            <div className="p-6 text-center">
+              <div className="inline-flex items-center justify-center h-10 w-10 rounded-full bg-slate-100 text-slate-600 mb-3">
+                <Camera size={18} aria-hidden />
+              </div>
+              <p className="text-sm font-medium text-slate-800">
+                No evidence photos yet
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                Tap &ldquo;Take photos&rdquo; above. The camera stays open so you
+                can capture multiple angles in a row.
+              </p>
+            </div>
+          </Card>
+        ) : (
+          <ul className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {photoRows.map((photo) => (
+              <EvidencePhotoTile
+                key={photo.id}
+                photo={photo}
+                propertyId={property.id}
+                flagId={flag.id}
+                thumbUrl={
+                  photo.thumbnail_path
+                    ? thumbUrlMap[photo.thumbnail_path] ?? null
+                    : null
+                }
+                masterUrl={masterUrlMap[photo.storage_path] ?? null}
+              />
+            ))}
+          </ul>
+        )}
+      </section>
+
       {/* Activity timeline */}
       <section id="activity" className="mb-8 scroll-mt-20">
         <div className="mb-3 flex items-center justify-between">
@@ -789,6 +933,123 @@ export default async function FlagDetailPage({
         </Card>
       </section>
     </AppShell>
+  )
+}
+
+// ----------------------------------------------------------------
+// Evidence photo tile (Session 8)
+// ----------------------------------------------------------------
+//
+// Server-component. Renders a single thumbnail tile in the evidence
+// grid with caption + per-tile actions (edit caption, soft-delete).
+// The caption edit + delete buttons submit to server actions; the
+// thumbnail itself is a link that opens the master in a new tab.
+//
+// Both URLs come from signed-url batch requests on the parent page —
+// we never call createSignedUrl per render here. If the signed URL
+// failed to issue (rare) we render a placeholder rather than a
+// broken-image icon.
+function EvidencePhotoTile({
+  photo,
+  propertyId,
+  flagId,
+  thumbUrl,
+  masterUrl,
+}: {
+  photo: EvidencePhotoRow
+  propertyId: string
+  flagId: string
+  thumbUrl: string | null
+  masterUrl: string | null
+}) {
+  const capturedDisplay = photo.captured_at ?? photo.uploaded_at
+  // Anchor for the return_to: brings the user back to this exact
+  // grid tile after a caption edit / delete.
+  const returnTo = `/properties/${propertyId}/flags/${flagId}#evidence`
+  return (
+    <li className="group relative rounded-lg overflow-hidden border border-slate-200 bg-slate-50">
+      {thumbUrl && masterUrl ? (
+        <a
+          href={masterUrl}
+          target="_blank"
+          rel="noopener"
+          aria-label="Open full photo"
+          className="block aspect-square bg-slate-200"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={thumbUrl}
+            alt={photo.notes ?? 'Evidence photo'}
+            loading="lazy"
+            className="h-full w-full object-cover"
+          />
+        </a>
+      ) : (
+        <div className="block aspect-square bg-slate-200 flex items-center justify-center text-slate-500 text-xs">
+          Image unavailable
+        </div>
+      )}
+
+      <div className="p-2 space-y-1.5">
+        <details className="group/note">
+          <summary className="list-none cursor-pointer">
+            <p className="text-[11px] text-slate-700 line-clamp-2">
+              {photo.notes ? (
+                photo.notes
+              ) : (
+                <span className="italic text-slate-400">Tap to add caption</span>
+              )}
+            </p>
+          </summary>
+          <form action={updatePhotoNote} className="mt-1.5 space-y-1.5">
+            <input type="hidden" name="property_id" value={propertyId} />
+            <input type="hidden" name="flag_id" value={flagId} />
+            <input type="hidden" name="photo_id" value={photo.id} />
+            <input type="hidden" name="return_to" value={returnTo} />
+            <textarea
+              name="note"
+              rows={2}
+              defaultValue={photo.notes ?? ''}
+              maxLength={2000}
+              placeholder="Caption…"
+              className="w-full px-2 py-1 text-[11px] text-slate-900 placeholder:text-slate-400 border border-slate-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-slate-900 resize-y"
+            />
+            <button
+              type="submit"
+              className="inline-flex items-center gap-1 rounded bg-slate-900 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-slate-800 active:bg-slate-950 transition"
+            >
+              Save
+            </button>
+          </form>
+        </details>
+        <p className="text-[10px] text-slate-500">
+          {new Date(capturedDisplay).toLocaleString(undefined, {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          })}
+        </p>
+      </div>
+
+      <form
+        action={softDeleteEvidencePhoto}
+        className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition"
+      >
+        <input type="hidden" name="property_id" value={propertyId} />
+        <input type="hidden" name="flag_id" value={flagId} />
+        <input type="hidden" name="photo_id" value={photo.id} />
+        <input type="hidden" name="return_to" value={returnTo} />
+        <button
+          type="submit"
+          className="rounded-md bg-white/95 border border-slate-200 p-1 text-slate-600 hover:text-red-600 hover:border-red-200 shadow-sm transition"
+          aria-label="Remove photo"
+          title="Remove photo"
+        >
+          <Trash2 size={12} aria-hidden />
+        </button>
+      </form>
+    </li>
   )
 }
 

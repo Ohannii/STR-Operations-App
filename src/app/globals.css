@@ -35,3 +35,31 @@ body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
+
+/* ============================================================
+ * Print-only rules for the Flag Evidence Report.
+ *
+ * Tailwind's `print:` variants handle most of the layout swaps;
+ * these declarations cover the bits Tailwind can't:
+ *
+ *   - @page margin (browsers default to a wide ~25mm; tighten it
+ *     so report rows reach the page edges with room for the
+ *     header bar)
+ *   - background-color preservation (browsers strip backgrounds
+ *     by default to save toner; we want the header bar's slate-900
+ *     to survive)
+ *   - global background reset to white so the slate-50 app shell
+ *     doesn't leak into the printed margin
+ * ============================================================ */
+@media print {
+  @page {
+    margin: 14mm;
+  }
+  html, body {
+    background: #ffffff !important;
+  }
+  body {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

@@ -15,6 +15,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
+import { EvidenceCapture } from '@/components/photos/evidence-capture'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
@@ -154,11 +155,28 @@ export default async function PropertyPage({
     .not('status', 'in', '(closed,guest_resolved,ota_resolved)')
     .is('deleted_at', null)
 
+  // Session 8: pre-arrival evidence pack count. Photos attached to
+  // the property with retention_class = routine_pre_arrival are the
+  // pre-arrival baseline shots; we surface the count in the header.
+  const preArrivalPhotoCountPromise = supabase
+    .from('photos')
+    .select('id', { count: 'exact', head: true })
+    .eq('property_id', id)
+    .is('flag_id', null)
+    .eq('retention_class', 'routine_pre_arrival')
+    .is('deleted_at', null)
+
   const [
     { data: property },
     { data: openFlags, error: flagsError },
     { count: openRecoveryCount },
-  ] = await Promise.all([propertyPromise, flagsPromise, openRecoveryCountPromise])
+    { count: preArrivalPhotoCount },
+  ] = await Promise.all([
+    propertyPromise,
+    flagsPromise,
+    openRecoveryCountPromise,
+    preArrivalPhotoCountPromise,
+  ])
 
   if (!property) notFound()
 
@@ -166,16 +184,26 @@ export default async function PropertyPage({
   // Two-phase: we need the flag IDs from the first query before we
   // can filter marks. Acceptable extra round-trip; rendering the chip
   // row on each card is worth the visibility win.
+  // Session 8: photo counts piggyback on the same round-trip.
   const openFlagIds = (openFlags ?? []).map((f) => f.id)
   let activeMarksByFlagId: Record<string, ChipKind[]> = {}
+  const photoCountByFlagId: Record<string, number> = {}
   if (openFlagIds.length > 0) {
-    const { data: marks } = await supabase
-      .from('flag_operational_marks')
-      .select('flag_id, kind')
-      .in('flag_id', openFlagIds)
-      .is('cleared_at', null)
-      .returns<{ flag_id: string; kind: string }[]>()
-    activeMarksByFlagId = (marks ?? []).reduce<Record<string, ChipKind[]>>(
+    const [marksRes, photosRes] = await Promise.all([
+      supabase
+        .from('flag_operational_marks')
+        .select('flag_id, kind')
+        .in('flag_id', openFlagIds)
+        .is('cleared_at', null)
+        .returns<{ flag_id: string; kind: string }[]>(),
+      supabase
+        .from('photos')
+        .select('flag_id')
+        .in('flag_id', openFlagIds)
+        .is('deleted_at', null)
+        .returns<{ flag_id: string }[]>(),
+    ])
+    activeMarksByFlagId = (marksRes.data ?? []).reduce<Record<string, ChipKind[]>>(
       (acc, m) => {
         if (!acc[m.flag_id]) acc[m.flag_id] = []
         acc[m.flag_id].push(m.kind as ChipKind)
@@ -183,6 +211,9 @@ export default async function PropertyPage({
       },
       {},
     )
+    for (const row of photosRes.data ?? []) {
+      photoCountByFlagId[row.flag_id] = (photoCountByFlagId[row.flag_id] ?? 0) + 1
+    }
   }
 
   // ----------------------------------------------------------------
@@ -190,6 +221,10 @@ export default async function PropertyPage({
   // have (no extra queries needed for these three; the recovery
   // count came from the parallel head-only query above).
   // ----------------------------------------------------------------
+  // This is a Server Component — Date.now() is fine here. The React
+  // 19 react-hooks/purity rule fires regardless because the analyzer
+  // doesn't distinguish server / client components.
+  // eslint-disable-next-line react-hooks/purity
   const nowMs = Date.now()
   const overdueCutoffMs = nowMs - 48 * 60 * 60 * 1000 // 48 hours ago
 
@@ -280,12 +315,42 @@ export default async function PropertyPage({
                   {property.bedrooms === 1 ? 'bedroom' : 'bedrooms'}
                 </span>
                 <span>Added {relativeTime(property.created_at)}</span>
+                {(preArrivalPhotoCount ?? 0) > 0 ? (
+                  <span className="inline-flex items-center gap-1 text-slate-700">
+                    <Camera size={12} aria-hidden />
+                    <span>
+                      <span className="font-medium">{preArrivalPhotoCount}</span> pre-arrival
+                      photo{preArrivalPhotoCount === 1 ? '' : 's'}
+                    </span>
+                  </span>
+                ) : null}
               </div>
             </div>
             <Badge tone={status.tone} className="!text-xs !px-2.5 !py-1">
               {status.label}
             </Badge>
           </div>
+
+          {/* Session 8: pre-arrival evidence capture. Sits inside the
+              property header so it's the first big control the eye
+              hits on entering the apartment. Camera-first; gallery
+              fallback inside the modal. */}
+          <div className="mt-4 pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-slate-900">Pre-arrival evidence</p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Baseline photos of the apartment before the next guest. Camera stays
+                open — capture a full sweep in one go.
+              </p>
+            </div>
+            <EvidenceCapture
+              propertyId={property.id}
+              launchLabel={
+                (preArrivalPhotoCount ?? 0) > 0 ? 'Add more' : 'Take pre-arrival photos'
+              }
+            />
+          </div>
+
           {property.notes ? (
             <p className="mt-4 pt-4 border-t border-slate-100 text-sm text-slate-700">
               {property.notes}
@@ -430,6 +495,7 @@ export default async function PropertyPage({
                   propertyId={property.id}
                   expandedIds={expandedIds}
                   activeMarksByFlagId={activeMarksByFlagId}
+                  photoCountByFlagId={photoCountByFlagId}
                 />
               )
             })}
@@ -440,6 +506,7 @@ export default async function PropertyPage({
                 propertyId={property.id}
                 expandedIds={expandedIds}
                 activeMarksByFlagId={activeMarksByFlagId}
+                photoCountByFlagId={photoCountByFlagId}
               />
             ) : null}
           </div>
@@ -601,12 +668,14 @@ function CategorySection({
   propertyId,
   expandedIds,
   activeMarksByFlagId,
+  photoCountByFlagId,
 }: {
   groupLabel: string
   flags: FlagRow[]
   propertyId: string
   expandedIds: Set<string>
   activeMarksByFlagId: Record<string, ChipKind[]>
+  photoCountByFlagId: Record<string, number>
 }) {
   return (
     <div>
@@ -624,6 +693,7 @@ function CategorySection({
             propertyId={propertyId}
             expandedIds={expandedIds}
             activeChipKinds={activeMarksByFlagId[flag.id] ?? []}
+            photoCount={photoCountByFlagId[flag.id] ?? 0}
           />
         ))}
       </ul>
@@ -640,11 +710,13 @@ function FlagCardInline({
   propertyId,
   expandedIds,
   activeChipKinds,
+  photoCount,
 }: {
   flag: FlagRow
   propertyId: string
   expandedIds: Set<string>
   activeChipKinds: ChipKind[]
+  photoCount: number
 }) {
   const categoryRow = pickCategory(flag.flag_category)
   const cat = categoryRow ? getFlagCategoryDisplay(categoryRow.key) : undefined
@@ -706,6 +778,12 @@ function FlagCardInline({
                 </span>
                 <Badge tone={sev.tone}>{sev.label}</Badge>
                 <Badge tone="slate">{flag.status}</Badge>
+                {photoCount > 0 ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-600">
+                    <Camera size={11} aria-hidden />
+                    {photoCount}
+                  </span>
+                ) : null}
               </div>
               {flag.description ? (
                 <p className="text-sm text-slate-700 leading-snug">{flag.description}</p>
@@ -781,6 +859,25 @@ function FlagCardInline({
                 </div>
               )
             })}
+
+            {/* Session 8: inline evidence capture. Same EvidenceCapture
+                component as the flag detail page; tapping it opens the
+                full-screen shutter loop without leaving the Action
+                Centre. Sits above the footer so it's discoverable but
+                doesn't compete with Mark Resolved. */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-100">
+              <p className="text-xs text-slate-500">
+                {photoCount > 0
+                  ? `${photoCount} photo${photoCount === 1 ? '' : 's'} attached`
+                  : 'No photos yet'}
+              </p>
+              <EvidenceCapture
+                propertyId={propertyId}
+                flagId={flag.id}
+                launchLabel={photoCount > 0 ? 'Add photos' : 'Take photos'}
+                launchVariant="subtle"
+              />
+            </div>
 
             {/* Footer actions — View details + Mark resolved */}
             <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-100">
