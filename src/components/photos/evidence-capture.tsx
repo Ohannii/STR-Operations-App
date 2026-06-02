@@ -44,6 +44,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Camera,
   Flag,
@@ -582,31 +583,35 @@ export function EvidenceCapture({
       ? 'inline-flex items-center gap-2 rounded-md bg-slate-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 active:bg-slate-950 disabled:opacity-50 disabled:cursor-not-allowed transition'
       : 'inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition'
 
-  return (
-    <>
-      <button
-        type="button"
-        onClick={openModal}
-        className={launchClass}
-        aria-label={launchLabel ?? 'Take photos'}
-        disabled={isMisconfigured}
-        title={
-          isMisconfigured
-            ? 'Start a pre-arrival pack first to capture photos here.'
-            : undefined
-        }
-      >
-        <Camera size={16} aria-hidden />
-        {launchLabel ?? 'Take photos'}
-      </button>
-
-      {open ? (
-        <div
-          className="fixed inset-0 z-50 bg-slate-950/95 text-white flex flex-col"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Evidence capture"
-        >
+  // Render the modal via createPortal so it lands directly on
+  // document.body and isn't scoped by an ancestor's `transform`
+  // or `filter`. Without the portal, any ancestor with CSS
+  // transform — and Tailwind sprinkles transforms via `hover:`,
+  // `animate-`, etc. — would re-root our `position: fixed` modal
+  // to that ancestor instead of the viewport. On iOS Safari this
+  // shows up as "Take photos does nothing" because the modal
+  // renders at 0×0 or off-screen behind the page content.
+  const modal = open ? (
+    <div
+      // Inline style as a belt-and-braces guard alongside the
+      // Tailwind utilities — some Tailwind v4 / Turbopack hot-
+      // reload combinations have dropped `fixed inset-0` rules in
+      // the wild. Forcing the geometry inline makes this immune.
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 9999,
+        width: '100vw',
+        height: '100dvh',
+      }}
+      className="bg-slate-950/95 text-white flex flex-col"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Evidence capture"
+    >
           {/* Top bar.
               The Raise-flag button sits here (not deep in the
               review screen) so an inspector can pivot to recording
@@ -955,7 +960,31 @@ export function EvidenceCapture({
             </div>
           ) : null}
         </div>
-      ) : null}
+      ) : null
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={openModal}
+        className={launchClass}
+        aria-label={launchLabel ?? 'Take photos'}
+        disabled={isMisconfigured}
+        title={
+          isMisconfigured
+            ? 'Start a pre-arrival pack first to capture photos here.'
+            : undefined
+        }
+      >
+        <Camera size={16} aria-hidden />
+        {launchLabel ?? 'Take photos'}
+      </button>
+      {/* Portal-mount the modal so ancestor transforms / filters
+          can't scope our position:fixed to a sub-rect. Guarded by
+          typeof document so SSR doesn't blow up. */}
+      {typeof document !== 'undefined' && modal
+        ? createPortal(modal, document.body)
+        : null}
     </>
   )
 }

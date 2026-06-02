@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
-import { ArrowLeft, Camera, FileText, Trash2 } from 'lucide-react'
+import { ArrowLeft, Camera, Check, FileText, Trash2 } from 'lucide-react'
 import { PrintButton } from '@/components/photos/print-button'
 import { ShareButton } from '@/components/photos/share-button'
 import { getUserContext } from '@/lib/auth/get-user-context'
@@ -13,6 +13,7 @@ import {
   softDeleteEvidencePhoto,
   updatePhotoNote,
 } from '../../../photos/actions'
+import { submitEvidencePackAction } from '../../actions'
 
 /**
  * GET /properties/[id]/packs/[packId]/report
@@ -191,7 +192,7 @@ export default async function PackReportPage({
   return (
     <div className="min-h-screen bg-white text-slate-900 print:bg-white">
       <div className="print:hidden sticky top-0 z-10 bg-white/95 backdrop-blur border-b border-slate-200">
-        <div className="max-w-4xl mx-auto px-6 py-3 flex items-center justify-between gap-3">
+        <div className="max-w-4xl mx-auto px-6 py-3 flex items-center justify-between gap-3 flex-wrap">
           <Link
             href={`/properties/${property.id}`}
             className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 transition"
@@ -199,7 +200,21 @@ export default async function PackReportPage({
             <ArrowLeft size={14} aria-hidden />
             Back to apartment
           </Link>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {isDraft ? (
+              <form action={submitEvidencePackAction}>
+                <input type="hidden" name="property_id" value={property.id} />
+                <input type="hidden" name="pack_id" value={pack.id} />
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 text-white px-3.5 py-1.5 text-sm font-semibold hover:bg-emerald-700 active:bg-emerald-800 transition"
+                  title="Mark this pack as submitted. Submitted packs become an immutable record."
+                >
+                  <Check size={14} aria-hidden />
+                  Submit pack
+                </button>
+              </form>
+            ) : null}
             <ShareButton title={shareTitle} text={shareText} />
             <PrintButton />
           </div>
@@ -515,6 +530,35 @@ export default async function PackReportPage({
             </ol>
           )}
         </section>
+
+        {/* Bottom-of-page Submit affordance for draft packs.
+            Reaches the user after they've scrolled through every
+            photo and added captions, so it's the natural next
+            action. Hidden in print (the submit button shouldn't
+            appear in the PDF). */}
+        {isDraft ? (
+          <div className="mt-8 rounded-md border border-emerald-300 bg-emerald-50 p-5 print:hidden">
+            <h3 className="text-sm font-semibold text-emerald-900">
+              Ready to submit?
+            </h3>
+            <p className="text-sm text-emerald-800 mt-1 leading-relaxed">
+              Submitted packs move into the apartment&rsquo;s history and become
+              an immutable record. After submit, a new pre-arrival pack can be
+              started for the next turnover.
+            </p>
+            <form action={submitEvidencePackAction} className="mt-3">
+              <input type="hidden" name="property_id" value={property.id} />
+              <input type="hidden" name="pack_id" value={pack.id} />
+              <button
+                type="submit"
+                className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 text-white px-4 py-2 text-sm font-semibold hover:bg-emerald-700 active:bg-emerald-800 transition"
+              >
+                <Check size={14} aria-hidden />
+                Submit pack
+              </button>
+            </form>
+          </div>
+        ) : null}
 
         <footer className="mt-10 pt-4 border-t border-slate-300 text-xs text-slate-500 flex flex-wrap items-center justify-between gap-3 print:mt-12">
           <p className="inline-flex items-center gap-1.5">
