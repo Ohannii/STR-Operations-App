@@ -16,6 +16,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
+import { InsecureContextBanner } from '@/components/insecure-context-banner'
 import { EvidenceCapture } from '@/components/photos/evidence-capture'
 import { GalleryUploader } from '@/components/photos/gallery-uploader'
 import { Alert } from '@/components/ui/alert'
@@ -381,6 +382,8 @@ export default async function PropertyPage({
         <ArrowLeft size={14} aria-hidden />
         All properties
       </Link>
+
+      <InsecureContextBanner />
 
       {raised ? (
         <div className="mb-5">
