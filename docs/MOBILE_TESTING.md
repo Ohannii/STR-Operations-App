@@ -73,6 +73,14 @@ The first load is slow (cold tunnel). After that you have a
 full secure context: camera works, form submissions don't pop
 up the security warning, push notifications work, the works.
 
+> **One-time gotcha if you see "Unauthorized" in the cloudflared
+> terminal:** Next.js 16's dev server rejects requests whose Host
+> header doesn't match a known origin. `*.trycloudflare.com` is
+> already in `allowedDevOrigins` in `next.config.ts` — but if you
+> see the error anyway, the config was loaded before you added
+> the entry. Stop `pnpm dev` (Ctrl+C) and start it again. The
+> tunnel URL stays the same; only the dev server restarts.
+
 ### 5. When you're done
 
 `Ctrl+C` in the cloudflared terminal — the URL goes away
