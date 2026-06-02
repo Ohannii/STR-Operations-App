@@ -29,18 +29,26 @@ import { useEffect, useState } from 'react'
 import { ShieldAlert } from 'lucide-react'
 
 export function InsecureContextBanner() {
+  // Two-state gate — `mounted` proves we're on the client and
+  // hydration has happened; `show` is the actual visibility flag
+  // computed from window.isSecureContext. Splitting them avoids
+  // any chance of a hydration warning: the first client render
+  // matches the server (both return null), and only the post-
+  // mount re-render shows the banner. This is the canonical
+  // "delay client-only UI until after hydration" pattern.
+  const [mounted, setMounted] = useState(false)
   const [show, setShow] = useState(false)
 
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    if (typeof window === 'undefined') return
-    // window.isSecureContext is true for localhost, *.localhost,
-    // 127.x.x.x, and any HTTPS origin. It's false for plain HTTP
-    // on a LAN IP — exactly the case where iOS blocks features.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!window.isSecureContext) setShow(true)
+    setMounted(true)
+    if (typeof window !== 'undefined' && !window.isSecureContext) {
+      setShow(true)
+    }
   }, [])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
-  if (!show) return null
+  if (!mounted || !show) return null
 
   return (
     <div className="mb-5 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 flex items-start gap-3">
