@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { EvidenceCapture } from '@/components/photos/evidence-capture'
+import { GalleryUploader } from '@/components/photos/gallery-uploader'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
@@ -483,17 +484,18 @@ export default async function PropertyPage({
                       raiseFlagHref={`/properties/${property.id}/flags/new`}
                       autoOpen={capture_now === '1'}
                     />
-                    {/* Gallery-only fallback — works on phones where
-                        in-app camera (getUserMedia) is blocked
-                        (insecure context, denied permission, etc.).
-                        Bypasses getUserMedia entirely. */}
-                    <EvidenceCapture
+                    {/* Bulletproof gallery path — no modal, no
+                        getUserMedia. Just a styled <label> wrapping
+                        a plain <input type="file" multiple>. iOS
+                        Safari can't block this because the picker
+                        opens from a direct user gesture (the label
+                        tap). Lives as a separate component so the
+                        EvidenceCapture modal complexity stays out
+                        of this code path. */}
+                    <GalleryUploader
                       propertyId={property.id}
                       evidencePackId={draftPack.id}
-                      launchLabel="Upload from gallery"
-                      launchVariant="subtle"
-                      raiseFlagHref={`/properties/${property.id}/flags/new`}
-                      startInGalleryMode
+                      label="Upload from gallery"
                     />
                   </div>
                 </div>

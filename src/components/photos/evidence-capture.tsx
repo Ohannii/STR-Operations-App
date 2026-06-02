@@ -248,24 +248,12 @@ export function EvidenceCapture({
     }
   }, [open, stage, startCamera, stopCamera, startInGalleryMode])
 
-  // Auto-trigger the file picker when the modal is opened in
-  // gallery-only mode. The user lands in the file picker
-  // immediately; once they choose photos, ingestBlob pushes them
-  // into the strip and they can move to review like normal.
-  useEffect(() => {
-    if (
-      open &&
-      startInGalleryMode &&
-      stage === 'shooting' &&
-      pending.length === 0
-    ) {
-      const timer = setTimeout(() => {
-        galleryInputRef.current?.click()
-      }, 150)
-      return () => clearTimeout(timer)
-    }
-    return undefined
-  }, [open, startInGalleryMode, stage, pending.length])
+  // NOTE: We intentionally do NOT auto-click the file input on
+  // mount. iOS Safari (and increasingly other mobile browsers)
+  // require file-picker opens to come from a direct user gesture.
+  // A programmatic .click() from useEffect is blocked silently.
+  // The gallery-only shooting screen renders a "Choose photos"
+  // button — that tap IS the user gesture and triggers the picker.
 
   // Revoke object URLs when pending items change or modal closes.
   useEffect(() => {
@@ -552,7 +540,12 @@ export function EvidenceCapture({
     // don't keep a getUserMedia stream alive across the navigation.
     stopCamera()
     if (typeof window !== 'undefined') {
-      window.location.href = `/properties/${propertyId}/flags/new`
+      const target = `/properties/${propertyId}/flags/new`
+      // Diagnostic — if the user reports a 404 after this we can
+      // see in dev tools whether the URL was malformed (e.g.
+      // propertyId got dropped to undefined).
+      console.info('[EvidenceCapture] navigating to raise-flag:', target)
+      window.location.href = target
     }
   }, [pending, runUploads, propertyId, stopCamera])
 
