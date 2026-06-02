@@ -45,6 +45,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useRouter } from 'next/navigation'
 import {
   Camera,
   Flag,
@@ -148,6 +149,7 @@ export function EvidenceCapture({
   autoOpen = false,
   startInGalleryMode = false,
 }: Props) {
+  const router = useRouter()
   const [open, setOpen] = useState(false)
   const [pending, setPending] = useState<Pending[]>([])
   const [cameraError, setCameraError] = useState<string | null>(null)
@@ -552,13 +554,13 @@ export function EvidenceCapture({
 
   const finishAndReload = useCallback(() => {
     closeModal()
-    // Server actions already revalidatePath the relevant routes.
-    // A hard reload here keeps the URL clean (no ?refreshed=1) and
-    // is acceptable UX after a multi-photo batch.
-    if (typeof window !== 'undefined') {
-      window.location.reload()
-    }
-  }, [closeModal])
+    // router.refresh() asks the server for fresh RSC payload
+    // without doing a full window.location.reload() — iOS Safari
+    // has been observed to serve cached GETs back after a reload,
+    // making freshly-uploaded photos invisible. router.refresh()
+    // sidesteps that.
+    router.refresh()
+  }, [closeModal, router])
 
   // --------------------------------------------------------------
   // Derived UI state

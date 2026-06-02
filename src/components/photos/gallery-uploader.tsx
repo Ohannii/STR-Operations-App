@@ -19,8 +19,19 @@
  *     working <input type=file> (i.e. all of them).
  *   - On change, runs the same compress + sign + PUT + attach
  *     pipeline as EvidenceCapture, with bounded concurrency.
- *   - Shows progress + error state inline on the parent page.
- *     No modal. No camera. No getUserMedia.
+ *
+ * Diagnostic surface (post-rewrite for the iPhone "photos don't
+ * attach" report):
+ *   - Per-file status row: Compressing / Uploading / Done / Error
+ *   - Errors include the exact reason returned by the server
+ *     action or the storage PUT response code
+ *   - NO auto window.location.reload() — iOS Safari aggressively
+ *     caches GETs and may serve a stale dashboard back. Instead
+ *     we call Next's router.refresh() to invalidate the RSC cache
+ *     in place, AND surface a deliberate "Refresh apartment"
+ *     button so the user has explicit confirmation.
+ *   - Files are captured into a plain array BEFORE the input is
+ *     reset, so iOS's "FileList is live" quirk can't drop them.
  *
  * Trade-off: no thumb-strip preview, no per-photo caption editor
  * in the upload flow itself. The Pack Report page is the editor
@@ -29,7 +40,13 @@
  */
 
 import { useCallback, useRef, useState } from 'react'
-import { Image as ImageIcon, Loader2 } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import {
+  CheckCircle2,
+  Image as ImageIcon,
+  Loader2,
+  XCircle,
+} from 'lucide-react'
 import { compressForEvidence } from '@/lib/photos/compress'
 import {
   attachEvidencePhoto,
@@ -47,11 +64,34 @@ type Props = {
   preferCamera?: boolean
 }
 
-type ProgressState =
-  | { kind: 'idle' }
-  | { kind: 'working'; total: number; done: number; errors: number }
-  | { kind: 'done'; total: number; errors: number }
-  | { kind: 'error'; message: string }
+type FileStatus =
+  | 'compressing'
+  | 'signing'
+  | 'uploading'
+  | 'attaching'
+  | 'done'
+  | 'error'
+
+type PerFile = {
+  id: string
+  name: string
+  size: number
+  status: FileStatus
+  error?: string
+}
+
+function clientId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID()
+  }
+  return `c-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function fmtSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${bytes} B`
+}
 
 export function GalleryUploader({
   propertyId,
@@ -60,47 +100,79 @@ export function GalleryUploader({
   label,
   preferCamera = false,
 }: Props) {
+  const router = useRouter()
   const inputRef = useRef<HTMLInputElement | null>(null)
-  const [progress, setProgress] = useState<ProgressState>({ kind: 'idle' })
+  const [items, setItems] = useState<PerFile[]>([])
+  const [busy, setBusy] = useState(false)
+
+  const updateItem = useCallback(
+    (id: string, patch: Partial<PerFile>) => {
+      setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)))
+    },
+    [],
+  )
 
   const handleFiles = useCallback(
-    async (files: FileList | null) => {
-      if (!files || files.length === 0) return
-      const list = Array.from(files).filter((f) => f.type.startsWith('image/'))
-      if (list.length === 0) {
-        setProgress({
-          kind: 'error',
-          message: 'Choose image files (JPEG, PNG, or WebP).',
-        })
-        return
-      }
+    async (files: File[]) => {
+      // Pre-filter: only images. Surface a row for everything else
+      // so the user sees the skip explicitly.
+      const all: PerFile[] = files.map((f) => ({
+        id: clientId(),
+        name: f.name || 'photo',
+        size: f.size,
+        status: 'compressing',
+        ...(f.type.startsWith('image/')
+          ? {}
+          : { status: 'error' as FileStatus, error: 'Not an image file — skipped.' }),
+      }))
+      setItems(all)
+      setBusy(true)
 
-      setProgress({ kind: 'working', total: list.length, done: 0, errors: 0 })
+      const queue = files.map((f, i) => ({ file: f, row: all[i] }))
+        .filter((p) => p.row.status === 'compressing')
 
-      // Upload one file with full pipeline: compress → sign → PUT → attach.
-      const uploadOne = async (file: File): Promise<boolean> => {
+      const uploadOne = async (file: File, row: PerFile): Promise<boolean> => {
         try {
+          updateItem(row.id, { status: 'compressing' })
           const compressed = await compressForEvidence(file)
+
+          updateItem(row.id, { status: 'signing' })
           const slot = (await requestPhotoUploadSlot({
             propertyId,
             flagId: flagId ?? null,
             evidencePackId: evidencePackId ?? null,
           })) as UploadSlot | { ok: false; error: string }
-          if (!slot.ok) throw new Error(slot.error)
+          if (!slot.ok) {
+            throw new Error(`Could not get upload slot: ${slot.error}`)
+          }
 
+          updateItem(row.id, { status: 'uploading' })
           const put = async (signedUrl: string, blob: Blob) => {
             const res = await fetch(signedUrl, {
               method: 'PUT',
               headers: { 'Content-Type': 'image/jpeg' },
               body: blob,
             })
-            if (!res.ok) throw new Error(`Upload failed (${res.status}).`)
+            if (!res.ok) {
+              // Pull the body text for the diagnostic — Supabase
+              // returns a JSON error with a `message` field on
+              // most failures.
+              let detail = ''
+              try {
+                const body = await res.text()
+                detail = body ? `: ${body.slice(0, 200)}` : ''
+              } catch {
+                /* ignore */
+              }
+              throw new Error(`Storage PUT failed (${res.status})${detail}`)
+            }
           }
           await Promise.all([
             put(slot.masterUpload.signedUrl, compressed.master),
             put(slot.thumbUpload.signedUrl, compressed.thumb),
           ])
 
+          updateItem(row.id, { status: 'attaching' })
           const attached = await attachEvidencePhoto({
             photoId: slot.photoId,
             propertyId,
@@ -117,60 +189,61 @@ export function GalleryUploader({
             note: null,
             retentionClass: slot.retentionClass,
           })
-          if (!attached.ok) throw new Error(attached.error)
+          if (!attached.ok) {
+            throw new Error(`Attach failed: ${attached.error}`)
+          }
+
+          updateItem(row.id, { status: 'done' })
           return true
         } catch (err) {
-          console.error('[GalleryUploader] upload error:', err)
+          const msg = err instanceof Error ? err.message : 'Unknown upload error.'
+          console.error('[GalleryUploader] upload error:', msg, err)
+          updateItem(row.id, { status: 'error', error: msg })
           return false
         }
       }
 
-      // Worker-pool concurrency 3 — same shape as EvidenceCapture.
+      // Worker pool. Concurrency 3 — sequential is too slow for
+      // 10+ photo batches, full parallel saturates mobile radios.
       const UPLOAD_CONCURRENCY = 3
-      const queue = [...list]
-      let done = 0
-      let errors = 0
-
+      const workQueue = [...queue]
       const worker = async () => {
         while (true) {
-          const next = queue.shift()
+          const next = workQueue.shift()
           if (!next) return
-          const ok = await uploadOne(next)
-          if (ok) done++
-          else errors++
-          setProgress((prev) =>
-            prev.kind === 'working'
-              ? { kind: 'working', total: list.length, done, errors }
-              : prev,
-          )
+          await uploadOne(next.file, next.row)
         }
       }
-      const workers = Array.from(
-        { length: Math.min(UPLOAD_CONCURRENCY, queue.length) },
-        worker,
+      await Promise.all(
+        Array.from(
+          { length: Math.min(UPLOAD_CONCURRENCY, workQueue.length) },
+          worker,
+        ),
       )
-      await Promise.all(workers)
 
-      setProgress({ kind: 'done', total: list.length, errors })
-
-      // Refresh the page so the new photos appear in counts / grids.
-      // window.location.reload() is fine — there's no in-flight state
-      // we need to preserve.
-      if (typeof window !== 'undefined') {
-        window.location.reload()
-      }
+      setBusy(false)
+      // Invalidate the RSC cache in place — does NOT do a full
+      // window.location.reload() (which iOS Safari may serve from
+      // its disk cache, hiding new photos). router.refresh() asks
+      // the server for fresh data and re-streams the components
+      // while preserving any client state we want to keep visible
+      // (the per-file status list above).
+      router.refresh()
     },
-    [propertyId, flagId, evidencePackId],
+    [propertyId, flagId, evidencePackId, updateItem, router],
   )
 
   const isMisconfigured = !flagId && !evidencePackId
+
   const buttonLabel = label ?? 'Upload from gallery'
+  const successCount = items.filter((i) => i.status === 'done').length
+  const errorCount = items.filter((i) => i.status === 'error').length
 
   return (
-    <div className="inline-flex flex-col gap-1">
+    <div className="inline-flex flex-col gap-2 min-w-0">
       <label
         className={
-          isMisconfigured || progress.kind === 'working'
+          isMisconfigured || busy
             ? 'inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-400 cursor-not-allowed'
             : 'inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 active:bg-slate-100 cursor-pointer transition'
         }
@@ -180,14 +253,14 @@ export function GalleryUploader({
             : undefined
         }
       >
-        {progress.kind === 'working' ? (
+        {busy ? (
           <Loader2 size={14} className="animate-spin" aria-hidden />
         ) : (
           <ImageIcon size={14} aria-hidden />
         )}
         <span>
-          {progress.kind === 'working'
-            ? `Uploading ${progress.done}/${progress.total}…`
+          {busy
+            ? `Uploading ${successCount + errorCount}/${items.length}…`
             : buttonLabel}
         </span>
         <input
@@ -197,21 +270,102 @@ export function GalleryUploader({
           multiple
           {...(preferCamera ? { capture: 'environment' as const } : {})}
           className="hidden"
-          disabled={isMisconfigured || progress.kind === 'working'}
+          disabled={isMisconfigured || busy}
           onChange={(e) => {
-            void handleFiles(e.target.files)
-            e.target.value = ''
+            // Capture into a plain array BEFORE iOS Safari has a
+            // chance to invalidate the live FileList. Resetting
+            // `e.target.value` immediately is required to allow
+            // re-selecting the same files later — but only AFTER
+            // we have our own array.
+            const input = e.currentTarget
+            const arr: File[] = input.files ? Array.from(input.files) : []
+            input.value = ''
+            if (arr.length > 0) {
+              void handleFiles(arr)
+            }
           }}
         />
       </label>
-      {progress.kind === 'error' ? (
-        <p className="text-xs text-red-600">{progress.message}</p>
-      ) : null}
-      {progress.kind === 'done' && progress.errors > 0 ? (
-        <p className="text-xs text-red-600">
-          {progress.errors} of {progress.total} photo
-          {progress.total === 1 ? '' : 's'} failed to attach.
-        </p>
+
+      {/* Per-file status list. Stays visible after upload completes
+          so the user can SEE what happened — no auto-reload that
+          erases the result. */}
+      {items.length > 0 ? (
+        <div className="rounded-md border border-slate-200 bg-white p-2 max-w-md">
+          <ul className="space-y-1 text-xs">
+            {items.map((it) => (
+              <li key={it.id} className="flex items-start gap-2">
+                <div className="shrink-0 mt-0.5">
+                  {it.status === 'done' ? (
+                    <CheckCircle2
+                      size={13}
+                      className="text-emerald-600"
+                      aria-hidden
+                    />
+                  ) : it.status === 'error' ? (
+                    <XCircle size={13} className="text-red-600" aria-hidden />
+                  ) : (
+                    <Loader2
+                      size={13}
+                      className="text-slate-500 animate-spin"
+                      aria-hidden
+                    />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-slate-700">
+                    <span className="font-medium">{it.name}</span>
+                    <span className="text-slate-400"> · {fmtSize(it.size)}</span>
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    {it.status === 'done'
+                      ? 'Attached to the pack.'
+                      : it.status === 'error'
+                        ? (it.error ?? 'Failed.')
+                        : it.status === 'compressing'
+                          ? 'Compressing on device…'
+                          : it.status === 'signing'
+                            ? 'Asking server for upload slot…'
+                            : it.status === 'uploading'
+                              ? 'Uploading to storage…'
+                              : 'Attaching to pack…'}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+          {!busy ? (
+            <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between gap-2 text-xs">
+              <p
+                className={
+                  errorCount > 0
+                    ? 'text-red-600 font-medium'
+                    : 'text-emerald-700 font-medium'
+                }
+              >
+                {successCount} attached · {errorCount} failed
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setItems([])
+                  }}
+                  className="text-slate-500 hover:text-slate-700 transition"
+                >
+                  Clear
+                </button>
+                <button
+                  type="button"
+                  onClick={() => router.refresh()}
+                  className="rounded bg-slate-900 text-white px-2 py-1 font-medium hover:bg-slate-800 transition"
+                >
+                  Refresh apartment
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
       ) : null}
     </div>
   )
