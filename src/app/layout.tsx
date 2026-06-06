@@ -15,6 +15,24 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "STR Operations",
   description: "Short-term rental operations app",
+  // iOS Safari auto-detects strings that look like phone numbers,
+  // dates, and addresses and wraps them in <a> tags AFTER the
+  // server HTML arrives but BEFORE React hydrates. That DOM
+  // mutation is the cause of the iPhone-only "tree hydrated but
+  // attributes didn't match" overlay — our dashboard is full of
+  // triggers ("2026/06/01, 21:41", "3 bedrooms", "started 27 min
+  // ago"). Desktop browsers don't do this, which is why the
+  // overlay only appeared on iPhone.
+  //
+  // format-detection disables every flavour of that auto-linking.
+  // We don't rely on Safari's tel: linking anywhere — the WhatsApp
+  // / phone affordances we build use explicit hrefs.
+  formatDetection: {
+    telephone: false,
+    date: false,
+    address: false,
+    email: false,
+  },
 };
 
 export default function RootLayout({
