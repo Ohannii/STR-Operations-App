@@ -251,70 +251,80 @@ export default async function PropertyPage({
 
   if (!property) notFound()
 
-  // Operational chip marks for the open-flag cards (Session 6).
-  // Two-phase: we need the flag IDs from the first query before we
-  // can filter marks. Acceptable extra round-trip; rendering the chip
-  // row on each card is worth the visibility win.
-  // Session 8: photo counts piggyback on the same round-trip.
+  // Second query wave. Everything here depends only on IDs from the
+  // first wave (open-flag IDs, draft pack id, submitted pack ids) —
+  // and NOT on each other — so they all run in ONE Promise.all
+  // instead of three sequential awaits. On a slow dev/tunnel link
+  // that's the difference between 3 serial round-trips and 1, which
+  // is the single biggest render-latency win on this page.
   const openFlagIds = (openFlags ?? []).map((f) => f.id)
-  let activeMarksByFlagId: Record<string, ChipKind[]> = {}
-  const photoCountByFlagId: Record<string, number> = {}
-  if (openFlagIds.length > 0) {
-    const [marksRes, photosRes] = await Promise.all([
-      supabase
-        .from('flag_operational_marks')
-        .select('flag_id, kind')
-        .in('flag_id', openFlagIds)
-        .is('cleared_at', null)
-        .returns<{ flag_id: string; kind: string }[]>(),
-      supabase
-        .from('photos')
-        .select('flag_id')
-        .in('flag_id', openFlagIds)
-        .is('deleted_at', null)
-        .returns<{ flag_id: string }[]>(),
-    ])
-    activeMarksByFlagId = (marksRes.data ?? []).reduce<Record<string, ChipKind[]>>(
-      (acc, m) => {
-        if (!acc[m.flag_id]) acc[m.flag_id] = []
-        acc[m.flag_id].push(m.kind as ChipKind)
-        return acc
-      },
-      {},
-    )
-    for (const row of photosRes.data ?? []) {
-      photoCountByFlagId[row.flag_id] = (photoCountByFlagId[row.flag_id] ?? 0) + 1
-    }
-  }
-
-  // Photo count for the current draft pack (only needed when there
-  // IS a draft) — surfaced in the apartment header so staff know
-  // how many shots are already in the in-flight pack.
-  let draftPackPhotoCount = 0
-  if (draftPack) {
-    const { count } = await supabase
-      .from('photos')
-      .select('id', { count: 'exact', head: true })
-      .eq('evidence_pack_id', draftPack.id)
-      .is('deleted_at', null)
-    draftPackPhotoCount = count ?? 0
-  }
-
-  // Submitted pack photo counts — cheap because we cap at 5 packs
-  // in history. One round-trip pulls all of them.
   const submittedPackIds = (submittedPacks ?? []).map((p) => p.id)
+
+  const marksQuery =
+    openFlagIds.length > 0
+      ? supabase
+          .from('flag_operational_marks')
+          .select('flag_id, kind')
+          .in('flag_id', openFlagIds)
+          .is('cleared_at', null)
+          .returns<{ flag_id: string; kind: string }[]>()
+      : null
+
+  const flagPhotosQuery =
+    openFlagIds.length > 0
+      ? supabase
+          .from('photos')
+          .select('flag_id')
+          .in('flag_id', openFlagIds)
+          .is('deleted_at', null)
+          .returns<{ flag_id: string }[]>()
+      : null
+
+  const draftPackPhotosQuery = draftPack
+    ? supabase
+        .from('photos')
+        .select('id', { count: 'exact', head: true })
+        .eq('evidence_pack_id', draftPack.id)
+        .is('deleted_at', null)
+    : null
+
+  const submittedPackPhotosQuery =
+    submittedPackIds.length > 0
+      ? supabase
+          .from('photos')
+          .select('evidence_pack_id')
+          .in('evidence_pack_id', submittedPackIds)
+          .is('deleted_at', null)
+          .returns<{ evidence_pack_id: string }[]>()
+      : null
+
+  const [marksRes, flagPhotosRes, draftPackPhotosRes, submittedPackPhotosRes] =
+    await Promise.all([
+      marksQuery,
+      flagPhotosQuery,
+      draftPackPhotosQuery,
+      submittedPackPhotosQuery,
+    ])
+
+  const activeMarksByFlagId = (marksRes?.data ?? []).reduce<
+    Record<string, ChipKind[]>
+  >((acc, m) => {
+    if (!acc[m.flag_id]) acc[m.flag_id] = []
+    acc[m.flag_id].push(m.kind as ChipKind)
+    return acc
+  }, {})
+
+  const photoCountByFlagId: Record<string, number> = {}
+  for (const row of flagPhotosRes?.data ?? []) {
+    photoCountByFlagId[row.flag_id] = (photoCountByFlagId[row.flag_id] ?? 0) + 1
+  }
+
+  const draftPackPhotoCount = draftPackPhotosRes?.count ?? 0
+
   const packPhotoCountById: Record<string, number> = {}
-  if (submittedPackIds.length > 0) {
-    const { data: packPhotos } = await supabase
-      .from('photos')
-      .select('evidence_pack_id')
-      .in('evidence_pack_id', submittedPackIds)
-      .is('deleted_at', null)
-      .returns<{ evidence_pack_id: string }[]>()
-    for (const row of packPhotos ?? []) {
-      packPhotoCountById[row.evidence_pack_id] =
-        (packPhotoCountById[row.evidence_pack_id] ?? 0) + 1
-    }
+  for (const row of submittedPackPhotosRes?.data ?? []) {
+    packPhotoCountById[row.evidence_pack_id] =
+      (packPhotoCountById[row.evidence_pack_id] ?? 0) + 1
   }
 
   // ----------------------------------------------------------------

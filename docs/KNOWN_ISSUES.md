@@ -18,19 +18,59 @@
 
 ### Watch: iPhone Chrome hydration overlay (Session 8)
 
-- **Priority: Monitor**
+- **Priority: Monitor — dev-only, NOT production-impacting**
 - After the `format-detection` + `suppressHydrationWarning` fixes, iPhone
-  **Safari** is clean. iPhone **Chrome** was still showing the dev overlay
+  **Safari** is clean. iPhone **Chrome** was still showing the red overlay
   in one test — most likely Chrome serving a cached copy of the pre-fix
   page (iOS Chrome is WebKit under the hood, so `format-detection` applies
   equally).
-- **Plan:** retest in a fresh iPhone Chrome private tab after the fixes are
-  pulled + dev restarted. If it persists, the overlay will now carry a
-  component stack trace (we only suppressed the root `<html>`/`<body>`, not
-  descendants) — capture it and fix the specific component.
-- **Note:** the dev overlay only appears in `next dev`; production builds
-  don't render it. So this is strictly a local-testing annoyance, never a
-  shipped-app problem.
+- **Definitive note on production impact:** the red "1 Issue" overlay is the
+  **Next.js dev-mode error overlay**. It is injected by `next dev` ONLY. A
+  production build (`next build` + `next start`, or any real deploy) does
+  not include the overlay code at all — there is no scenario where a guest
+  / owner / staff member on the shipped app sees it. So even in the worst
+  case (the hydration warning genuinely persists on Chrome), it is a
+  local-testing annoyance, never a shipped-app defect.
+- **Plan:** retest in a fresh iPhone Chrome private tab after pulling +
+  restarting dev. If it persists, the overlay now carries a component
+  stack trace (we only suppressed the root `<html>`/`<body>`, not
+  descendants) — capture it and we fix the specific component.
+
+### Deferred (Session 9 candidates): dashboard tile link, default chips, history pagination
+
+Three improvements raised during Session 8 testing. None block merge;
+documented here so they aren't lost.
+
+1. **Dashboard "Open flags" tile should be clickable.**
+   - The home dashboard now shows a correct open-flags count, but the tile
+     isn't a link. Management would expect tapping it to open a company-wide
+     list of open flags.
+   - **Blocker:** there is no company-wide "all open flags" page yet — only
+     per-apartment Action Centres. Building that list view is the actual
+     work (a new route + query + filter UI), which is a Session 9 item.
+   - **Interim:** the tile stays a non-interactive stat for now.
+
+2. **Default operational marks when a flag is raised.**
+   - Business rule: a newly raised flag should auto-start with
+     `asana_pending`. If it's flagged as guest damage (`guest_damage`
+     category), it should also auto-start with `guest_notify_pending`.
+   - **Why deferred:** this is a real behaviour change to `createFlagAction`
+     (insert the flag, then insert the default `flag_operational_marks`
+     rows in the same action). Small but it touches the chip vocabulary's
+     "absence = not-yet" semantics, so it deserves its own focused change +
+     test rather than riding along in a UI-polish commit. The data model
+     already supports it (no schema change needed).
+   - **Reassess:** Session 9, first item.
+
+3. **Pre-arrival history pagination.**
+   - The apartment History block currently caps at the latest 5 submitted
+     packs (already — `.limit(5)`), so it won't grow unbounded. But once a
+     property has many turnovers, even "latest 5" plus the closed-flags
+     list makes the dashboard long.
+   - **Plan:** show the latest 2–3 packs inline with a "View full history"
+     link to a dedicated paginated history page. The `.limit(5)` cap means
+     this is purely presentational polish, not a performance risk today.
+   - **Reassess:** when a real property crosses ~10 submitted packs.
 
 > **State note (2026-05-24):** The v1.0 Skeleton Milestone is complete — empty Next.js shell, `pnpm dev` and `pnpm build` pass, PR #1 merged to main. No services are connected, no features exist, no database or auth is wired. The current phase is documentation alignment before building Product Stage v1.0. All risks below remain planning-stage risks, not live bugs.
 

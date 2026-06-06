@@ -268,6 +268,21 @@ export function EvidenceCapture({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Lock background page scroll while the full-screen modal is
+  // open. Without this, the page behind the portal can still
+  // scroll/drift on touch — which on iOS reads as "the page
+  // moves under the camera". Restores the previous overflow on
+  // close so we don't clobber another modal's lock.
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    if (!open) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = prev
+    }
+  }, [open])
+
   // --------------------------------------------------------------
   // Capture helpers
   // --------------------------------------------------------------

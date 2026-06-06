@@ -37,6 +37,13 @@ html, body {
    * can break sticky). max-width:100% belt-and-braces. */
   overflow-x: clip;
   max-width: 100%;
+  width: 100%;
+  /* The "intermittent side-to-side that comes and goes" the team
+   * reported is iOS Safari's ELASTIC HORIZONTAL OVERSCROLL (the
+   * rubber-band bounce), not necessarily content wider than the
+   * viewport. overflow-x: clip stops real overflow; this stops
+   * the bounce. Together they fully lock horizontal movement. */
+  overscroll-behavior-x: none;
 }
 
 body {
@@ -49,6 +56,13 @@ body {
    * than the viewport. */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  /* Long unbroken strings (UUID-ish report IDs, emails, pasted
+   * URLs in notes) are a classic intermittent-overflow cause —
+   * they only push the layout wide when that specific content is
+   * present, which is exactly the "comes and goes" symptom.
+   * overflow-wrap: anywhere lets them break instead of forcing
+   * width. Applies to descendants via inheritance. */
+  overflow-wrap: anywhere;
 }
 
 /* ============================================================
