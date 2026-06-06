@@ -181,10 +181,12 @@ export async function updateFlagAction(formData: FormData) {
   // Action Centre at /properties/[id] may serve a stale RSC payload
   // after the redirect — closed flags show as still-open in the
   // Open Flags list. The action's "home" route is the flag detail
-  // page; the Action Centre is a different route that must be
-  // invalidated explicitly.
+  // page; the Action Centre + company dashboard are different
+  // routes that must be invalidated explicitly so the open-flags
+  // counts on both stay correct after a resolve / reopen.
   revalidatePath(`/properties/${propertyId}`)
   revalidatePath(`/properties/${propertyId}/flags/${flagId}`)
+  revalidatePath('/dashboard')
 
   // Session 7: return_to (when present and safe) wins over the
   // default detail-page redirect. The Action Centre's inline Mark
@@ -319,6 +321,7 @@ export async function reopenFlagAction(formData: FormData) {
 
   revalidatePath(`/properties/${propertyId}`)
   revalidatePath(`/properties/${propertyId}/flags/${flagId}`)
+  revalidatePath('/dashboard')
 
   redirect(`${detailUrl}?reopened=1#activity`)
 }

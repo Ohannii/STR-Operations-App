@@ -1,5 +1,6 @@
 'use server'
 
+import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { createClient } from '@/lib/supabase/server'
@@ -100,6 +101,12 @@ export async function createFlagAction(formData: FormData) {
     console.error('[flags/new] insert error:', insertErr)
     redirect(`${formUrl}&error=${encodeURIComponent(`Could not raise flag: ${insertErr.message}`)}`)
   }
+
+  // Keep the company dashboard's "Open flags" count in sync — it's
+  // a separate route from the apartment page and won't refresh on
+  // its own after a flag is raised.
+  revalidatePath('/dashboard')
+  revalidatePath(`/properties/${property.id}`)
 
   redirect(`/properties/${property.id}?raised=1`)
 }
