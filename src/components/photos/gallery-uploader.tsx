@@ -203,9 +203,10 @@ export function GalleryUploader({
         }
       }
 
-      // Worker pool. Concurrency 3 — sequential is too slow for
+      // Worker pool. Concurrency 4 — sequential is too slow for
       // 10+ photo batches, full parallel saturates mobile radios.
-      const UPLOAD_CONCURRENCY = 3
+      // Bumped to 4 alongside the smaller compressed file size.
+      const UPLOAD_CONCURRENCY = 4
       const workQueue = [...queue]
       const worker = async () => {
         while (true) {
@@ -289,9 +290,10 @@ export function GalleryUploader({
 
       {/* Per-file status list. Stays visible after upload completes
           so the user can SEE what happened — no auto-reload that
-          erases the result. */}
+          erases the result. max-w-full on small screens prevents
+          the panel pushing the page wider than the viewport. */}
       {items.length > 0 ? (
-        <div className="rounded-md border border-slate-200 bg-white p-2 max-w-md">
+        <div className="rounded-md border border-slate-200 bg-white p-2 w-full max-w-full sm:max-w-md">
           <ul className="space-y-1 text-xs">
             {items.map((it) => (
               <li key={it.id} className="flex items-start gap-2">

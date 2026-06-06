@@ -488,7 +488,12 @@ export function EvidenceCapture({
   const runUploads = useCallback(
     async (items: Pending[]): Promise<boolean> => {
       if (items.length === 0) return true
-      const UPLOAD_CONCURRENCY = 3
+      // 4 concurrent uploads — bumped from 3 alongside the smaller
+      // compressed-file size. Smaller files mean each upload holds
+      // the connection for less time, so a slightly higher
+      // concurrency drains a big batch faster without saturating a
+      // mobile radio.
+      const UPLOAD_CONCURRENCY = 4
       const queue = [...items]
       let allOk = true
       const workers = Array.from(
@@ -606,7 +611,11 @@ export function EvidenceCapture({
         right: 0,
         bottom: 0,
         zIndex: 9999,
-        width: '100vw',
+        // Use inset (top/left/right/bottom: 0) for sizing rather
+        // than width:100vw — 100vw includes scrollbar width on
+        // some browsers and can itself cause horizontal overflow.
+        // top/bottom 0 + 100dvh height handles iOS Safari's
+        // dynamic (shrinking) viewport correctly.
         height: '100dvh',
       }}
       className="bg-slate-950/95 text-white flex flex-col"

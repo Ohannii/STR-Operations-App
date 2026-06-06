@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -33,6 +33,21 @@ export const metadata: Metadata = {
     address: false,
     email: false,
   },
+};
+
+// Explicit viewport so mobile renders at device width with no
+// surprise zoom. width=device-width + initialScale=1 is the
+// baseline that makes "1 CSS px = 1 device-independent px" hold,
+// which is what stops the page rendering wider than the screen.
+// We intentionally do NOT set maximumScale / userScalable=false —
+// pinch-zoom stays available for accessibility; the layout just
+// shouldn't REQUIRE it. viewportFit=cover lets content use the
+// full width on notched iPhones (combined with safe-area padding
+// where it matters).
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

@@ -2,7 +2,35 @@
 
 ## Active issues
 
-None.
+### Deferred UX improvement: per-photo notes during the camera run (Session 8)
+
+- **Priority: UX / adoption (not a blocker)**
+- During an in-app camera run, the inspector can currently add per-photo
+  captions only on the **review screen** (after tapping Next). The natural
+  workflow they asked for is: while still shooting, tap a thumbnail in the
+  bottom photo strip → add a note to that specific photo → keep shooting.
+- **Plan:** make the photo-strip thumbnails tappable in the shooting stage,
+  opening a small caption sheet for that one photo without leaving the
+  camera. The data model already supports per-photo notes (`photos.notes`),
+  so this is presentation-only.
+- **Reassess:** next evidence-camera iteration (the "raise-flag-from-camera-
+  with-attached-photos" run).
+
+### Watch: iPhone Chrome hydration overlay (Session 8)
+
+- **Priority: Monitor**
+- After the `format-detection` + `suppressHydrationWarning` fixes, iPhone
+  **Safari** is clean. iPhone **Chrome** was still showing the dev overlay
+  in one test — most likely Chrome serving a cached copy of the pre-fix
+  page (iOS Chrome is WebKit under the hood, so `format-detection` applies
+  equally).
+- **Plan:** retest in a fresh iPhone Chrome private tab after the fixes are
+  pulled + dev restarted. If it persists, the overlay will now carry a
+  component stack trace (we only suppressed the root `<html>`/`<body>`, not
+  descendants) — capture it and fix the specific component.
+- **Note:** the dev overlay only appears in `next dev`; production builds
+  don't render it. So this is strictly a local-testing annoyance, never a
+  shipped-app problem.
 
 > **State note (2026-05-24):** The v1.0 Skeleton Milestone is complete — empty Next.js shell, `pnpm dev` and `pnpm build` pass, PR #1 merged to main. No services are connected, no features exist, no database or auth is wired. The current phase is documentation alignment before building Product Stage v1.0. All risks below remain planning-stage risks, not live bugs.
 

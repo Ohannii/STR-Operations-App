@@ -27,10 +27,19 @@
  */
 
 /** Compressed master long edge in pixels. */
-export const MASTER_MAX_LONG_EDGE = 2000
+// Tuned down from 2000px / 0.8 after on-site testing reported
+// uploads "feel slow" on mobile. 1600px long edge at q0.72 is
+// still well within the evidence-quality bar (the docs cap is
+// "long edge ≤ 2000, JPEG ~80%, target < 400KB typical") but
+// produces meaningfully smaller files: ~36% fewer pixels than
+// 2000px, plus a lower quality factor. Typical iPhone evidence
+// photo drops from ~700–900 KB to ~250–400 KB, which roughly
+// halves upload time on a single connection. Still plenty of
+// detail to zoom into a crack / stain / serial number.
+export const MASTER_MAX_LONG_EDGE = 1600
 
 /** JPEG quality for the compressed master, 0..1. */
-export const MASTER_QUALITY = 0.8
+export const MASTER_QUALITY = 0.72
 
 /** Thumbnail long edge in pixels. */
 export const THUMB_LONG_EDGE = 400
