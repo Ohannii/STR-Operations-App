@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
-import { ArrowLeft, Info } from 'lucide-react'
+import { ArrowLeft, ChevronDown, Info } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -112,18 +112,32 @@ export default async function NewFlagPage({
               htmlFor="category_key"
               hint="Pick the closest fit. Triage can re-classify later."
             >
-              <select
-                id="category_key"
-                name="category_key"
-                defaultValue={initialKey}
-                className="block w-full h-10 px-3 text-sm text-slate-900 border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
-              >
-                {allCategories.map((c) => (
-                  <option key={c.key} value={c.key}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
+              {/* appearance-none + our own chevron: iOS Safari renders
+                  the *native* <select> control a few px wider than its
+                  CSS box, which pushed the page just past the viewport
+                  (a slight horizontal slide, eased by zooming out). This
+                  is the only native dropdown in the flag flow — the flag
+                  detail page uses radio chips, which is why it never
+                  slid. appearance-none makes the select obey its box. */}
+              <div className="relative">
+                <select
+                  id="category_key"
+                  name="category_key"
+                  defaultValue={initialKey}
+                  className="block w-full h-10 pl-3 pr-9 text-sm text-slate-900 appearance-none border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
+                >
+                  {allCategories.map((c) => (
+                    <option key={c.key} value={c.key}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown
+                  size={16}
+                  aria-hidden
+                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
+                />
+              </div>
             </Field>
 
             <fieldset>
