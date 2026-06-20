@@ -13,6 +13,7 @@ import {
   getChipDisplay,
   type ChipKind,
 } from '@/lib/ui/chip-vocabulary'
+import { formatDateSAST, formatDateTimeSAST } from '@/lib/ui/datetime'
 import { getFlagCategoryDisplay } from '@/lib/ui/flag-category'
 import {
   chargeablePartyDisplay,
@@ -94,24 +95,15 @@ function pickEmbedded<T>(value: T | T[] | null | undefined): T | null {
   return Array.isArray(value) ? (value[0] ?? null) : value
 }
 
+// Display in Africa/Johannesburg (SAST). The DB stores UTC and the
+// Vercel server runs in UTC, so an un-zoned toLocaleString rendered
+// times two hours behind local. Centralised in @/lib/ui/datetime.
 function formatDateTime(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return formatDateTimeSAST(iso)
 }
 
 function formatDateOnly(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  })
+  return formatDateSAST(iso)
 }
 
 export default async function FlagReportPage({
@@ -249,7 +241,7 @@ export default async function FlagReportPage({
     .join(' · ')
 
   return (
-    <div className="min-h-screen bg-white text-slate-900 print:bg-white">
+    <div className="min-h-screen bg-white text-slate-900 print:bg-white overflow-x-clip">
       {/* On-screen toolbar — hidden when printing. */}
       <div className="print:hidden sticky top-0 z-10 bg-white/95 backdrop-blur border-b border-slate-200">
         <div className="max-w-4xl mx-auto px-6 py-3 flex items-center justify-between gap-3">
