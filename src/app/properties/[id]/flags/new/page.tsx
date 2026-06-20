@@ -5,7 +5,7 @@ import { AppShell } from '@/components/app-shell'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { Field, Input, Label } from '@/components/ui/input'
+import { Field, Label } from '@/components/ui/input'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { createClient } from '@/lib/supabase/server'
 import {
@@ -42,14 +42,24 @@ export default async function NewFlagPage({
   const { category: categoryParam, error } = await searchParams
 
   const supabase = await createClient()
-  const { data: property } = await supabase
+  const { data: property, error: propertyErr } = await supabase
     .from('properties')
     .select('id, name, address, unit_reference')
     .eq('id', id)
     .is('deleted_at', null)
     .maybeSingle()
 
-  if (!property) notFound()
+  if (propertyErr) {
+    // Diagnostic logging for the "Raise flag goes to 404" reports.
+    // RLS denial / network error / stale session all surface here
+    // as a query error rather than a null row. Without the log
+    // the user just sees a generic 404.
+    console.error('[flag/new] property lookup error:', propertyErr, 'id=', id)
+  }
+  if (!property) {
+    console.error('[flag/new] property not found for id=', id, '— rendering 404')
+    notFound()
+  }
 
   const allCategories = listFlagCategoryDisplays()
   const defaultCategory = categoryParam

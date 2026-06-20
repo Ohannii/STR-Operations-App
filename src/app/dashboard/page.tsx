@@ -44,11 +44,48 @@ export default async function DashboardPage() {
   if (!ctx.company) redirect('/onboard')
 
   const supabase = await createClient()
-  const { data: properties, error } = await supabase
+
+  // Parallel reads. RLS scopes every query to the user's company,
+  // so we don't need an explicit company_id filter — but the
+  // counts MUST reflect reality across all the company's
+  // apartments, which is exactly what the company-scoped RLS gives
+  // us. These are the numbers management trusts, so they're real
+  // queries now (the open-flags + open-recovery counts used to be
+  // hardcoded 0 placeholders).
+  const propertiesPromise = supabase
     .from('properties')
     .select('id, name, address, status, bedrooms, unit_reference')
     .is('deleted_at', null)
     .order('name', { ascending: true })
+
+  // Open flags = anything NOT in a terminal status. Matches the
+  // Action Centre's open-flags filter exactly
+  // (.not('status', 'in', '(closed,no_action)')) so the company
+  // dashboard count and the per-apartment list never disagree.
+  // head:true → count only, no rows fetched.
+  const openFlagsCountPromise = supabase
+    .from('flags')
+    .select('id', { count: 'exact', head: true })
+    .not('status', 'in', '(closed,no_action)')
+    .is('deleted_at', null)
+
+  // Open recovery tasks = non-terminal guest-recovery tasks.
+  // Same filter the Action Centre uses for its recovery tile.
+  const openRecoveryCountPromise = supabase
+    .from('guest_recovery_tasks')
+    .select('id', { count: 'exact', head: true })
+    .not('status', 'in', '(closed,guest_resolved,ota_resolved)')
+    .is('deleted_at', null)
+
+  const [
+    { data: properties, error },
+    { count: openFlagsCount },
+    { count: openRecoveryCount },
+  ] = await Promise.all([
+    propertiesPromise,
+    openFlagsCountPromise,
+    openRecoveryCountPromise,
+  ])
 
   const propertyCount = properties?.length ?? 0
   const userDisplayName = ctx.profile?.full_name ?? ctx.user.email ?? 'there'
@@ -88,9 +125,12 @@ export default async function DashboardPage() {
           <SnapshotCard
             icon={Flag}
             label="Open flags"
-            value={0}
-            hint="Ships with the Action Centre."
-            muted
+            value={openFlagsCount ?? 0}
+            hint={
+              (openFlagsCount ?? 0) === 0
+                ? 'Nothing open right now.'
+                : 'Across all apartments.'
+            }
           />
           <SnapshotCard
             icon={ClipboardCheck}
@@ -102,9 +142,13 @@ export default async function DashboardPage() {
           <SnapshotCard
             icon={RotateCcw}
             label="Open recovery tasks"
-            value={0}
-            hint="Ships with guest damage recovery."
-            muted
+            value={openRecoveryCount ?? 0}
+            hint={
+              (openRecoveryCount ?? 0) === 0
+                ? 'No guest recovery in flight.'
+                : 'Guest damage recovery.'
+            }
+            muted={(openRecoveryCount ?? 0) === 0}
           />
         </div>
       </section>

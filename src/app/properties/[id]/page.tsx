@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardCheck,
+  FileText,
   Flag,
   Hourglass,
   Info,
@@ -15,6 +16,9 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
+import { InsecureContextBanner } from '@/components/insecure-context-banner'
+import { EvidenceCapture } from '@/components/photos/evidence-capture'
+import { GalleryUploader } from '@/components/photos/gallery-uploader'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
@@ -39,6 +43,11 @@ import { propertyStatusDisplay } from '@/lib/ui/property-status'
 import { relativeTime } from '@/lib/ui/relative-time'
 import { updateFlagAction } from './flags/[flagId]/actions'
 import { toggleFlagMarkAction } from './flags/[flagId]/marks/actions'
+import {
+  discardEvidencePackAction,
+  startPreArrivalPackAction,
+  submitEvidencePackAction,
+} from './packs/actions'
 
 /**
  * GET /properties/[id]
@@ -72,7 +81,10 @@ type FlagRow = {
   description: string | null
   raised_at: string
   // Session 7: needed for inline chip eligibility on Action Centre.
-  chargeable_party_decision: string | null
+  chargeable_party_decision?: string | null
+  // Session 8 follow-up: closed_at populated only for the history
+  // section's recent-closed-flags query.
+  closed_at?: string | null
   flag_category: { id: string; key: string } | { id: string; key: string }[] | null
 }
 
@@ -90,6 +102,10 @@ export default async function PropertyPage({
     raised?: string
     open?: string
     error?: string
+    pack_started?: string
+    pack_submitted?: string
+    pack_discarded?: string
+    capture_now?: string
   }>
 }) {
   const ctx = await getUserContext()
@@ -97,7 +113,15 @@ export default async function PropertyPage({
   if (!ctx.company) redirect('/onboard')
 
   const { id } = await params
-  const { raised, open, error } = await searchParams
+  const {
+    raised,
+    open,
+    error,
+    pack_started,
+    pack_submitted,
+    pack_discarded,
+    capture_now,
+  } = await searchParams
 
   // Session 7: which flag cards are expanded inline. URL is the
   // source of truth so chip-toggle + Mark-Resolved actions can
@@ -154,35 +178,153 @@ export default async function PropertyPage({
     .not('status', 'in', '(closed,guest_resolved,ota_resolved)')
     .is('deleted_at', null)
 
+  // Session 8 follow-up: evidence packs as repeatable containers.
+  // We need (a) the current draft pre-arrival pack if one exists,
+  // (b) recent submitted packs for history, (c) recently closed
+  // flags for history. All issued in parallel with the other
+  // Action Centre queries so this stays a single round-trip wave.
+  const draftPackPromise = supabase
+    .from('evidence_packs')
+    .select('id, title, started_at, started_by')
+    .eq('property_id', id)
+    .eq('pack_type', 'pre_arrival')
+    .eq('status', 'draft')
+    .is('deleted_at', null)
+    .order('started_at', { ascending: false })
+    .limit(1)
+    .maybeSingle<{
+      id: string
+      title: string | null
+      started_at: string
+      started_by: string
+    }>()
+
+  const submittedPacksPromise = supabase
+    .from('evidence_packs')
+    .select('id, title, submitted_at, submitted_by, started_at')
+    .eq('property_id', id)
+    .eq('pack_type', 'pre_arrival')
+    .eq('status', 'submitted')
+    .is('deleted_at', null)
+    .order('submitted_at', { ascending: false, nullsFirst: false })
+    .limit(5)
+    .returns<
+      {
+        id: string
+        title: string | null
+        submitted_at: string | null
+        submitted_by: string | null
+        started_at: string
+      }[]
+    >()
+
+  const recentClosedFlagsPromise = supabase
+    .from('flags')
+    .select(
+      `
+      id, status, severity, description, closed_at, raised_at,
+      flag_category:flag_categories ( id, key )
+      `,
+    )
+    .eq('property_id', id)
+    .in('status', ['closed', 'no_action'])
+    .is('deleted_at', null)
+    .order('closed_at', { ascending: false, nullsFirst: false })
+    .limit(5)
+    .returns<FlagRow[]>()
+
   const [
     { data: property },
     { data: openFlags, error: flagsError },
     { count: openRecoveryCount },
-  ] = await Promise.all([propertyPromise, flagsPromise, openRecoveryCountPromise])
+    { data: draftPack },
+    { data: submittedPacks },
+    { data: closedFlags },
+  ] = await Promise.all([
+    propertyPromise,
+    flagsPromise,
+    openRecoveryCountPromise,
+    draftPackPromise,
+    submittedPacksPromise,
+    recentClosedFlagsPromise,
+  ])
 
   if (!property) notFound()
 
-  // Operational chip marks for the open-flag cards (Session 6).
-  // Two-phase: we need the flag IDs from the first query before we
-  // can filter marks. Acceptable extra round-trip; rendering the chip
-  // row on each card is worth the visibility win.
+  // Second query wave. Everything here depends only on IDs from the
+  // first wave (open-flag IDs, draft pack id, submitted pack ids) —
+  // and NOT on each other — so they all run in ONE Promise.all
+  // instead of three sequential awaits. On a slow dev/tunnel link
+  // that's the difference between 3 serial round-trips and 1, which
+  // is the single biggest render-latency win on this page.
   const openFlagIds = (openFlags ?? []).map((f) => f.id)
-  let activeMarksByFlagId: Record<string, ChipKind[]> = {}
-  if (openFlagIds.length > 0) {
-    const { data: marks } = await supabase
-      .from('flag_operational_marks')
-      .select('flag_id, kind')
-      .in('flag_id', openFlagIds)
-      .is('cleared_at', null)
-      .returns<{ flag_id: string; kind: string }[]>()
-    activeMarksByFlagId = (marks ?? []).reduce<Record<string, ChipKind[]>>(
-      (acc, m) => {
-        if (!acc[m.flag_id]) acc[m.flag_id] = []
-        acc[m.flag_id].push(m.kind as ChipKind)
-        return acc
-      },
-      {},
-    )
+  const submittedPackIds = (submittedPacks ?? []).map((p) => p.id)
+
+  const marksQuery =
+    openFlagIds.length > 0
+      ? supabase
+          .from('flag_operational_marks')
+          .select('flag_id, kind')
+          .in('flag_id', openFlagIds)
+          .is('cleared_at', null)
+          .returns<{ flag_id: string; kind: string }[]>()
+      : null
+
+  const flagPhotosQuery =
+    openFlagIds.length > 0
+      ? supabase
+          .from('photos')
+          .select('flag_id')
+          .in('flag_id', openFlagIds)
+          .is('deleted_at', null)
+          .returns<{ flag_id: string }[]>()
+      : null
+
+  const draftPackPhotosQuery = draftPack
+    ? supabase
+        .from('photos')
+        .select('id', { count: 'exact', head: true })
+        .eq('evidence_pack_id', draftPack.id)
+        .is('deleted_at', null)
+    : null
+
+  const submittedPackPhotosQuery =
+    submittedPackIds.length > 0
+      ? supabase
+          .from('photos')
+          .select('evidence_pack_id')
+          .in('evidence_pack_id', submittedPackIds)
+          .is('deleted_at', null)
+          .returns<{ evidence_pack_id: string }[]>()
+      : null
+
+  const [marksRes, flagPhotosRes, draftPackPhotosRes, submittedPackPhotosRes] =
+    await Promise.all([
+      marksQuery,
+      flagPhotosQuery,
+      draftPackPhotosQuery,
+      submittedPackPhotosQuery,
+    ])
+
+  const activeMarksByFlagId = (marksRes?.data ?? []).reduce<
+    Record<string, ChipKind[]>
+  >((acc, m) => {
+    if (!acc[m.flag_id]) acc[m.flag_id] = []
+    acc[m.flag_id].push(m.kind as ChipKind)
+    return acc
+  }, {})
+
+  const photoCountByFlagId: Record<string, number> = {}
+  for (const row of flagPhotosRes?.data ?? []) {
+    photoCountByFlagId[row.flag_id] = (photoCountByFlagId[row.flag_id] ?? 0) + 1
+  }
+
+  const draftPackPhotoCount = draftPackPhotosRes?.count ?? 0
+
+  const packPhotoCountById: Record<string, number> = {}
+  for (const row of submittedPackPhotosRes?.data ?? []) {
+    packPhotoCountById[row.evidence_pack_id] =
+      (packPhotoCountById[row.evidence_pack_id] ?? 0) + 1
   }
 
   // ----------------------------------------------------------------
@@ -190,6 +332,10 @@ export default async function PropertyPage({
   // have (no extra queries needed for these three; the recovery
   // count came from the parallel head-only query above).
   // ----------------------------------------------------------------
+  // This is a Server Component — Date.now() is fine here. The React
+  // 19 react-hooks/purity rule fires regardless because the analyzer
+  // doesn't distinguish server / client components.
+  // eslint-disable-next-line react-hooks/purity
   const nowMs = Date.now()
   const overdueCutoffMs = nowMs - 48 * 60 * 60 * 1000 // 48 hours ago
 
@@ -247,9 +393,28 @@ export default async function PropertyPage({
         All properties
       </Link>
 
+      <InsecureContextBanner />
+
       {raised ? (
         <div className="mb-5">
           <Alert tone="success">Flag raised. It&rsquo;s in the Open flags list below.</Alert>
+        </div>
+      ) : null}
+      {pack_started ? (
+        <div className="mb-5">
+          <Alert tone="success">Pre-arrival pack started. Tap Take photos to begin.</Alert>
+        </div>
+      ) : null}
+      {pack_submitted ? (
+        <div className="mb-5">
+          <Alert tone="success">
+            Pack submitted. It&rsquo;s now in history — start a new pack when ready.
+          </Alert>
+        </div>
+      ) : null}
+      {pack_discarded ? (
+        <div className="mb-5">
+          <Alert tone="success">Draft pack discarded.</Alert>
         </div>
       ) : null}
       {error ? (
@@ -280,12 +445,140 @@ export default async function PropertyPage({
                   {property.bedrooms === 1 ? 'bedroom' : 'bedrooms'}
                 </span>
                 <span>Added {relativeTime(property.created_at)}</span>
+                {(submittedPacks?.length ?? 0) > 0 ? (
+                  <span className="inline-flex items-center gap-1 text-slate-700">
+                    <FileText size={12} aria-hidden />
+                    <span>
+                      <span className="font-medium">{submittedPacks?.length}</span>{' '}
+                      submitted pack{submittedPacks?.length === 1 ? '' : 's'}
+                    </span>
+                  </span>
+                ) : null}
               </div>
             </div>
             <Badge tone={status.tone} className="!text-xs !px-2.5 !py-1">
               {status.label}
             </Badge>
           </div>
+
+          {/* Session 8 follow-up: pack-aware pre-arrival surface.
+              Three states:
+                1. No draft pack → big "Start pre-arrival pack" button
+                2. Draft pack in progress → Add photos / Open pack / Submit pack
+                3. (history-only) → handled in the History section below
+
+              The pack acts as a turnover container — each new
+              turnover starts fresh, and submitted packs live in
+              history. This replaces the previous "10 pre-arrival
+              photos forever" behaviour that didn't support
+              repeatable turnover capture. */}
+          <div className="mt-4 pt-4 border-t border-slate-100">
+            {draftPack ? (
+              <div>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-900">
+                      Pre-arrival pack in progress
+                    </p>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {draftPack.title ?? 'Pre-arrival pack'} ·{' '}
+                      {draftPackPhotoCount} photo
+                      {draftPackPhotoCount === 1 ? '' : 's'} so far · started{' '}
+                      {relativeTime(draftPack.started_at)}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <EvidenceCapture
+                      propertyId={property.id}
+                      evidencePackId={draftPack.id}
+                      launchLabel={
+                        draftPackPhotoCount > 0 ? 'Continue capturing' : 'Take photos'
+                      }
+                      raiseFlagHref={`/properties/${property.id}/flags/new`}
+                      autoOpen={capture_now === '1'}
+                    />
+                    {/* Bulletproof gallery path — no modal, no
+                        getUserMedia. Just a styled <label> wrapping
+                        a plain <input type="file" multiple>. iOS
+                        Safari can't block this because the picker
+                        opens from a direct user gesture (the label
+                        tap). Lives as a separate component so the
+                        EvidenceCapture modal complexity stays out
+                        of this code path. */}
+                    <GalleryUploader
+                      propertyId={property.id}
+                      evidencePackId={draftPack.id}
+                      label="Upload from gallery"
+                    />
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Link
+                    href={`/properties/${property.id}/packs/${draftPack.id}/report`}
+                    target="_blank"
+                    rel="noopener"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition"
+                  >
+                    <FileText size={13} aria-hidden />
+                    Open pack
+                  </Link>
+                  <Link
+                    href={`/properties/${property.id}/flags/new`}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 transition"
+                  >
+                    <Flag size={13} aria-hidden />
+                    Spotted an issue — raise a flag
+                  </Link>
+                  <form action={submitEvidencePackAction} className="contents">
+                    <input type="hidden" name="property_id" value={property.id} />
+                    <input type="hidden" name="pack_id" value={draftPack.id} />
+                    <button
+                      type="submit"
+                      className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 text-white px-3 py-1.5 text-xs font-semibold hover:bg-emerald-700 active:bg-emerald-800 transition"
+                    >
+                      <Check size={13} aria-hidden />
+                      Submit pack
+                    </button>
+                  </form>
+                  <form action={discardEvidencePackAction} className="contents">
+                    <input type="hidden" name="property_id" value={property.id} />
+                    <input type="hidden" name="pack_id" value={draftPack.id} />
+                    <button
+                      type="submit"
+                      className="inline-flex items-center gap-1.5 rounded-md text-xs font-medium text-slate-500 hover:text-red-600 px-2 py-1.5 transition"
+                      title="Discard this draft pack"
+                    >
+                      Discard draft
+                    </button>
+                  </form>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-900">
+                    Pre-arrival evidence pack
+                  </p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Start a fresh pack for this turnover. Camera stays open —
+                    capture a full sweep in one go. Submitted packs land in
+                    history below.
+                  </p>
+                </div>
+                <form action={startPreArrivalPackAction} className="contents">
+                  <input type="hidden" name="property_id" value={property.id} />
+                  <button
+                    type="submit"
+                    className="inline-flex items-center gap-2 rounded-md bg-slate-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 active:bg-slate-950 transition"
+                  >
+                    <Camera size={16} aria-hidden />
+                    Start pre-arrival pack
+                  </button>
+                </form>
+              </div>
+            )}
+          </div>
+
           {property.notes ? (
             <p className="mt-4 pt-4 border-t border-slate-100 text-sm text-slate-700">
               {property.notes}
@@ -295,7 +588,7 @@ export default async function PropertyPage({
       </Card>
 
       {/* Quick-add tiles */}
-      <section className="mb-10">
+      <section id="raise-flag" className="mb-10 scroll-mt-20">
         <div className="mb-3">
           <h2 className="text-lg font-semibold text-slate-900">Raise a flag</h2>
           <p className="text-sm text-slate-600">
@@ -430,6 +723,7 @@ export default async function PropertyPage({
                   propertyId={property.id}
                   expandedIds={expandedIds}
                   activeMarksByFlagId={activeMarksByFlagId}
+                  photoCountByFlagId={photoCountByFlagId}
                 />
               )
             })}
@@ -440,31 +734,133 @@ export default async function PropertyPage({
                 propertyId={property.id}
                 expandedIds={expandedIds}
                 activeMarksByFlagId={activeMarksByFlagId}
+                photoCountByFlagId={photoCountByFlagId}
               />
             ) : null}
           </div>
         )}
       </section>
 
-      {/* Inspection history */}
+      {/* Session 8 follow-up: history surface.
+          Two compact lists side-by-side on wide screens:
+            - Submitted pre-arrival packs (newest first, capped at 5)
+            - Recently closed/no-action flags (capped at 5)
+          Both link out to their respective detail pages so the
+          full record is one click away weeks after the fact. */}
       <section className="mb-10">
-        <h2 className="text-lg font-semibold text-slate-900 mb-3">Inspection history</h2>
-        <Card>
-          <div className="p-5 flex items-start gap-3">
-            <div className="p-2 rounded-md bg-slate-100">
-              <ClipboardCheck size={16} className="text-slate-700" aria-hidden />
+        <h2 className="text-lg font-semibold text-slate-900 mb-3">History</h2>
+        <div className="grid md:grid-cols-2 gap-4">
+          <Card>
+            <div className="p-5">
+              <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-3">
+                Submitted pre-arrival packs
+              </h3>
+              {(submittedPacks?.length ?? 0) === 0 ? (
+                <p className="text-sm text-slate-500">
+                  No submitted packs yet. Start a pack above; once you tap
+                  Submit, it lands here for future reference.
+                </p>
+              ) : (
+                <ul className="space-y-2">
+                  {(submittedPacks ?? []).map((pack) => {
+                    const photoN = packPhotoCountById[pack.id] ?? 0
+                    const when = pack.submitted_at ?? pack.started_at
+                    return (
+                      <li key={pack.id}>
+                        <Link
+                          href={`/properties/${property.id}/packs/${pack.id}/report`}
+                          className="flex items-start gap-3 rounded-md border border-slate-200 px-3 py-2 hover:bg-slate-50 transition"
+                        >
+                          <div className="shrink-0 p-1.5 rounded-md bg-emerald-50 text-emerald-700">
+                            <FileText size={14} aria-hidden />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium text-slate-900 truncate">
+                              {pack.title ?? 'Pre-arrival pack'}
+                            </p>
+                            <p className="text-xs text-slate-500 mt-0.5">
+                              {photoN} photo{photoN === 1 ? '' : 's'} ·
+                              submitted {relativeTime(when)}
+                            </p>
+                          </div>
+                          <ChevronRight
+                            size={14}
+                            className="text-slate-400 self-center"
+                            aria-hidden
+                          />
+                        </Link>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
             </div>
-            <div className="flex-1">
-              <p className="text-sm font-medium text-slate-900">No inspections yet</p>
-              <p className="text-sm text-slate-600 mt-0.5">
-                The turnover and pre-arrival inspection workflow ships in the next
-                feature session. When live, every past inspection will appear here
-                with its state, photos, and flags.
-              </p>
+          </Card>
+
+          <Card>
+            <div className="p-5">
+              <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-3">
+                Recently closed flags
+              </h3>
+              {(closedFlags?.length ?? 0) === 0 ? (
+                <p className="text-sm text-slate-500">
+                  No closed flags yet. Resolved flags will appear here so you
+                  can find evidence later — for example, if a guest issue
+                  surfaces a month after the turnover.
+                </p>
+              ) : (
+                <ul className="space-y-2">
+                  {(closedFlags ?? []).map((flag) => {
+                    const cat = pickCategory(flag.flag_category)
+                    const display = cat
+                      ? getFlagCategoryDisplay(cat.key)
+                      : undefined
+                    const Icon = display?.icon ?? Flag
+                    const when = flag.closed_at ?? flag.raised_at
+                    return (
+                      <li key={flag.id}>
+                        <Link
+                          href={`/properties/${property.id}/flags/${flag.id}`}
+                          className="flex items-start gap-3 rounded-md border border-slate-200 px-3 py-2 hover:bg-slate-50 transition"
+                        >
+                          <div
+                            className={
+                              display?.tone === 'red'
+                                ? 'shrink-0 p-1.5 rounded-md bg-red-50 text-red-700'
+                                : 'shrink-0 p-1.5 rounded-md bg-slate-100 text-slate-700'
+                            }
+                          >
+                            <Icon size={14} aria-hidden />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-sm font-medium text-slate-900">
+                                {display?.label ?? 'Flag'}
+                              </span>
+                              <Badge tone="slate" className="!text-[10px]">
+                                {flag.status === 'no_action' ? 'No action' : 'Closed'}
+                              </Badge>
+                            </div>
+                            <p className="text-xs text-slate-500 mt-0.5 truncate">
+                              {flag.description?.trim() || 'No description'} ·{' '}
+                              {flag.status === 'no_action' ? 'closed' : 'resolved'}{' '}
+                              {relativeTime(when ?? flag.raised_at)}
+                            </p>
+                          </div>
+                          <ChevronRight
+                            size={14}
+                            className="text-slate-400 self-center"
+                            aria-hidden
+                          />
+                        </Link>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
             </div>
-            <Badge tone="sky" className="self-start">Next session</Badge>
-          </div>
-        </Card>
+          </Card>
+        </div>
       </section>
 
       {/* Roadmap blurb */}
@@ -601,12 +997,14 @@ function CategorySection({
   propertyId,
   expandedIds,
   activeMarksByFlagId,
+  photoCountByFlagId,
 }: {
   groupLabel: string
   flags: FlagRow[]
   propertyId: string
   expandedIds: Set<string>
   activeMarksByFlagId: Record<string, ChipKind[]>
+  photoCountByFlagId: Record<string, number>
 }) {
   return (
     <div>
@@ -624,6 +1022,7 @@ function CategorySection({
             propertyId={propertyId}
             expandedIds={expandedIds}
             activeChipKinds={activeMarksByFlagId[flag.id] ?? []}
+            photoCount={photoCountByFlagId[flag.id] ?? 0}
           />
         ))}
       </ul>
@@ -640,11 +1039,13 @@ function FlagCardInline({
   propertyId,
   expandedIds,
   activeChipKinds,
+  photoCount,
 }: {
   flag: FlagRow
   propertyId: string
   expandedIds: Set<string>
   activeChipKinds: ChipKind[]
+  photoCount: number
 }) {
   const categoryRow = pickCategory(flag.flag_category)
   const cat = categoryRow ? getFlagCategoryDisplay(categoryRow.key) : undefined
@@ -674,7 +1075,7 @@ function FlagCardInline({
   const activeChipSet = new Set(activeChipKinds)
   const eligibleKinds = isExpanded
     ? eligibleChipKinds({
-        chargeable_party_decision: flag.chargeable_party_decision,
+        chargeable_party_decision: flag.chargeable_party_decision ?? null,
         category_key: categoryRow?.key ?? null,
       })
     : []
@@ -706,6 +1107,12 @@ function FlagCardInline({
                 </span>
                 <Badge tone={sev.tone}>{sev.label}</Badge>
                 <Badge tone="slate">{flag.status}</Badge>
+                {photoCount > 0 ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-600">
+                    <Camera size={11} aria-hidden />
+                    {photoCount}
+                  </span>
+                ) : null}
               </div>
               {flag.description ? (
                 <p className="text-sm text-slate-700 leading-snug">{flag.description}</p>
@@ -781,6 +1188,25 @@ function FlagCardInline({
                 </div>
               )
             })}
+
+            {/* Session 8: inline evidence capture. Same EvidenceCapture
+                component as the flag detail page; tapping it opens the
+                full-screen shutter loop without leaving the Action
+                Centre. Sits above the footer so it's discoverable but
+                doesn't compete with Mark Resolved. */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-100">
+              <p className="text-xs text-slate-500">
+                {photoCount > 0
+                  ? `${photoCount} photo${photoCount === 1 ? '' : 's'} attached`
+                  : 'No photos yet'}
+              </p>
+              <EvidenceCapture
+                propertyId={propertyId}
+                flagId={flag.id}
+                launchLabel={photoCount > 0 ? 'Add photos' : 'Take photos'}
+                launchVariant="subtle"
+              />
+            </div>
 
             {/* Footer actions — View details + Mark resolved */}
             <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-100">

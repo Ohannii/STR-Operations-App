@@ -27,6 +27,23 @@
 html, body {
   background: var(--background);
   color: var(--foreground);
+  /* Hard stop on horizontal scroll. On iPhone Safari any single
+   * element wider than the viewport (a non-wrapping flex row, a
+   * 100vw element that includes scrollbar width, a long unbroken
+   * string) makes the WHOLE page slide side-to-side and forces
+   * the user to pinch-zoom to find buttons. overflow-x: clip on
+   * the document root contains that without affecting vertical
+   * scroll or position:sticky (unlike overflow-x: hidden, which
+   * can break sticky). max-width:100% belt-and-braces. */
+  overflow-x: clip;
+  max-width: 100%;
+  width: 100%;
+  /* The "intermittent side-to-side that comes and goes" the team
+   * reported is iOS Safari's ELASTIC HORIZONTAL OVERSCROLL (the
+   * rubber-band bounce), not necessarily content wider than the
+   * viewport. overflow-x: clip stops real overflow; this stops
+   * the bounce. Together they fully lock horizontal movement. */
+  overscroll-behavior-x: none;
 }
 
 body {
@@ -34,4 +51,44 @@ body {
     Segoe UI, Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* Stop iOS Safari from auto-inflating font sizes in landscape /
+   * after orientation change, which can also push layout wider
+   * than the viewport. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* Long unbroken strings (UUID-ish report IDs, emails, pasted
+   * URLs in notes) are a classic intermittent-overflow cause —
+   * they only push the layout wide when that specific content is
+   * present, which is exactly the "comes and goes" symptom.
+   * overflow-wrap: anywhere lets them break instead of forcing
+   * width. Applies to descendants via inheritance. */
+  overflow-wrap: anywhere;
+}
+
+/* ============================================================
+ * Print-only rules for the Flag Evidence Report.
+ *
+ * Tailwind's `print:` variants handle most of the layout swaps;
+ * these declarations cover the bits Tailwind can't:
+ *
+ *   - @page margin (browsers default to a wide ~25mm; tighten it
+ *     so report rows reach the page edges with room for the
+ *     header bar)
+ *   - background-color preservation (browsers strip backgrounds
+ *     by default to save toner; we want the header bar's slate-900
+ *     to survive)
+ *   - global background reset to white so the slate-50 app shell
+ *     doesn't leak into the printed margin
+ * ============================================================ */
+@media print {
+  @page {
+    margin: 14mm;
+  }
+  html, body {
+    background: #ffffff !important;
+  }
+  body {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
 }
