@@ -9,6 +9,7 @@ import {
   signEvidencePaths,
 } from '@/lib/photos/signed-urls'
 import { createClient } from '@/lib/supabase/server'
+import { formatDateSAST, formatDateTimeSAST } from '@/lib/ui/datetime'
 import {
   softDeleteEvidencePhoto,
   updatePhotoNote,
@@ -66,24 +67,15 @@ type ProfileRow = {
   email: string | null
 }
 
+// Display in Africa/Johannesburg (SAST). DB + Vercel server are UTC,
+// so an un-zoned format rendered times two hours behind local.
+// Centralised in @/lib/ui/datetime.
 function formatDateTime(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return formatDateTimeSAST(iso)
 }
 
 function formatDateOnly(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  })
+  return formatDateSAST(iso)
 }
 
 export default async function PackReportPage({
@@ -190,7 +182,7 @@ export default async function PackReportPage({
   const shareText = `${property.name} — ${shareTitle}`
 
   return (
-    <div className="min-h-screen bg-white text-slate-900 print:bg-white">
+    <div className="min-h-screen bg-white text-slate-900 print:bg-white overflow-x-clip">
       <div className="print:hidden sticky top-0 z-10 bg-white/95 backdrop-blur border-b border-slate-200">
         <div className="max-w-4xl mx-auto px-6 py-3 flex items-center justify-between gap-3 flex-wrap">
           <Link
@@ -282,7 +274,7 @@ export default async function PackReportPage({
               Pack Summary
             </h2>
           </div>
-          <table className="w-full text-sm border-collapse">
+          <table className="w-full table-fixed text-sm border-collapse">
             <tbody>
               <tr className="border-b border-slate-200">
                 <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider px-6 py-3 w-1/4 bg-white">

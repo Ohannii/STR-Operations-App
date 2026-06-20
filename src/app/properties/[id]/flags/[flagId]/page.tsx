@@ -32,6 +32,7 @@ import {
   eligibleChipKinds,
   getChipDisplay,
 } from '@/lib/ui/chip-vocabulary'
+import { formatDateTimeSAST } from '@/lib/ui/datetime'
 import {
   getFlagCategoryDisplay,
   severityDisplay,
@@ -1021,12 +1022,7 @@ function EvidencePhotoTile({
           </form>
         </details>
         <p className="text-[10px] text-slate-500">
-          {new Date(capturedDisplay).toLocaleString(undefined, {
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-          })}
+          {formatDateTimeSAST(capturedDisplay)}
         </p>
       </div>
 

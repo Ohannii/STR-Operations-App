@@ -24,7 +24,7 @@ export function AppShell({
   children: ReactNode
 }) {
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-slate-50 overflow-x-clip">
       <header className="bg-white border-b border-slate-200 sticky top-0 z-10 backdrop-blur supports-[backdrop-filter]:bg-white/90">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
           <Link

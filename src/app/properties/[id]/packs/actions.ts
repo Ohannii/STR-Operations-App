@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
+import { formatDateTimeSAST } from '@/lib/ui/datetime'
 
 /**
  * Evidence-pack lifecycle server actions.
@@ -68,15 +69,11 @@ export async function startPreArrivalPackAction(formData: FormData) {
     redirect(`${url}?error=${encodeURIComponent(propErr?.message ?? 'Property not found.')}`)
   }
 
-  // Default title: "Pre-arrival pack — YYYY-MM-DD HH:MM"
+  // Default title: "Pre-arrival pack — 20 Jun 2026, 15:59" in SAST so
+  // the auto-title matches the team's wall clock (DB + Vercel server
+  // are UTC). See @/lib/ui/datetime.
   const now = new Date()
-  const defaultTitle = `Pre-arrival pack — ${now.toLocaleString(undefined, {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })}`
+  const defaultTitle = `Pre-arrival pack — ${formatDateTimeSAST(now)}`
 
   const title = titleRaw.length > 0 ? titleRaw.slice(0, 200) : defaultTitle
   const notes = notesRaw.length > 0 ? notesRaw.slice(0, 2000) : null

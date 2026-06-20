@@ -21,6 +21,9 @@ export function relativeTime(input: string | Date): string {
   if (diffDay < 30) return `${Math.round(diffDay / 7)} week${diffDay < 14 ? '' : 's'} ago`
 
   return then.toLocaleDateString(undefined, {
+    // Pin to SAST so the server (UTC) and client agree and the date
+    // matches the team's wall clock. See @/lib/ui/datetime.
+    timeZone: 'Africa/Johannesburg',
     year: 'numeric',
     month: 'short',
     day: 'numeric',
