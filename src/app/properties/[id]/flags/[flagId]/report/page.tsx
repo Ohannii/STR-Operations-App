@@ -311,7 +311,7 @@ export default async function FlagReportPage({
             </h2>
           </div>
 
-          <table className="w-full text-sm border-collapse">
+          <table className="w-full table-fixed text-sm border-collapse">
             <tbody>
               <tr className="border-b border-slate-200">
                 <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider px-6 py-3 w-1/4 bg-white">
