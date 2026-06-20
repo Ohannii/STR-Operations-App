@@ -116,7 +116,7 @@ export default async function NewFlagPage({
                 id="category_key"
                 name="category_key"
                 defaultValue={initialKey}
-                className="block w-full h-10 px-3 text-sm text-slate-900 border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
+                className="block w-full h-10 px-3 text-base sm:text-sm text-slate-900 border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
               >
                 {allCategories.map((c) => (
                   <option key={c.key} value={c.key}>
@@ -153,7 +153,7 @@ export default async function NewFlagPage({
                 maxLength={1000}
                 rows={4}
                 placeholder="e.g. Cracked tile near bathroom door, about 10cm long. Looks recent."
-                className="block w-full px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 resize-y min-h-[5rem]"
+                className="block w-full px-3 py-2 text-base sm:text-sm text-slate-900 placeholder:text-slate-400 border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 resize-y min-h-[5rem]"
               />
             </Field>
 
