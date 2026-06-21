@@ -610,8 +610,8 @@ export default async function PropertyPage({
                 href={`/properties/${property.id}/flags/new?category=${key}`}
                 className={
                   isSafety
-                    ? 'group bg-red-50 border border-red-200 rounded-xl p-4 hover:bg-red-100 hover:border-red-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2'
-                    : 'group bg-white border border-slate-200 rounded-xl p-4 hover:border-slate-300 hover:shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2'
+                    ? 'group min-w-0 bg-red-50 border border-red-200 rounded-xl p-4 hover:bg-red-100 hover:border-red-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2'
+                    : 'group min-w-0 bg-white border border-slate-200 rounded-xl p-4 hover:border-slate-300 hover:shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2'
                 }
               >
                 <div
@@ -769,7 +769,7 @@ export default async function PropertyPage({
                       <li key={pack.id}>
                         <Link
                           href={`/properties/${property.id}/packs/${pack.id}/report`}
-                          className="flex items-start gap-3 rounded-md border border-slate-200 px-3 py-2 hover:bg-slate-50 transition"
+                          className="flex items-start gap-3 min-w-0 max-w-full rounded-md border border-slate-200 px-3 py-2 hover:bg-slate-50 transition"
                         >
                           <div className="shrink-0 p-1.5 rounded-md bg-emerald-50 text-emerald-700">
                             <FileText size={14} aria-hidden />
@@ -821,7 +821,7 @@ export default async function PropertyPage({
                       <li key={flag.id}>
                         <Link
                           href={`/properties/${property.id}/flags/${flag.id}`}
-                          className="flex items-start gap-3 rounded-md border border-slate-200 px-3 py-2 hover:bg-slate-50 transition"
+                          className="flex items-start gap-3 min-w-0 max-w-full rounded-md border border-slate-200 px-3 py-2 hover:bg-slate-50 transition"
                         >
                           <div
                             className={
@@ -1209,7 +1209,7 @@ function FlagCardInline({
             </div>
 
             {/* Footer actions — View details + Mark resolved */}
-            <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-100">
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 pt-3 border-t border-slate-100">
               <Link
                 href={`/properties/${propertyId}/flags/${flag.id}`}
                 className="text-xs text-slate-600 hover:text-slate-900 hover:underline inline-flex items-center gap-1"
