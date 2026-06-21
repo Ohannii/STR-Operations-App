@@ -48,24 +48,71 @@ export function flagStatusDisplay(status: string): {
 }
 
 // ----------------------------------------------------------------
-// Chargeable party decision
+// Accountability (stored in flags.chargeable_party_decision)
 // ----------------------------------------------------------------
-export type ChargeableParty =
-  | 'guest'
-  | 'owner'
-  | 'company'
-  | 'contractor'
-  | 'pending_decision'
+// Session 9A Slice 1: "who may bear the cost/responsibility" is a
+// dimension separate from the issue category. The column is free
+// text (no DB CHECK), so the vocabulary is governed here in code.
+//
+// CURRENT vocabulary (offered in triage; default = needs_triage):
+//   needs_triage, guest_damage, owner_wear_tear, owner_chargeable,
+//   company_absorbed, contractor_fault, cleaning_team, hoa_building,
+//   internal_ops
+//
+// LEGACY values still present on existing rows (kept for display +
+// validation so old flags never become unsavable; NOT offered in the
+// picker): guest, owner, company, contractor, pending_decision.
 
-const CHARGEABLE_MAP: Record<ChargeableParty, { label: string; tone: BadgeTone }> = {
-  guest: { label: 'Guest', tone: 'orange' },
-  owner: { label: 'Owner', tone: 'amber' },
-  company: { label: 'Company', tone: 'sky' },
-  contractor: { label: 'Contractor', tone: 'slate' },
-  pending_decision: { label: 'Pending', tone: 'slate' },
+export type ChargeableParty =
+  | 'needs_triage'
+  | 'guest_damage'
+  | 'owner_wear_tear'
+  | 'owner_chargeable'
+  | 'company_absorbed'
+  | 'contractor_fault'
+  | 'cleaning_team'
+  | 'hoa_building'
+  | 'internal_ops'
+
+/** Default accountability for a freshly reported issue. */
+export const DEFAULT_ACCOUNTABILITY: ChargeableParty = 'needs_triage'
+
+/** Current vocabulary offered in the triage picker, in display order. */
+export const CHARGEABLE_PARTIES: ChargeableParty[] = [
+  'needs_triage',
+  'guest_damage',
+  'owner_wear_tear',
+  'owner_chargeable',
+  'company_absorbed',
+  'contractor_fault',
+  'cleaning_team',
+  'hoa_building',
+  'internal_ops',
+]
+
+// Display map covers current + legacy values so every stored value
+// renders cleanly.
+const CHARGEABLE_MAP: Record<string, { label: string; tone: BadgeTone }> = {
+  needs_triage: { label: 'Not sure / needs triage', tone: 'slate' },
+  guest_damage: { label: 'Guest damage', tone: 'orange' },
+  owner_wear_tear: { label: 'Owner — wear & tear', tone: 'amber' },
+  owner_chargeable: { label: 'Owner — chargeable', tone: 'amber' },
+  company_absorbed: { label: 'Company absorbed', tone: 'sky' },
+  contractor_fault: { label: 'Contractor / maintenance fault', tone: 'slate' },
+  cleaning_team: { label: 'Cleaning team', tone: 'blue' },
+  hoa_building: { label: 'HOA / building', tone: 'slate' },
+  internal_ops: { label: 'Internal operations', tone: 'slate' },
+  // Legacy
+  guest: { label: 'Guest damage', tone: 'orange' },
+  owner: { label: 'Owner — chargeable', tone: 'amber' },
+  company: { label: 'Company absorbed', tone: 'sky' },
+  contractor: { label: 'Contractor / maintenance fault', tone: 'slate' },
+  pending_decision: { label: 'Not sure / needs triage', tone: 'slate' },
 }
 
-export const CHARGEABLE_PARTIES: ChargeableParty[] = [
+/** Every value accepted by triage validation (current + legacy). */
+export const VALID_CHARGEABLE_VALUES: string[] = [
+  ...CHARGEABLE_PARTIES,
   'guest',
   'owner',
   'company',
@@ -73,14 +120,38 @@ export const CHARGEABLE_PARTIES: ChargeableParty[] = [
   'pending_decision',
 ]
 
+/**
+ * Map any stored value (current or legacy) to the current canonical
+ * value, so a triage picker can pre-select one option for old flags.
+ */
+export function normaliseAccountability(value: string | null | undefined): ChargeableParty {
+  switch (value) {
+    case 'guest':
+      return 'guest_damage'
+    case 'owner':
+      return 'owner_chargeable'
+    case 'company':
+      return 'company_absorbed'
+    case 'contractor':
+      return 'contractor_fault'
+    case 'pending_decision':
+    case null:
+    case undefined:
+    case '':
+      return 'needs_triage'
+    default:
+      return (CHARGEABLE_PARTIES as string[]).includes(value)
+        ? (value as ChargeableParty)
+        : 'needs_triage'
+  }
+}
+
 export function chargeablePartyDisplay(value: string | null | undefined): {
   label: string
   tone: BadgeTone
 } {
-  if (!value) return { label: 'Unset', tone: 'slate' }
-  if ((Object.keys(CHARGEABLE_MAP) as ChargeableParty[]).includes(value as ChargeableParty)) {
-    return CHARGEABLE_MAP[value as ChargeableParty]
-  }
+  if (!value) return CHARGEABLE_MAP.needs_triage
+  if (value in CHARGEABLE_MAP) return CHARGEABLE_MAP[value]
   return { label: value, tone: 'slate' }
 }
 

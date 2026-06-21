@@ -12,7 +12,7 @@ import {
 } from '@/lib/photos/paths'
 import {
   PRE_ARRIVAL_RETENTION,
-  retentionClassForFlagCategory,
+  deriveRetentionClass,
   type RetentionClass,
 } from '@/lib/photos/retention'
 import { safeReturnTo } from '@/lib/safe-return-to'
@@ -141,6 +141,7 @@ export async function requestPhotoUploadSlot(input: {
         id,
         property_id,
         company_id,
+        chargeable_party_decision,
         flag_category:flag_categories ( key )
         `,
       )
@@ -150,6 +151,7 @@ export async function requestPhotoUploadSlot(input: {
         id: string
         property_id: string
         company_id: string
+        chargeable_party_decision: string | null
         flag_category: { key: string } | { key: string }[] | null
       }>()
 
@@ -167,7 +169,11 @@ export async function requestPhotoUploadSlot(input: {
     const cat = Array.isArray(flag.flag_category)
       ? flag.flag_category[0]
       : flag.flag_category
-    retentionClass = retentionClassForFlagCategory(cat?.key ?? null)
+    // Session 9A Slice 1: retention derives from category + accountability.
+    retentionClass = deriveRetentionClass({
+      categoryKey: cat?.key ?? null,
+      accountability: flag.chargeable_party_decision,
+    })
   }
 
   // Pre-arrival capture: the caller must supply a packId that

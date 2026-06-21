@@ -6,11 +6,10 @@ import { getUserContext } from '@/lib/auth/get-user-context'
 import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
 import {
-  CHARGEABLE_PARTIES,
   FLAG_STATUSES,
+  VALID_CHARGEABLE_VALUES,
   isTerminalStatus,
   type FlagStatus,
-  type ChargeableParty,
 } from '@/lib/ui/flag-status'
 
 const SEVERITIES = ['low', 'med', 'high'] as const
@@ -73,7 +72,7 @@ export async function updateFlagAction(formData: FormData) {
   if (!SEVERITIES.includes(newSeverity as (typeof SEVERITIES)[number])) {
     redirect(`${detailUrl}?error=${encodeURIComponent('Invalid severity.')}`)
   }
-  if (!CHARGEABLE_PARTIES.includes(newChargeable as ChargeableParty)) {
+  if (!VALID_CHARGEABLE_VALUES.includes(newChargeable)) {
     redirect(`${detailUrl}?error=${encodeURIComponent('Invalid responsibility.')}`)
   }
   if (newStatus === 'no_action' && !noActionReason) {

@@ -40,6 +40,7 @@ import {
 import {
   CHARGEABLE_PARTIES,
   chargeablePartyDisplay,
+  normaliseAccountability,
   FLAG_STATUSES,
   flagStatusDisplay,
   isTerminalStatus,
@@ -500,7 +501,7 @@ export default async function FlagDetailPage({
               <CatIcon size={20} aria-hidden />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Flag</p>
+              <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Issue</p>
               <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">
                 {cat?.label ?? 'Flag'}
               </h1>
@@ -611,8 +612,9 @@ export default async function FlagDetailPage({
             >
               <div className="flex gap-2 flex-wrap">
                 {CHARGEABLE_PARTIES.map((p) => {
-                  const checked =
-                    (flag.chargeable_party_decision ?? 'pending_decision') === p
+                  // Map legacy/null stored values to the current vocabulary so
+                  // exactly one chip is pre-selected for existing flags too.
+                  const checked = normaliseAccountability(flag.chargeable_party_decision) === p
                   return (
                     <RadioChip
                       key={p}

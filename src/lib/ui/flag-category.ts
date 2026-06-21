@@ -72,7 +72,7 @@ export type FlagCategoryDisplay = {
 const MAP: Record<FlagCategoryKey, FlagCategoryDisplay> = {
   condition_note: {
     key: 'condition_note',
-    label: 'Note',
+    label: 'Observation / note',
     blurb: 'A status note worth recording, not an issue to action.',
     tileLabel: 'Note',
     tileSubtitle: 'General condition note',
@@ -194,12 +194,42 @@ export function listFlagCategoryDisplays(): FlagCategoryDisplay[] {
  */
 export const QUICK_ADD_KEYS: FlagCategoryKey[] = [
   'maintenance_issue',
-  'guest_damage',
+  'inventory_damaged',
   'inventory_missing',
   'cleaning_issue',
   'safety_urgent',
   'condition_note',
 ]
+
+/**
+ * Session 9A Slice 1: the issue categories a FIELD USER may pick when
+ * reporting an issue. Accountability concepts (guest_damage,
+ * owner_chargeable, company_responsibility) and dispositions
+ * (follow_up_required, no_action_record) are deliberately excluded —
+ * accountability is a separate dimension set in triage, and Follow-up /
+ * Record-only are dispositions, not categories. Legacy categories remain
+ * valid for displaying existing flags; they are simply not offered here.
+ *
+ * NOTE: the genuinely new categories (Linen / towels, Access / keys /
+ * lock, Appliance / furniture, Guest incident) are NOT listed yet —
+ * they require the `flag_categories` re-seed migration (gated on
+ * approval). Until then the field picker offers the existing,
+ * already-seeded issue types only.
+ */
+export const REPORTABLE_CATEGORY_KEYS: FlagCategoryKey[] = [
+  'maintenance_issue',
+  'inventory_damaged',
+  'inventory_missing',
+  'cleaning_issue',
+  'safety_urgent',
+  'condition_note',
+]
+
+export function listReportableCategoryDisplays(): FlagCategoryDisplay[] {
+  return REPORTABLE_CATEGORY_KEYS.map((k) => MAP[k]).filter(
+    (c): c is FlagCategoryDisplay => Boolean(c),
+  )
+}
 
 const SEVERITY_LABEL: Record<FlagSeverity, string> = {
   low: 'Low',

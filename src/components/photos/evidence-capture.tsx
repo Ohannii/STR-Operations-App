@@ -553,7 +553,7 @@ export function EvidenceCapture({
       const allOk = await runUploads(readyItems)
       if (!allOk) {
         setBatchError(
-          'Some photos failed to attach. Retry or remove them, then tap Raise flag again.',
+          'Some photos failed to attach. Retry or remove them, then tap Report issue again.',
         )
         setStage('reviewing')
         return
@@ -661,10 +661,10 @@ export function EvidenceCapture({
                   type="button"
                   onClick={handleRaiseFlag}
                   className="inline-flex items-center gap-1.5 rounded-md bg-amber-400 text-slate-950 px-2.5 py-1.5 text-xs font-semibold hover:bg-amber-300 active:bg-amber-500 transition"
-                  title="Attach pending photos to the pack, then open the flag workflow"
+                  title="Attach pending photos to the pack, then open the report-issue workflow"
                 >
                   <Flag size={13} aria-hidden />
-                  Raise flag
+                  Report issue
                 </button>
               ) : null}
               <button

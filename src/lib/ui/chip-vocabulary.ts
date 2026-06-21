@@ -239,7 +239,10 @@ export function isChipEligible(
       // Show when the cost is going to the guest, or when the category
       // explicitly says guest damage (chargeable may still be pending).
       return (
+        // Slice 1: accept legacy `guest` and the new `guest_damage`
+        // accountability value (category guest_damage is legacy pre-backfill).
         context.chargeable_party_decision === 'guest' ||
+        context.chargeable_party_decision === 'guest_damage' ||
         context.category_key === 'guest_damage'
       )
 
@@ -248,7 +251,11 @@ export function isChipEligible(
       // Show when the owner is on the hook for the cost / the category
       // is explicitly owner-chargeable.
       return (
+        // Slice 1: accept legacy `owner` and the new owner accountability
+        // values (category owner_chargeable is legacy pre-backfill).
         context.chargeable_party_decision === 'owner' ||
+        context.chargeable_party_decision === 'owner_chargeable' ||
+        context.chargeable_party_decision === 'owner_wear_tear' ||
         context.category_key === 'owner_chargeable'
       )
 
