@@ -52,6 +52,59 @@ Always:
 6. Document.
 7. Leave a clean handoff.
 
+## STR Ops Product Quality Standard (UI/UX · Functionality · Relevance · Scalability · Sustainability)
+
+**Compiling is not "done."** Every feature is judged as part of a serious operational SaaS product used on-site by tired, busy, often non-technical people — cleaners, inspectors, maintenance, managers, owners, finance. A feature that *works* but is confusing, cramped on a phone, or irrelevant to daily operations has **failed** this standard. This standard is binding and sits above "it builds." (Detailed rules already live in **Mobile UX rules**, **Stupid-proof UX rules**, **Data and architecture rules**, **Security rules**, and **Quality gates**; this is the canonical summary Claude judges every feature against.) See also the binding UX principle **"Powerful system, simple surface"** in `docs/PRE_9A_DECISION_MEMO.md`.
+
+### 1. Stupid-proof UX
+- The user instantly knows **where they are** (clear page title + context).
+- The user instantly knows **the next action**; the primary action is **visible, never hidden** behind menus or scrolling.
+- **Empty states guide action** — never a dead end; offer the obvious next step (e.g. a "Report issue" button).
+- Wording is **operationally plain**, never developer-like — no enum names, no internal IDs, no "flag/ticket" jargon where "issue" is meant.
+- Each screen answers one question: "What do I do now?"
+
+### 2. Mobile-first
+- Assume a **phone, on-site, one-handed, poor signal, tired user.**
+- Comfortable touch targets (≈44px); form controls ≥ 16px to avoid iOS focus-zoom (the unlayered `globals.css` rule).
+- **No horizontal overflow** at 320–402px. Before guessing CSS, diagnose with the bookmarklet: if `doc == viewport`, it's focus-zoom, **not** layout overflow (see `KNOWN_ISSUES.md` / the iOS focus-zoom note).
+- Important actions stay **visible on small screens** — never push the primary action off-screen.
+- Field capture must **never silently lose data** (photos, drafts) on backgrounding or weak signal.
+
+### 3. Premium / simple UI
+- Clean spacing, clear hierarchy, calm colours — professional enough for **managers, owners, and directors** to look at.
+- Avoid clutter and the "developer dashboard" feeling; collapse long lists (≈7 per section + a "view all" link).
+- Consistent components/tokens; the brightest button on a screen is always the next action.
+- Accessible by default: sufficient contrast, real labels, visible focus states.
+
+### 4. Operational relevance
+- Every feature must answer: **how does this help a cleaner, inspector, maintenance tech, manager, owner, or finance person do their job?** If it can't, don't build it.
+- Prioritise the operation's real failure modes: **missed issues, poor handovers, weak/absent evidence, unclear accountability, poor guest/owner follow-up.**
+- Resist technically-interesting work that doesn't move daily operations. Ship the painkiller, not the toy.
+
+### 5. Scalability
+- Design for **100+ properties, many issues, many users, and future PMS clients.**
+- Do **not** hard-code Drop-Inn-only assumptions into the core; isolate company/vertical specifics in admin/config and seeds.
+- Keep integrations (**Asana / PMS / WhatsApp**) optional and adapter-shaped; the app must stand alone without them.
+- Watch cost/volume levers early (photo storage + egress, query fan-out, retention growth).
+
+### 6. Sustainability
+- **Avoid overbuilding.** Prefer small, testable slices over big bangs; keep the working tree and docs clean.
+- Keep the app the **source of truth**; Asana/PMS/WhatsApp are adapters, never the brain.
+- Preserve **auditability, evidence integrity (durable, immutable-after-submit, chain-of-custody), and retention logic** in every change — never weaken dispute / owner / safety evidence.
+- One canonical model; no rival list surfaces (the flag-as-parent rule).
+
+### Quality gate before stopping (mandatory per-feature report)
+Before pausing on any feature, Claude must report **all** of:
+1. **What changed** — files + behaviour.
+2. **Why it improves operations** — who benefits and how (tie to §4).
+3. **UX/UI risks.**
+4. **Mobile risks** — overflow, touch size, focus-zoom, off-screen actions.
+5. **Scalability risks** — volume, hard-coded assumptions, cost.
+6. **What was deliberately not built** — scope held.
+7. **What to test before committing** — including on a real phone.
+
+If a feature cannot pass this standard, Claude says so **before** it ships and proposes the smallest change that would.
+
 ## Non-negotiable operating rules
 
 ### 1. Read before changing
