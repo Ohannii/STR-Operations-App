@@ -73,6 +73,10 @@ import {
  * `flag_categories.in(ids)` lookup.
  */
 
+// Session 9B: how many open issues to preview per category on the
+// apartment page before linking out to the full /issues list.
+const ISSUE_PREVIEW_CAP = 2
+
 // Loose row shape for the embedded flag_categories relation.
 type FlagRow = {
   id: string
@@ -689,15 +693,23 @@ export default async function PropertyPage({
           return_to so the user lands back here with the same expansion.
        */}
       <section className="mb-10">
-        <div className="flex items-end justify-between mb-3">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-900">Open flags</h2>
+        <div className="flex items-end justify-between gap-3 mb-3">
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold text-slate-900">Open issues</h2>
             <p className="text-sm text-slate-600">
               {openFlags && openFlags.length > 0
-                ? `${openFlags.length} open ${openFlags.length === 1 ? 'item' : 'items'} on this apartment.`
-                : 'Nothing flagged on this apartment right now.'}
+                ? `${openFlags.length} open ${openFlags.length === 1 ? 'issue' : 'issues'} on this apartment.`
+                : 'Nothing reported on this apartment right now.'}
             </p>
           </div>
+          {openFlags && openFlags.length > 0 ? (
+            <Link
+              href={`/properties/${property.id}/issues`}
+              className="shrink-0 inline-flex items-center gap-1 text-sm font-medium text-slate-600 hover:text-slate-900 hover:underline"
+            >
+              View all <ChevronRight size={14} aria-hidden />
+            </Link>
+          ) : null}
         </div>
 
         {flagsError ? (
@@ -707,19 +719,27 @@ export default async function PropertyPage({
         ) : !openFlags || openFlags.length === 0 ? (
           <EmptyState
             icon={Flag}
-            title="No open flags"
-            description="Tap a tile above to raise the first one."
+            title="No open issues"
+            description="Tap a tile above to report the first one."
           />
         ) : (
           <div className="space-y-6">
             {FLAG_CATEGORY_GROUPS.map((group) => {
               const groupFlags = flagsByGroupId.get(group.id) ?? []
               if (groupFlags.length === 0) return null
+              const hasMore = groupFlags.length > ISSUE_PREVIEW_CAP
               return (
                 <CategorySection
                   key={group.id}
                   groupLabel={group.label}
-                  flags={groupFlags}
+                  flags={groupFlags.slice(0, ISSUE_PREVIEW_CAP)}
+                  totalCount={groupFlags.length}
+                  viewAllHref={
+                    hasMore
+                      ? `/properties/${property.id}/issues?category=${group.id}`
+                      : undefined
+                  }
+                  viewAllLabel={`View all ${group.label} issues`}
                   propertyId={property.id}
                   expandedIds={expandedIds}
                   activeMarksByFlagId={activeMarksByFlagId}
@@ -730,7 +750,14 @@ export default async function PropertyPage({
             {otherFlags.length > 0 ? (
               <CategorySection
                 groupLabel="Other"
-                flags={otherFlags}
+                flags={otherFlags.slice(0, ISSUE_PREVIEW_CAP)}
+                totalCount={otherFlags.length}
+                viewAllHref={
+                  otherFlags.length > ISSUE_PREVIEW_CAP
+                    ? `/properties/${property.id}/issues?category=other`
+                    : undefined
+                }
+                viewAllLabel="View all Other issues"
                 propertyId={property.id}
                 expandedIds={expandedIds}
                 activeMarksByFlagId={activeMarksByFlagId}
@@ -998,6 +1025,9 @@ function CategorySection({
   expandedIds,
   activeMarksByFlagId,
   photoCountByFlagId,
+  totalCount,
+  viewAllHref,
+  viewAllLabel,
 }: {
   groupLabel: string
   flags: FlagRow[]
@@ -1005,14 +1035,20 @@ function CategorySection({
   expandedIds: Set<string>
   activeMarksByFlagId: Record<string, ChipKind[]>
   photoCountByFlagId: Record<string, number>
+  /** True total in this category (>= flags.length when the list is capped). */
+  totalCount?: number
+  /** When set, a "view all" link is shown (this category has more than the preview cap). */
+  viewAllHref?: string
+  viewAllLabel?: string
 }) {
+  const count = totalCount ?? flags.length
   return (
     <div>
       <div className="flex items-baseline gap-2 mb-2">
         <h3 className="text-xs font-semibold text-slate-700 uppercase tracking-wider">
           {groupLabel}
         </h3>
-        <span className="text-xs text-slate-500 tabular-nums">({flags.length})</span>
+        <span className="text-xs text-slate-500 tabular-nums">({count})</span>
       </div>
       <ul className="space-y-2.5">
         {flags.map((flag) => (
@@ -1026,6 +1062,15 @@ function CategorySection({
           />
         ))}
       </ul>
+      {viewAllHref ? (
+        <Link
+          href={viewAllHref}
+          className="mt-2.5 inline-flex items-center gap-1 text-xs font-medium text-slate-600 hover:text-slate-900 hover:underline"
+        >
+          {viewAllLabel ?? 'View all'} ({count})
+          <ChevronRight size={12} aria-hidden />
+        </Link>
+      ) : null}
     </div>
   )
 }
