@@ -66,6 +66,32 @@ body {
 }
 
 /* ============================================================
+ * Mobile form controls — stop iOS Safari focus-zoom.
+ *
+ * iOS Safari zooms the whole page when a focused input/select/
+ * textarea has a font-size below 16px. With a Server Action submit
+ * (client-side RSC navigation, which does NOT reset Safari's visual
+ * viewport), that zoom persists onto the next page and reads as a
+ * "shifted / panned" apartment page until a full refresh. Forcing
+ * 16px on small screens removes the trigger entirely.
+ *
+ * Scope: phones only (< 640px, below Tailwind's `sm`). Desktop keeps
+ * its `text-sm` (14px) controls untouched.
+ *
+ * UNLAYERED on purpose: Tailwind's `text-sm` lives in the `utilities`
+ * cascade layer; an unlayered normal declaration beats any layered
+ * one regardless of specificity, so this wins over `text-sm` WITHOUT
+ * !important. Element selectors so it covers every form control.
+ * ============================================================ */
+@media (max-width: 639.98px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+/* ============================================================
  * Print-only rules for the Flag Evidence Report.
  *
  * Tailwind's `print:` variants handle most of the layout swaps;
