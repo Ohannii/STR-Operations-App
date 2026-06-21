@@ -7,6 +7,7 @@ import {
   ExternalLink,
   FileText,
   Flag as FlagIcon,
+  ListChecks,
   MessageCircle,
   MessageSquare,
   RotateCcw,
@@ -45,6 +46,7 @@ import {
   flagStatusDisplay,
   isTerminalStatus,
 } from '@/lib/ui/flag-status'
+import { issueGuidance } from '@/lib/ui/issue-guidance'
 import {
   outcomeDisplay,
   recoveryStatusDisplay,
@@ -349,6 +351,24 @@ export default async function FlagDetailPage({
   const currentUserId = ctx.user.id
   const CatIcon: LucideIcon = cat?.icon ?? FlagIcon
 
+  // Session 9C: category-aware "what needs to happen next" guidance.
+  const guidance = issueGuidance({
+    categoryKey: categoryRow?.key ?? null,
+    status: flag.status,
+  })
+  const guidanceCardTone =
+    guidance.tone === 'urgent'
+      ? 'border-amber-300 bg-amber-50'
+      : guidance.tone === 'resolved'
+        ? 'border-emerald-200 bg-emerald-50/60'
+        : 'border-slate-200 bg-slate-50/70'
+  const guidanceIconTone =
+    guidance.tone === 'urgent'
+      ? 'bg-amber-500 text-white'
+      : guidance.tone === 'resolved'
+        ? 'bg-emerald-600 text-white'
+        : 'bg-slate-900 text-white'
+
   // Active operational chips for this flag. Set of kinds for fast
   // O(1) lookup when rendering the toggle row.
   const activeChipKinds = new Set<string>((activeMarks ?? []).map((m) => m.kind))
@@ -549,6 +569,41 @@ export default async function FlagDetailPage({
           ) : null}
         </div>
       </Card>
+
+      {/* Session 9C: category-aware next-steps guidance — tells the user
+          what THIS kind of issue typically needs, so an "item missing" or
+          "guest damage" issue doesn't read like a generic repair. */}
+      <div className={`mb-6 rounded-xl border shadow-sm ${guidanceCardTone}`}>
+        <div className="p-5 flex items-start gap-3">
+          <div
+            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center ${guidanceIconTone}`}
+          >
+            <ListChecks size={18} aria-hidden />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">
+              What needs to happen next
+            </p>
+            <p className="text-sm font-semibold text-slate-900">{guidance.headline}</p>
+            {guidance.steps.length > 0 ? (
+              <ul className="mt-2 space-y-1.5">
+                {guidance.steps.map((step, i) => (
+                  <li
+                    key={i}
+                    className="flex items-start gap-2 text-sm text-slate-700"
+                  >
+                    <span
+                      className="shrink-0 mt-[7px] w-1.5 h-1.5 rounded-full bg-slate-400"
+                      aria-hidden
+                    />
+                    <span className="min-w-0">{step}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        </div>
+      </div>
 
       {/* Triage form */}
       <Card className="mb-8">
