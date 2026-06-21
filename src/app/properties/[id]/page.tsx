@@ -397,7 +397,7 @@ export default async function PropertyPage({
 
       {raised ? (
         <div className="mb-5">
-          <Alert tone="success">Flag raised. It&rsquo;s in the Open flags list below.</Alert>
+          <Alert tone="success">Issue reported. It&rsquo;s in the list below.</Alert>
         </div>
       ) : null}
       {pack_started ? (
@@ -527,7 +527,7 @@ export default async function PropertyPage({
                     className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 transition"
                   >
                     <Flag size={13} aria-hidden />
-                    Spotted an issue — raise a flag
+                    Spotted an issue — report it
                   </Link>
                   <form action={submitEvidencePackAction} className="contents">
                     <input type="hidden" name="property_id" value={property.id} />
@@ -590,9 +590,9 @@ export default async function PropertyPage({
       {/* Quick-add tiles */}
       <section id="raise-flag" className="mb-10 scroll-mt-20">
         <div className="mb-3">
-          <h2 className="text-lg font-semibold text-slate-900">Raise a flag</h2>
+          <h2 className="text-lg font-semibold text-slate-900">Report an issue</h2>
           <p className="text-sm text-slate-600">
-            One tap to capture something an inspector or manager noticed. Triage and
+            One tap to report something an inspector or manager noticed. Triage and
             child actions ship in a later session.
           </p>
         </div>

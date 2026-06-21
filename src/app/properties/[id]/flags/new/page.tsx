@@ -10,10 +10,15 @@ import { getUserContext } from '@/lib/auth/get-user-context'
 import { createClient } from '@/lib/supabase/server'
 import {
   getFlagCategoryDisplay,
-  listFlagCategoryDisplays,
+  listReportableCategoryDisplays,
   type FlagCategoryKey,
   type FlagSeverity,
 } from '@/lib/ui/flag-category'
+import {
+  CHARGEABLE_PARTIES,
+  DEFAULT_ACCOUNTABILITY,
+  chargeablePartyDisplay,
+} from '@/lib/ui/flag-status'
 import { createFlagAction } from './actions'
 
 /**
@@ -61,13 +66,45 @@ export default async function NewFlagPage({
     notFound()
   }
 
-  const allCategories = listFlagCategoryDisplays()
+  const reportableCategories = listReportableCategoryDisplays()
+  const reportableKeys = reportableCategories.map((c) => c.key)
   const defaultCategory = categoryParam
     ? getFlagCategoryDisplay(categoryParam)
     : undefined
-  const initialKey: FlagCategoryKey = defaultCategory?.key ?? 'maintenance_issue'
-  const initialSeverity: FlagSeverity =
-    defaultCategory?.severityDefault ?? 'med'
+  // Only prefill from the query param if it is a field-reportable category;
+  // accountability/disposition keys (e.g. a stale guest_damage link) fall
+  // back to the first reportable category.
+  const initialKey: FlagCategoryKey =
+    defaultCategory && reportableKeys.includes(defaultCategory.key)
+      ? defaultCategory.key
+      : 'maintenance_issue'
+  const initialSeverity: FlagSeverity = defaultCategory?.severityDefault ?? 'med'
+
+  // Session 9A Slice 1: non-blocking duplicate hint. When a category is
+  // preselected, surface any OPEN report of the same category on this
+  // property so the user can add to it instead of duplicating
+  // (flag-as-parent). Hint only — never blocks a new report. No date
+  // window: keeps this a pure server read (no Date.now() in render) and
+  // an open report is worth surfacing regardless of age.
+  let duplicateHintCount = 0
+  if (defaultCategory && reportableKeys.includes(defaultCategory.key)) {
+    const { data: catRow } = await supabase
+      .from('flag_categories')
+      .select('id')
+      .eq('key', defaultCategory.key)
+      .is('company_id', null)
+      .maybeSingle<{ id: string }>()
+    if (catRow) {
+      const { count } = await supabase
+        .from('flags')
+        .select('id', { count: 'exact', head: true })
+        .eq('property_id', id)
+        .eq('flag_category_id', catRow.id)
+        .not('status', 'in', '(closed,no_action)')
+        .is('deleted_at', null)
+      duplicateHintCount = count ?? 0
+    }
+  }
 
   const sub = [property.unit_reference, property.address].filter(Boolean).join(' · ')
 
@@ -87,7 +124,7 @@ export default async function NewFlagPage({
 
       <div className="mb-6">
         <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">
-          Raise a flag
+          Report an issue
         </h1>
         <p className="text-sm text-slate-600 mt-1">
           On <span className="font-medium text-slate-900">{property.name}</span>
@@ -97,6 +134,21 @@ export default async function NewFlagPage({
 
       <Card className="max-w-2xl">
         <div className="p-6 sm:p-7">
+          {duplicateHintCount > 0 ? (
+            <div className="mb-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              There may already be {duplicateHintCount} open{' '}
+              {duplicateHintCount === 1 ? 'report' : 'reports'} of this type on
+              this apartment.{' '}
+              <Link
+                href={`/properties/${property.id}`}
+                className="font-medium underline"
+              >
+                View open issues
+              </Link>{' '}
+              — add to an existing one if it&rsquo;s the same problem, or continue
+              below to report a new one.
+            </div>
+          ) : null}
           {error ? (
             <div className="mb-5">
               <Alert tone="error">{decodeURIComponent(error)}</Alert>
@@ -126,7 +178,7 @@ export default async function NewFlagPage({
                   defaultValue={initialKey}
                   className="block w-full h-10 pl-3 pr-9 text-sm text-slate-900 appearance-none border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
                 >
-                  {allCategories.map((c) => (
+                  {reportableCategories.map((c) => (
                     <option key={c.key} value={c.key}>
                       {c.label}
                     </option>
@@ -171,6 +223,38 @@ export default async function NewFlagPage({
               />
             </Field>
 
+            {/* Optional, low-prominence accountability. Per the Slice 1
+                spec, who-may-pay is a separate dimension from the issue
+                category: skippable, defaulting to "Not sure / needs triage",
+                and confirmed by a manager in triage. (Role-based hiding for
+                cleaners lands with role enforcement; until then it shows but
+                is clearly optional.) */}
+            <Field
+              label="Who may be responsible?"
+              htmlFor="chargeable_party_decision"
+              hint="Optional — leave on “Not sure” if you can’t tell. A manager confirms this in triage."
+            >
+              <div className="relative">
+                <select
+                  id="chargeable_party_decision"
+                  name="chargeable_party_decision"
+                  defaultValue={DEFAULT_ACCOUNTABILITY}
+                  className="block w-full h-10 pl-3 pr-9 text-sm text-slate-900 appearance-none border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
+                >
+                  {CHARGEABLE_PARTIES.map((a) => (
+                    <option key={a} value={a}>
+                      {chargeablePartyDisplay(a).label}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown
+                  size={16}
+                  aria-hidden
+                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
+                />
+              </div>
+            </Field>
+
             <div className="rounded-md border border-dashed border-slate-300 p-3 flex items-start gap-2.5 bg-slate-50/60">
               <Info size={14} className="text-slate-400 mt-0.5 shrink-0" aria-hidden />
               <div className="text-xs text-slate-600 leading-relaxed">
@@ -187,7 +271,7 @@ export default async function NewFlagPage({
                   Cancel
                 </Button>
               </Link>
-              <Button type="submit">Raise flag</Button>
+              <Button type="submit">Report issue</Button>
             </div>
           </form>
         </div>

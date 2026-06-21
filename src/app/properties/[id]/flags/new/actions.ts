@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { createClient } from '@/lib/supabase/server'
+import { VALID_CHARGEABLE_VALUES } from '@/lib/ui/flag-status'
 
 /**
  * Server action invoked by the raise-flag form at
@@ -26,6 +27,7 @@ export async function createFlagAction(formData: FormData) {
   const categoryKey = String(formData.get('category_key') ?? '').trim()
   const severity = String(formData.get('severity') ?? 'low').trim()
   const description = String(formData.get('description') ?? '').trim()
+  const accountabilityRaw = String(formData.get('chargeable_party_decision') ?? '').trim()
 
   const formUrl = `/properties/${propertyId}/flags/new?category=${encodeURIComponent(categoryKey)}`
 
@@ -33,7 +35,7 @@ export async function createFlagAction(formData: FormData) {
     redirect(`/dashboard?error=${encodeURIComponent('Missing property reference.')}`)
   }
   if (!categoryKey) {
-    redirect(`/properties/${propertyId}/flags/new?error=${encodeURIComponent('Pick a flag type.')}`)
+    redirect(`/properties/${propertyId}/flags/new?error=${encodeURIComponent('Pick an issue type.')}`)
   }
   if (!description) {
     redirect(`${formUrl}&error=${encodeURIComponent('Description is required.')}`)
@@ -73,10 +75,10 @@ export async function createFlagAction(formData: FormData) {
 
   if (catErr) {
     console.error('[flags/new] category lookup error:', catErr)
-    redirect(`${formUrl}&error=${encodeURIComponent('Could not look up flag type. Try again.')}`)
+    redirect(`${formUrl}&error=${encodeURIComponent('Could not look up issue type. Try again.')}`)
   }
   if (!category) {
-    redirect(`${formUrl}&error=${encodeURIComponent('Unknown flag type.')}`)
+    redirect(`${formUrl}&error=${encodeURIComponent('Unknown issue type.')}`)
   }
 
   if (propErr) {
@@ -87,6 +89,16 @@ export async function createFlagAction(formData: FormData) {
     redirect(`/dashboard?error=${encodeURIComponent('Property not found.')}`)
   }
 
+  // Optional preliminary accountability. Persist null when the reporter
+  // left the default ("Not sure / needs triage") so "not yet decided"
+  // stays null; only store an explicit choice. Invalid values → null.
+  const accountability =
+    accountabilityRaw &&
+    accountabilityRaw !== 'needs_triage' &&
+    VALID_CHARGEABLE_VALUES.includes(accountabilityRaw)
+      ? accountabilityRaw
+      : null
+
   const { error: insertErr } = await supabase.from('flags').insert({
     company_id: property.company_id,
     property_id: property.id,
@@ -94,12 +106,13 @@ export async function createFlagAction(formData: FormData) {
     status: 'raised',
     severity,
     description,
+    chargeable_party_decision: accountability,
     raised_by: ctx.user.id,
   })
 
   if (insertErr) {
     console.error('[flags/new] insert error:', insertErr)
-    redirect(`${formUrl}&error=${encodeURIComponent(`Could not raise flag: ${insertErr.message}`)}`)
+    redirect(`${formUrl}&error=${encodeURIComponent(`Could not report issue: ${insertErr.message}`)}`)
   }
 
   // Keep the company dashboard's "Open flags" count in sync — it's
