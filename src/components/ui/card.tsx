@@ -9,7 +9,11 @@ export function Card({ className, children, ...props }: HTMLAttributes<HTMLDivEl
   return (
     <div
       className={cn(
-        'w-full bg-white border border-slate-200 rounded-xl shadow-sm',
+        // min-w-0 so a Card used as a grid/flex item can shrink below its
+        // content's intrinsic width (grid items default to min-width:auto,
+        // which otherwise forces the track — and the page — wider than the
+        // viewport on mobile). w-full keeps it filling its container.
+        'w-full min-w-0 bg-white border border-slate-200 rounded-xl shadow-sm',
         className,
       )}
       {...props}
