@@ -6,6 +6,7 @@ import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Field, Label } from '@/components/ui/input'
+import { SubmitButton } from '@/components/ui/submit-button'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { createClient } from '@/lib/supabase/server'
 import {
@@ -271,7 +272,7 @@ export default async function NewFlagPage({
                   Cancel
                 </Button>
               </Link>
-              <Button type="submit">Report issue</Button>
+              <SubmitButton pendingLabel="Reporting…">Report issue</SubmitButton>
             </div>
           </form>
         </div>

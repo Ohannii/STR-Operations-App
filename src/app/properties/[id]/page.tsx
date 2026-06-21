@@ -954,8 +954,8 @@ function SnapshotTile({
   return (
     <Card>
       <div className="p-3 sm:p-4">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-[11px] font-medium text-slate-600 uppercase tracking-wide truncate">
+        <div className="flex items-start justify-between gap-2 mb-2">
+          <span className="text-[11px] font-medium text-slate-600 uppercase tracking-wide min-w-0 leading-tight">
             {label}
           </span>
           <Icon
