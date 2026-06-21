@@ -9,7 +9,7 @@ export function Card({ className, children, ...props }: HTMLAttributes<HTMLDivEl
   return (
     <div
       className={cn(
-        'bg-white border border-slate-200 rounded-xl shadow-sm',
+        'w-full bg-white border border-slate-200 rounded-xl shadow-sm',
         className,
       )}
       {...props}
