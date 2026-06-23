@@ -136,6 +136,18 @@ export function ToggleChip({
 // flag cards on the Action Centre. No click, no form.
 // ============================================================
 
+// Calm tinted tones for StaticChip — read-only status chips should not
+// shout like the solid action chips. (Session 9C.1 visual-noise polish.)
+const STATIC_TONE: Record<ChipTone, string> = {
+  slate: 'bg-slate-100 text-slate-700 ring-slate-200',
+  red: 'bg-red-50 text-red-700 ring-red-200',
+  amber: 'bg-amber-50 text-amber-800 ring-amber-200',
+  sky: 'bg-sky-50 text-sky-700 ring-sky-200',
+  blue: 'bg-blue-50 text-blue-700 ring-blue-200',
+  emerald: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+  orange: 'bg-orange-50 text-orange-700 ring-orange-200',
+}
+
 export function StaticChip({
   label,
   tone = 'slate',
@@ -150,8 +162,8 @@ export function StaticChip({
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium',
-        TOGGLE_ACTIVE_TONE[tone],
+        'inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium ring-1 ring-inset',
+        STATIC_TONE[tone],
         className,
       )}
     >

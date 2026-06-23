@@ -522,28 +522,29 @@ export default async function FlagDetailPage({
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Issue</p>
-              <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">
-                {cat?.label ?? 'Flag'}
+              {/* break-normal: don't let the inherited overflow-wrap:anywhere
+                  break a single word like "Maintenance" mid-character. */}
+              <h1 className="text-2xl font-semibold text-slate-900 tracking-tight break-normal">
+                {cat?.label ?? 'Issue'}
               </h1>
               <div className="flex flex-wrap items-center gap-2 mt-2">
                 <Badge tone={status.tone}>{status.label}</Badge>
                 <Badge tone={sev.tone}>{sev.label}</Badge>
                 <Badge tone={charge.tone}>Responsibility: {charge.label}</Badge>
               </div>
+              {/* Open report — secondary action placed BELOW the title so it
+                  doesn't squeeze the heading on mobile. Opens in a new tab. */}
+              <Link
+                href={`/properties/${property.id}/flags/${flag.id}/report`}
+                target="_blank"
+                rel="noopener"
+                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 active:bg-slate-100 transition"
+              >
+                <FileText size={14} aria-hidden />
+                Open report
+                <ExternalLink size={12} className="opacity-60" aria-hidden />
+              </Link>
             </div>
-            {/* Session 8: report link. Opens in a new tab so the
-                inspector can keep the detail page in place while
-                printing / sharing. */}
-            <Link
-              href={`/properties/${property.id}/flags/${flag.id}/report`}
-              target="_blank"
-              rel="noopener"
-              className="shrink-0 inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition"
-            >
-              <FileText size={14} aria-hidden />
-              Open report
-              <ExternalLink size={12} className="opacity-60" aria-hidden />
-            </Link>
           </div>
 
           {flag.description ? (
@@ -860,7 +861,7 @@ export default async function FlagDetailPage({
             </div>
             <div className="flex-1">
               <p className="text-sm font-medium text-slate-900">
-                This flag is {status.label.toLowerCase()}.
+                This issue is {status.label.toLowerCase()}.
               </p>
               <p className="text-sm text-slate-600 mt-0.5">
                 If the underlying issue isn&rsquo;t actually resolved, reopen it.
@@ -885,11 +886,11 @@ export default async function FlagDetailPage({
           a client component (camera + canvas + uploads), everything
           else stays server-rendered. */}
       <section id="evidence" className="mb-8 scroll-mt-20">
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <div>
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
             <h2 className="text-lg font-semibold text-slate-900">Evidence</h2>
             <p className="text-sm text-slate-600">
-              Photos attached to this flag. Tap a thumbnail to open the full
+              Photos attached to this issue. Tap a thumbnail to open the full
               shot in a new tab. Captions are optional and editable.
             </p>
           </div>

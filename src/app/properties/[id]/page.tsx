@@ -707,7 +707,8 @@ export default async function PropertyPage({
               href={`/properties/${property.id}/issues`}
               className="shrink-0 inline-flex items-center gap-1 text-sm font-medium text-slate-600 hover:text-slate-900 hover:underline"
             >
-              View all <ChevronRight size={14} aria-hidden />
+              View all {openFlags.length} issues
+              <ChevronRight size={14} aria-hidden />
             </Link>
           ) : null}
         </div>
@@ -1065,10 +1066,10 @@ function CategorySection({
       {viewAllHref ? (
         <Link
           href={viewAllHref}
-          className="mt-2.5 inline-flex items-center gap-1 text-xs font-medium text-slate-600 hover:text-slate-900 hover:underline"
+          className="mt-2.5 flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 active:bg-slate-100 transition"
         >
-          {viewAllLabel ?? 'View all'} ({count})
-          <ChevronRight size={12} aria-hidden />
+          <span className="min-w-0">{viewAllLabel ?? 'View all'} ({count})</span>
+          <ChevronRight size={16} className="shrink-0 text-slate-400" aria-hidden />
         </Link>
       ) : null}
     </div>
