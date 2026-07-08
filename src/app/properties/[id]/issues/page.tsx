@@ -183,44 +183,46 @@ export default async function IssuesPage({
         </Link>
       </div>
 
-      {/* Status filter */}
-      <div className="flex flex-wrap items-center gap-2 mb-3">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mr-1">
-          Show
-        </span>
-        <FilterChip active={!showAll} href={filterHref({ status: null })}>
-          Open
-        </FilterChip>
-        <FilterChip active={showAll} href={filterHref({ status: 'all' })}>
-          All
-        </FilterChip>
-      </div>
-
-      {/* Category filter */}
-      <div className="flex flex-wrap items-center gap-2 mb-6">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mr-1">
-          Category
-        </span>
-        <FilterChip active={!activeGroupId} href={filterHref({ category: null })}>
-          All
-        </FilterChip>
-        {presentGroups.map((g) => (
-          <FilterChip
-            key={g.id}
-            active={activeGroupId === g.id}
-            href={filterHref({ category: g.id })}
-          >
-            {g.label} ({byGroup.get(g.id)?.length ?? 0})
+      {/* Filters — compact panel (Session 9C.1 polish). Two labelled rows
+          (Status, Category) so the controls read as a deliberate panel
+          rather than loose chips. */}
+      <div className="rounded-xl border border-slate-200 bg-white p-3 sm:p-4 mb-6 space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 w-[68px] shrink-0">
+            Status
+          </span>
+          <FilterChip active={!showAll} href={filterHref({ status: null })}>
+            Open
           </FilterChip>
-        ))}
-        {hasOther ? (
-          <FilterChip
-            active={activeGroupId === 'other'}
-            href={filterHref({ category: 'other' })}
-          >
-            Other ({other.length})
+          <FilterChip active={showAll} href={filterHref({ status: 'all' })}>
+            All
           </FilterChip>
-        ) : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 w-[68px] shrink-0">
+            Category
+          </span>
+          <FilterChip active={!activeGroupId} href={filterHref({ category: null })}>
+            All
+          </FilterChip>
+          {presentGroups.map((g) => (
+            <FilterChip
+              key={g.id}
+              active={activeGroupId === g.id}
+              href={filterHref({ category: g.id })}
+            >
+              {g.label} ({byGroup.get(g.id)?.length ?? 0})
+            </FilterChip>
+          ))}
+          {hasOther ? (
+            <FilterChip
+              active={activeGroupId === 'other'}
+              href={filterHref({ category: 'other' })}
+            >
+              Other ({other.length})
+            </FilterChip>
+          ) : null}
+        </div>
       </div>
 
       {error ? (
