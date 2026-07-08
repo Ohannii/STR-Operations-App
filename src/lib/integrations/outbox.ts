@@ -123,3 +123,24 @@ export async function enqueueFlagCreatedEvent(
     return { enqueued: false, error: err instanceof Error ? err.message : String(err) }
   }
 }
+
+/**
+ * Composition entry point for the flag-create wiring (Slice 4b).
+ *
+ * NEVER throws. Enqueues a flag-created event ONLY when Asana is
+ * enabled for the company. Any failure (disabled lookup, RLS, network,
+ * duplicate) is swallowed and logged so issue reporting can never
+ * break. Returns void so callers can `await` it without branching.
+ */
+export async function maybeEnqueueFlagCreated(
+  supabase: SupabaseClient,
+  input: FlagCreatedOutboxInput,
+): Promise<void> {
+  try {
+    if (await isAsanaEnabled(supabase, input.companyId)) {
+      await enqueueFlagCreatedEvent(supabase, input)
+    }
+  } catch (err) {
+    console.error('[outbox] flag-created enqueue skipped:', err)
+  }
+}
