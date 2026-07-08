@@ -224,17 +224,17 @@ export default async function PackReportPage({
 
       <article className="max-w-4xl mx-auto px-6 py-8 print:p-0 print:max-w-none">
         <header className="rounded-t-md bg-slate-900 text-white px-6 py-5 print:rounded-none print:bg-slate-900">
-          <div className="flex items-start justify-between gap-6">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
             <div className="min-w-0">
               <p className="text-[11px] uppercase tracking-wider text-white/60">
                 {ctx.company.name}
               </p>
-              <div className="flex items-center gap-2 mt-0.5">
-                <h1 className="text-2xl font-semibold tracking-tight">
+              <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                <h1 className="text-2xl font-semibold tracking-tight break-normal">
                   {pack.title ?? 'Pre-arrival Evidence Pack'}
                 </h1>
                 {isDraft ? (
-                  <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-amber-400 text-slate-900">
+                  <span className="inline-flex shrink-0 items-center whitespace-nowrap px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-amber-400 text-slate-900">
                     Draft
                   </span>
                 ) : null}
@@ -244,7 +244,7 @@ export default async function PackReportPage({
                 {subtitle ? <span className="text-white/60"> — {subtitle}</span> : null}
               </p>
             </div>
-            <div className="text-right text-xs text-white/80 shrink-0">
+            <div className="text-left text-xs text-white/80 shrink-0 sm:text-right">
               <p>
                 <span className="text-white/60">Generated</span>{' '}
                 {formatDateOnly(generatedAt.toISOString())}
@@ -277,21 +277,21 @@ export default async function PackReportPage({
           <table className="w-full table-fixed text-sm border-collapse">
             <tbody>
               <tr className="border-b border-slate-200">
-                <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider px-6 py-3 w-1/4 bg-white">
+                <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider break-normal px-6 py-3 w-2/5 sm:w-1/4 bg-white">
                   Apartment
                 </th>
                 <td className="px-6 py-3 bg-white">{property.name}</td>
               </tr>
               {subtitle ? (
                 <tr className="border-b border-slate-200">
-                  <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider px-6 py-3 bg-slate-50/60">
+                  <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider break-normal px-6 py-3 bg-slate-50/60">
                     Address
                   </th>
                   <td className="px-6 py-3 bg-slate-50/60">{subtitle}</td>
                 </tr>
               ) : null}
               <tr className="border-b border-slate-200">
-                <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider px-6 py-3 bg-white">
+                <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider break-normal px-6 py-3 bg-white">
                   Status
                 </th>
                 <td className="px-6 py-3 bg-white">
@@ -307,7 +307,7 @@ export default async function PackReportPage({
                 </td>
               </tr>
               <tr className="border-b border-slate-200">
-                <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider px-6 py-3 bg-slate-50/60">
+                <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider break-normal px-6 py-3 bg-slate-50/60">
                   Started
                 </th>
                 <td className="px-6 py-3 bg-slate-50/60">
@@ -317,7 +317,7 @@ export default async function PackReportPage({
               </tr>
               {pack.submitted_at ? (
                 <tr className="border-b border-slate-200">
-                  <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider px-6 py-3 bg-white">
+                  <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider break-normal px-6 py-3 bg-white">
                     Submitted
                   </th>
                   <td className="px-6 py-3 bg-white">
@@ -327,7 +327,7 @@ export default async function PackReportPage({
                 </tr>
               ) : null}
               <tr>
-                <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider px-6 py-3 bg-slate-50/60">
+                <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider break-normal px-6 py-3 bg-slate-50/60">
                   Photos in pack
                 </th>
                 <td className="px-6 py-3 bg-slate-50/60">
@@ -337,7 +337,7 @@ export default async function PackReportPage({
               </tr>
               {pack.notes ? (
                 <tr className="border-t border-slate-200">
-                  <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider px-6 py-3 bg-white align-top">
+                  <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider break-normal px-6 py-3 bg-white align-top">
                     Notes
                   </th>
                   <td className="px-6 py-3 bg-white whitespace-pre-wrap">
