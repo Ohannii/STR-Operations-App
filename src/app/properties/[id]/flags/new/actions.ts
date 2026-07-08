@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { createClient } from '@/lib/supabase/server'
+import { maybeEnqueueFlagCreated } from '@/lib/integrations/outbox'
 import { VALID_CHARGEABLE_VALUES } from '@/lib/ui/flag-status'
 
 /**
@@ -99,20 +100,38 @@ export async function createFlagAction(formData: FormData) {
       ? accountabilityRaw
       : null
 
-  const { error: insertErr } = await supabase.from('flags').insert({
-    company_id: property.company_id,
-    property_id: property.id,
-    flag_category_id: category.id,
-    status: 'raised',
-    severity,
-    description,
-    chargeable_party_decision: accountability,
-    raised_by: ctx.user.id,
-  })
+  const { data: newFlag, error: insertErr } = await supabase
+    .from('flags')
+    .insert({
+      company_id: property.company_id,
+      property_id: property.id,
+      flag_category_id: category.id,
+      status: 'raised',
+      severity,
+      description,
+      chargeable_party_decision: accountability,
+      raised_by: ctx.user.id,
+    })
+    .select('id')
+    .single()
 
   if (insertErr) {
     console.error('[flags/new] insert error:', insertErr)
     redirect(`${formUrl}&error=${encodeURIComponent(`Could not report issue: ${insertErr.message}`)}`)
+  }
+
+  // Slice 4b: outbound Asana handoff. Gated by the per-company feature
+  // flag (OFF by default) and fully failure-isolated — maybeEnqueue
+  // never throws, so a queue problem can never break issue reporting.
+  // NOTE: this runs BEFORE redirect() so the redirect signal is never
+  // swallowed by any try/catch.
+  if (newFlag) {
+    await maybeEnqueueFlagCreated(supabase, {
+      companyId: property.company_id,
+      flagId: newFlag.id,
+      createdBy: ctx.user.id,
+      payload: { property_id: property.id, category_key: categoryKey },
+    })
   }
 
   // Keep the company dashboard's "Open flags" count in sync — it's

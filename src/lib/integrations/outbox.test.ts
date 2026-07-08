@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   buildFlagOutboxEvent,
+  maybeEnqueueFlagCreated,
   type FlagCreatedOutboxInput,
 } from '@/lib/integrations/outbox'
 
@@ -73,5 +75,81 @@ describe('buildFlagOutboxEvent (pure)', () => {
         'provider',
       ].sort(),
     )
+  })
+})
+
+// ---------------------------------------------------------------
+// maybeEnqueueFlagCreated — failure isolation (Slice 4b).
+// A tiny explicitly-typed fake Supabase client (no network) lets us
+// prove the helper NEVER throws, regardless of enabled state or errors.
+// ---------------------------------------------------------------
+
+type QResult = { data?: unknown; error?: unknown }
+
+interface FakeQuery {
+  select: () => FakeQuery
+  eq: () => FakeQuery
+  is: () => FakeQuery
+  limit: () => FakeQuery
+  maybeSingle: () => Promise<QResult>
+  insert: () => Promise<QResult>
+}
+
+function makeQuery(terminal: QResult): FakeQuery {
+  const q: FakeQuery = {
+    select: () => q,
+    eq: () => q,
+    is: () => q,
+    limit: () => q,
+    maybeSingle: async () => terminal,
+    insert: async () => terminal,
+  }
+  return q
+}
+
+function fakeClient(
+  perTable: Record<string, QResult>,
+  opts: { throwOnFrom?: boolean } = {},
+): SupabaseClient {
+  return {
+    from(table: string): FakeQuery {
+      if (opts.throwOnFrom) throw new Error('boom from()')
+      return makeQuery(perTable[table] ?? { data: null, error: null })
+    },
+  } as unknown as SupabaseClient
+}
+
+const enqueueInput: FlagCreatedOutboxInput = {
+  companyId: 'c1',
+  flagId: 'f1',
+  createdBy: 'u1',
+  payload: { property_id: 'p1', category_key: 'maintenance_issue' },
+}
+
+describe('maybeEnqueueFlagCreated (failure isolation)', () => {
+  it('never throws and enqueues nothing when Asana is disabled', async () => {
+    const client = fakeClient({ integration_settings: { data: null, error: null } })
+    await expect(maybeEnqueueFlagCreated(client, enqueueInput)).resolves.toBeUndefined()
+  })
+
+  it('never throws when the client itself throws', async () => {
+    const client = fakeClient({}, { throwOnFrom: true })
+    await expect(maybeEnqueueFlagCreated(client, enqueueInput)).resolves.toBeUndefined()
+  })
+
+  it('never throws when enabled and the enqueue hits a duplicate (23505)', async () => {
+    const client = fakeClient({
+      integration_settings: { data: { id: 's1' }, error: null },
+      integration_outbox: { error: { code: '23505' } },
+    })
+    await expect(maybeEnqueueFlagCreated(client, enqueueInput)).resolves.toBeUndefined()
+  })
+
+  it('never throws when enabled and the enqueue errors', async () => {
+    const client = fakeClient({
+      integration_settings: { data: { id: 's1' }, error: null },
+      integration_outbox: { error: { code: '500', message: 'db down' } },
+    })
+    await expect(maybeEnqueueFlagCreated(client, enqueueInput)).resolves.toBeUndefined()
   })
 })
