@@ -169,3 +169,46 @@ describe('mapFlagToTaskPayload — body + safety due date', () => {
     expect(nonSafety.dueOn).toBeUndefined()
   })
 })
+
+describe('mapFlagToTaskPayload — issue title (title-ready)', () => {
+  it('uses issueTitle in the name when present', () => {
+    const payload = mapFlagToTaskPayload(baseFlag({ issueTitle: 'Broken pot' }))
+    expect(payload.name).toBe('[Maintenance] Ballito Villa 204 — Broken pot')
+  })
+
+  it('falls back to the description summary when issueTitle is missing or blank', () => {
+    const missing = mapFlagToTaskPayload(baseFlag())
+    expect(missing.name).toBe(
+      '[Maintenance] Ballito Villa 204 — Leaking tap under kitchen sink',
+    )
+    const blank = mapFlagToTaskPayload(baseFlag({ issueTitle: '   ' }))
+    expect(blank.name).toBe(
+      '[Maintenance] Ballito Villa 204 — Leaking tap under kitchen sink',
+    )
+  })
+
+  it('keeps the [GUEST CHARGE] prefix alongside a title', () => {
+    const payload = mapFlagToTaskPayload(
+      baseFlag({
+        issueTitle: 'Broken pot',
+        accountability: 'guest_damage',
+        accountabilityLabel: 'Guest damage',
+      }),
+    )
+    expect(payload.name).toBe('[GUEST CHARGE] [Maintenance] Ballito Villa 204 — Broken pot')
+  })
+
+  it('truncates an over-long issueTitle and strips newlines', () => {
+    const payload = mapFlagToTaskPayload(baseFlag({ issueTitle: 'y'.repeat(120) }))
+    expect(payload.name).toContain('…')
+    expect(payload.name).not.toContain('\n')
+    expect(payload.name.length).toBeLessThan(120)
+  })
+
+  it('does not change section routing when a title is present', () => {
+    const payload = mapFlagToTaskPayload(
+      baseFlag({ issueTitle: 'Broken pot', categoryKey: 'guest_damage' }),
+    )
+    expect(payload.sectionGid).toBe(ASANA_TEST_SECTION_GIDS.damage)
+  })
+})
