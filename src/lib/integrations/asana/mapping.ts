@@ -43,6 +43,13 @@ const SUMMARY_MAX = 70
 export interface FlagForMapping {
   id: string
   description: string
+  /**
+   * Optional short inspector-entered title (e.g. "Broken pot"). When
+   * present it drives the task name; otherwise the description summary
+   * is used. There is no schema/UI for this yet — this is mapping-ready
+   * only, so the field is already supported when it ships.
+   */
+  issueTitle?: string
   severity: 'low' | 'med' | 'high'
   categoryKey: string
   categoryLabel: string
@@ -94,7 +101,13 @@ export function mapFlagToTaskPayload(flag: FlagForMapping): TaskPayload {
 
   const guestCharge = isGuestChargeable(flag.accountability)
   const namePrefix = guestCharge ? '[GUEST CHARGE] ' : ''
-  const name = `${namePrefix}[${groupLabel(groupId)}] ${flag.propertyName} — ${summarise(flag.description)}`
+  // Title-ready: prefer a short inspector title; fall back to the
+  // description summary when none is present. Both go through the same
+  // trim/truncate so the name stays clean.
+  const trimmedTitle = flag.issueTitle?.trim() ?? ''
+  const titleOrSummary =
+    trimmedTitle.length > 0 ? summarise(trimmedTitle) : summarise(flag.description)
+  const name = `${namePrefix}[${groupLabel(groupId)}] ${flag.propertyName} — ${titleOrSummary}`
 
   const appUrl = `${flag.appBaseUrl.replace(/\/+$/, '')}/properties/${flag.propertyId}/flags/${flag.id}`
 
