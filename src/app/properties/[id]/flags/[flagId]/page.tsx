@@ -105,6 +105,7 @@ type FlagDetail = {
   classified_by: string | null
   actioned_at: string | null
   closed_at: string | null
+  asana_task_url: string | null
   flag_category: FlagCategoryRel
 }
 
@@ -247,6 +248,7 @@ export default async function FlagDetailPage({
       classified_by,
       actioned_at,
       closed_at,
+      asana_task_url,
       flag_category:flag_categories (id, key)
       `,
     )
@@ -532,18 +534,31 @@ export default async function FlagDetailPage({
                 <Badge tone={sev.tone}>{sev.label}</Badge>
                 <Badge tone={charge.tone}>Responsibility: {charge.label}</Badge>
               </div>
-              {/* Open report — secondary action placed BELOW the title so it
-                  doesn't squeeze the heading on mobile. Opens in a new tab. */}
-              <Link
-                href={`/properties/${property.id}/flags/${flag.id}/report`}
-                target="_blank"
-                rel="noopener"
-                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 active:bg-slate-100 transition"
-              >
-                <FileText size={14} aria-hidden />
-                Open report
-                <ExternalLink size={12} className="opacity-60" aria-hidden />
-              </Link>
+              {/* Secondary actions below the title so they don't squeeze the
+                  heading on mobile. Both open in a new tab. */}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Link
+                  href={`/properties/${property.id}/flags/${flag.id}/report`}
+                  target="_blank"
+                  rel="noopener"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 active:bg-slate-100 transition"
+                >
+                  <FileText size={14} aria-hidden />
+                  Open report
+                  <ExternalLink size={12} className="opacity-60" aria-hidden />
+                </Link>
+                {flag.asana_task_url ? (
+                  <a
+                    href={flag.asana_task_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 active:bg-slate-100 transition"
+                  >
+                    <ExternalLink size={14} aria-hidden />
+                    Open Asana task
+                  </a>
+                ) : null}
+              </div>
             </div>
           </div>
 
