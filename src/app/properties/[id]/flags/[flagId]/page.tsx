@@ -97,6 +97,7 @@ type FlagDetail = {
   status: string
   severity: string
   description: string | null
+  issue_title: string | null
   chargeable_party_decision: string | null
   no_action_reason: string | null
   raised_at: string
@@ -240,6 +241,7 @@ export default async function FlagDetailPage({
       status,
       severity,
       description,
+      issue_title,
       chargeable_party_decision,
       no_action_reason,
       raised_at,
@@ -523,11 +525,15 @@ export default async function FlagDetailPage({
               <CatIcon size={20} aria-hidden />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Issue</p>
-              {/* break-normal: don't let the inherited overflow-wrap:anywhere
-                  break a single word like "Maintenance" mid-character. */}
+              <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">
+                {flag.issue_title ? (cat?.label ?? 'Issue') : 'Issue'}
+              </p>
+              {/* When the inspector gave a short title, show it as the heading
+                  with the category demoted to the eyebrow above. break-normal
+                  stops the inherited overflow-wrap:anywhere breaking a single
+                  word like "Maintenance" mid-character. */}
               <h1 className="text-2xl font-semibold text-slate-900 tracking-tight break-normal">
-                {cat?.label ?? 'Issue'}
+                {flag.issue_title ?? cat?.label ?? 'Issue'}
               </h1>
               <div className="flex flex-wrap items-center gap-2 mt-2">
                 <Badge tone={status.tone}>{status.label}</Badge>

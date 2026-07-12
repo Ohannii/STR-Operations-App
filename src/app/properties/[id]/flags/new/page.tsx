@@ -208,6 +208,21 @@ export default async function NewFlagPage({
             </fieldset>
 
             <Field
+              label="Short title"
+              htmlFor="issue_title"
+              hint="Optional — a few words, e.g. &ldquo;Broken pot&rdquo;."
+            >
+              <input
+                id="issue_title"
+                name="issue_title"
+                type="text"
+                maxLength={80}
+                placeholder="e.g. Broken pot"
+                className="block w-full px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
+              />
+            </Field>
+
+            <Field
               label="Description"
               required
               htmlFor="description"

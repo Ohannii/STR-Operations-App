@@ -104,7 +104,7 @@ async function buildPayloadForFlag(
   const { data: flag, error: flagErr } = await supabase
     .from('flags')
     .select(
-      'id, description, severity, status, chargeable_party_decision, raised_at, property_id, flag_category_id, raised_by',
+      'id, description, issue_title, severity, status, chargeable_party_decision, raised_at, property_id, flag_category_id, raised_by',
     )
     .eq('id', flagId)
     .is('deleted_at', null)
@@ -130,6 +130,7 @@ async function buildPayloadForFlag(
   const dbRow: OutboxFlagRow = {
     id: String(flag.id),
     description: String(flag.description ?? ''),
+    issueTitle: (flag.issue_title as string | null) ?? null,
     severity: (flag.severity as OutboxFlagRow['severity']) ?? 'low',
     status: String(flag.status ?? ''),
     accountability: (flag.chargeable_party_decision as string | null) ?? null,

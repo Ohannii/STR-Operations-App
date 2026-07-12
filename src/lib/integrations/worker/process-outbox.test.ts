@@ -150,7 +150,7 @@ describe('dryRunNextAsanaOutbox', () => {
     if (res.status !== 'dry_run_ok') return
     expect(res.payload.projectGid).toBe(ASANA_TEST_PROJECT_GID)
     expect(res.payload.sectionGid).toBe(ASANA_TEST_SECTION_GIDS.maintenance)
-    expect(res.payload.name).toBe('[Maintenance] Real Property — Leaking tap')
+    expect(res.payload.name).toBe('Leaking tap — Real Property [Maintenance]')
     expect(res.payload.notes).toContain(
       'Open in app: https://staging.example.com/properties/prop-1/flags/flag-1',
     )
