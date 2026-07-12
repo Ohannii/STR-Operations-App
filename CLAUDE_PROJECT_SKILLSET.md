@@ -429,3 +429,16 @@ Before any session closes, Claude runs through this short checklist explicitly. 
 10. **End on a complete file save** — never close the session mid-write. If a doc is half-written, finish or revert before closing.
 
 Run this every session. Treat it as part of the work, not as overhead.
+
+## Outbound integration conventions (Asana, and future PMS/WhatsApp)
+
+Learned building the Asana integration — follow these for any external system:
+
+- **Never call the external system directly from a form/server action.** Enqueue an `integration_outbox` row and let a **worker** drain it. Keeps the UI fast, resilient, and retryable; the app stays the source of truth.
+- **Guards before any external write, always.** Pin the target hard (`assertAllowedProject`) and gate the tenant (`assertAllowedCompany`, from env allowlist). Both are pure + unit-tested and run before the network call.
+- **Idempotency is mandatory.** Unique link per entity (`external_task_links`), a pre-check, and an **atomic claim** (`status pending→processing`, conditional update so only one worker wins) so overlapping scheduled runs can't double-create. Failures reset to `pending` with backoff, cap attempts → `dead`; stale in-flight rows self-recover.
+- **App = beta source of truth; external system = work-board.** One-way (app→external) first; inbound/status mirror is a separate, later, gated step — never rushed.
+- **Secrets server-only.** Tokens live in host env (Vercel/Supabase), never in `.env.local`/repo/client/logs; the worker uses `service_role` only inside its server-only route.
+- **Kill switches, not workflow.** A per-company enable flag + a dry-run flag are emergency controls; normal operation leaves them on.
+- **Scheduling:** Vercel Cron needs **Pro** (Hobby = daily only); authenticate cron via `CRON_SECRET` bearer. Keep batches small and the worker idempotent.
+- **Photos/large media:** compress and store in Supabase Storage directly; never push big files through Vercel functions. Link from the external task first; native attachments only if truly needed.

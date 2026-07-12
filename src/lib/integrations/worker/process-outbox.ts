@@ -1,18 +1,23 @@
 /**
- * Asana outbox worker core (Slices 7 + 8).
+ * Asana outbox worker core (Slices 7 + 8 + 10).
  *
  * `dryRunNextAsanaOutbox` — reads one pending row, guards, re-reads the
  * authoritative flag, builds the payload, and RETURNS it. No Asana
  * call, no writes.
  *
- * `runNextAsanaOutbox` — the real run: same read/guard/re-read, plus an
- * idempotency pre-check, a single provider task creation, and the
- * write-backs (external_task_links → flags.asana_task_url → outbox
- * done). On provider/link failure it records attempt_count + last_error
- * and leaves the row pending; it never writes the link/flag on error.
+ * `runNextAsanaOutbox` — the real run for ONE row: read/guard →
+ * **atomic claim** (pending→processing, only one worker wins) →
+ * idempotency pre-check → create the task → write-backs
+ * (external_task_links → flags.asana_task_url → outbox done). Failures
+ * reset to pending with backoff (capped → dead); a disallowed company
+ * or missing flag retires the row (dead) so it can't block the queue.
+ *
+ * `runAsanaOutboxBatch` — recovers stale (crashed) claims, then
+ * processes up to N rows for a scheduled (cron) tick.
  *
  * Source of truth: the row's `payload` hints are never selected — every
- * field comes from a fresh DB read.
+ * field comes from a fresh DB read. `integration_outbox.status` is
+ * free-text (no CHECK), so 'processing'/'dead' are valid values.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -28,6 +33,13 @@ import {
 } from '@/lib/integrations/worker/build-flag-for-mapping'
 import type { TaskPayload, TaskProvider } from '@/lib/integrations/types'
 
+/** Give up (mark dead) after this many failed attempts. */
+const MAX_ATTEMPTS = 8
+/** Wait this long before retrying a failed row. */
+const RETRY_BACKOFF_MINUTES = 5
+/** Reclaim a row stuck in 'processing' (crashed worker) after this long. */
+const STALE_PROCESSING_MINUTES = 5
+
 export interface DryRunDeps {
   allowedCompanyIds: string[]
   appBaseUrl: string
@@ -42,6 +54,7 @@ export type DryRunResult =
 export type RealRunResult =
   | { status: 'no_pending' }
   | { status: 'refused'; outboxId: string; reason: string; flagId?: string }
+  | { status: 'skipped'; outboxId: string; flagId: string }
   | { status: 'already_linked'; outboxId: string; flagId: string }
   | {
       status: 'created'
@@ -151,6 +164,48 @@ async function buildPayloadForFlag(
   return payload
 }
 
+async function markOutbox(
+  supabase: SupabaseClient,
+  id: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  await supabase.from('integration_outbox').update(patch).eq('id', id)
+}
+
+/** Record a failure: retry with backoff, or retire to 'dead' at the cap. */
+async function failRetry(
+  supabase: SupabaseClient,
+  outboxId: string,
+  flagId: string,
+  attemptCount: number,
+  message: string,
+): Promise<RealRunResult> {
+  const attempts = attemptCount + 1
+  const dead = attempts >= MAX_ATTEMPTS
+  const patch: Record<string, unknown> = {
+    status: dead ? 'dead' : 'pending',
+    attempt_count: attempts,
+    last_error: message,
+    locked_at: null,
+  }
+  if (!dead) {
+    patch.available_at = new Date(Date.now() + RETRY_BACKOFF_MINUTES * 60_000).toISOString()
+  }
+  await markOutbox(supabase, outboxId, patch)
+  return { status: 'error', outboxId, flagId, error: message }
+}
+
+/** Recover rows whose worker crashed mid-run (stuck in 'processing'). */
+async function resetStaleProcessing(supabase: SupabaseClient): Promise<void> {
+  const staleIso = new Date(Date.now() - STALE_PROCESSING_MINUTES * 60_000).toISOString()
+  await supabase
+    .from('integration_outbox')
+    .update({ status: 'pending', locked_at: null })
+    .eq('provider', 'asana')
+    .eq('status', 'processing')
+    .lt('locked_at', staleIso)
+}
+
 export async function dryRunNextAsanaOutbox(
   supabase: SupabaseClient,
   deps: DryRunDeps,
@@ -173,9 +228,31 @@ export async function runNextAsanaOutbox(
 ): Promise<RealRunResult> {
   const g = await readAndGuardOutbox(supabase, deps)
   if (g.kind === 'no_pending') return { status: 'no_pending' }
-  if (g.kind === 'refused') return { status: 'refused', outboxId: g.outboxId, reason: g.reason }
+  if (g.kind === 'refused') {
+    // Permanent (e.g. company not on allowlist): retire the row so it
+    // can't block the queue on every tick.
+    await markOutbox(supabase, g.outboxId, {
+      status: 'dead',
+      last_error: g.reason,
+      locked_at: null,
+    })
+    return { status: 'refused', outboxId: g.outboxId, reason: g.reason }
+  }
 
   const { outboxId, companyId, flagId, attemptCount } = g
+
+  // Atomic claim: flip pending -> processing. Because the WHERE requires
+  // status='pending', only ONE concurrent worker wins — so overlapping
+  // cron runs can never both create the same task.
+  const { data: claimed, error: claimErr } = await supabase
+    .from('integration_outbox')
+    .update({ status: 'processing', locked_at: new Date().toISOString() })
+    .eq('id', outboxId)
+    .eq('status', 'pending')
+    .select('id')
+    .maybeSingle()
+  if (claimErr) throw new Error(`claim failed: ${claimErr.message}`)
+  if (!claimed) return { status: 'skipped', outboxId, flagId }
 
   // Idempotency pre-check: an active link means the task already exists.
   const { data: existingLink, error: linkReadErr } = await supabase
@@ -188,15 +265,21 @@ export async function runNextAsanaOutbox(
     .maybeSingle()
   if (linkReadErr) throw new Error(`link pre-check failed: ${linkReadErr.message}`)
   if (existingLink) {
-    await supabase
-      .from('integration_outbox')
-      .update({ status: 'done', processed_at: new Date().toISOString() })
-      .eq('id', outboxId)
+    await markOutbox(supabase, outboxId, {
+      status: 'done',
+      processed_at: new Date().toISOString(),
+      locked_at: null,
+    })
     return { status: 'already_linked', outboxId, flagId }
   }
 
   const payload = await buildPayloadForFlag(supabase, flagId, deps)
   if (!payload) {
+    await markOutbox(supabase, outboxId, {
+      status: 'dead',
+      last_error: 'flag not found',
+      locked_at: null,
+    })
     return { status: 'refused', outboxId, flagId, reason: 'flag not found' }
   }
 
@@ -205,12 +288,13 @@ export async function runNextAsanaOutbox(
   try {
     created = await provider.createTask(payload)
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    await supabase
-      .from('integration_outbox')
-      .update({ attempt_count: attemptCount + 1, last_error: message })
-      .eq('id', outboxId)
-    return { status: 'error', outboxId, flagId, error: message }
+    return failRetry(
+      supabase,
+      outboxId,
+      flagId,
+      attemptCount,
+      err instanceof Error ? err.message : String(err),
+    )
   }
 
   // Write-back: link first (idempotent), then flag, then outbox done.
@@ -227,14 +311,13 @@ export async function runNextAsanaOutbox(
     last_synced_at: new Date().toISOString(),
   })
   if (insertErr && insertErr.code !== '23505') {
-    await supabase
-      .from('integration_outbox')
-      .update({
-        attempt_count: attemptCount + 1,
-        last_error: `link insert failed: ${insertErr.message}`,
-      })
-      .eq('id', outboxId)
-    return { status: 'error', outboxId, flagId, error: insertErr.message }
+    return failRetry(
+      supabase,
+      outboxId,
+      flagId,
+      attemptCount,
+      `link insert failed: ${insertErr.message}`,
+    )
   }
 
   await supabase
@@ -242,10 +325,11 @@ export async function runNextAsanaOutbox(
     .update({ asana_task_url: created.externalTaskUrl })
     .eq('id', flagId)
 
-  await supabase
-    .from('integration_outbox')
-    .update({ status: 'done', processed_at: new Date().toISOString() })
-    .eq('id', outboxId)
+  await markOutbox(supabase, outboxId, {
+    status: 'done',
+    processed_at: new Date().toISOString(),
+    locked_at: null,
+  })
 
   return {
     status: 'created',
@@ -254,4 +338,25 @@ export async function runNextAsanaOutbox(
     externalTaskGid: created.externalTaskGid,
     externalTaskUrl: created.externalTaskUrl,
   }
+}
+
+/**
+ * Process up to `batchSize` pending rows in one (cron) tick. Recovers
+ * stale claims first, then loops, stopping early when the queue empties.
+ */
+export async function runAsanaOutboxBatch(
+  supabase: SupabaseClient,
+  provider: TaskProvider,
+  deps: DryRunDeps,
+  batchSize: number,
+): Promise<RealRunResult[]> {
+  await resetStaleProcessing(supabase)
+  const results: RealRunResult[] = []
+  const limit = Math.max(1, batchSize)
+  for (let i = 0; i < limit; i++) {
+    const result = await runNextAsanaOutbox(supabase, provider, deps)
+    results.push(result)
+    if (result.status === 'no_pending') break
+  }
+  return results
 }
