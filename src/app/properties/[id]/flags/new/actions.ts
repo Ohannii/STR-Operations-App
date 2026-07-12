@@ -28,6 +28,9 @@ export async function createFlagAction(formData: FormData) {
   const categoryKey = String(formData.get('category_key') ?? '').trim()
   const severity = String(formData.get('severity') ?? 'low').trim()
   const description = String(formData.get('description') ?? '').trim()
+  // Optional short title. maxLength on the input guards normal entry;
+  // slice(0, 80) is a defensive server-side cap (no error/redirect).
+  const issueTitle = String(formData.get('issue_title') ?? '').trim().slice(0, 80)
   const accountabilityRaw = String(formData.get('chargeable_party_decision') ?? '').trim()
 
   const formUrl = `/properties/${propertyId}/flags/new?category=${encodeURIComponent(categoryKey)}`
@@ -109,6 +112,7 @@ export async function createFlagAction(formData: FormData) {
       status: 'raised',
       severity,
       description,
+      issue_title: issueTitle || null,
       chargeable_party_decision: accountability,
       raised_by: ctx.user.id,
     })

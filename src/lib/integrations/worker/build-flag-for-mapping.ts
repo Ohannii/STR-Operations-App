@@ -12,6 +12,7 @@ import { chargeablePartyDisplay } from '@/lib/ui/flag-status'
 export interface OutboxFlagRow {
   id: string
   description: string
+  issueTitle: string | null
   severity: 'low' | 'med' | 'high'
   status: string
   accountability: string | null
@@ -30,6 +31,7 @@ export function buildFlagForMapping(
   return {
     id: row.id,
     description: row.description,
+    issueTitle: row.issueTitle ?? undefined,
     severity: row.severity,
     categoryKey: row.categoryKey,
     categoryLabel: row.categoryLabel,

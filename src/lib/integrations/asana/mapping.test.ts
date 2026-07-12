@@ -95,10 +95,10 @@ describe('mapFlagToTaskPayload — category-based section routing', () => {
 })
 
 describe('mapFlagToTaskPayload — task name', () => {
-  it('formats "[Group] Property — summary"', () => {
+  it('formats "<title/summary> — <property> [Category]"', () => {
     const payload = mapFlagToTaskPayload(baseFlag())
     expect(payload.name).toBe(
-      '[Maintenance] Ballito Villa 204 — Leaking tap under kitchen sink',
+      'Leaking tap under kitchen sink — Ballito Villa 204 [Maintenance]',
     )
   })
 
@@ -113,21 +113,21 @@ describe('mapFlagToTaskPayload — task name', () => {
 })
 
 describe('mapFlagToTaskPayload — guest charge is unmissable', () => {
-  it('adds [GUEST CHARGE] prefix + body marker when guest-chargeable', () => {
+  it('adds a [Guest charge] tag + body marker when guest-chargeable', () => {
     const payload = mapFlagToTaskPayload(
       baseFlag({ accountability: 'guest_damage', accountabilityLabel: 'Guest damage' }),
     )
-    expect(payload.name.startsWith('[GUEST CHARGE] ')).toBe(true)
+    expect(payload.name).toContain(' [Guest charge]')
     expect(payload.notes).toContain('GUEST CHARGE')
     expect(payload.notes).toMatch(/Chargeable to:\s+Guest damage/)
   })
 
-  it('no guest prefix when not guest-chargeable', () => {
+  it('no guest-charge tag when not guest-chargeable', () => {
     const payload = mapFlagToTaskPayload(
       baseFlag({ accountability: 'owner_chargeable', accountabilityLabel: 'Owner-chargeable' }),
     )
-    expect(payload.name.startsWith('[GUEST CHARGE]')).toBe(false)
-    expect(payload.name.startsWith('[Maintenance]')).toBe(true)
+    expect(payload.name).not.toContain('[Guest charge]')
+    expect(payload.name).toContain('[Maintenance]')
   })
 
   it('isGuestChargeable detects canonical and legacy values', () => {
@@ -173,21 +173,21 @@ describe('mapFlagToTaskPayload — body + safety due date', () => {
 describe('mapFlagToTaskPayload — issue title (title-ready)', () => {
   it('uses issueTitle in the name when present', () => {
     const payload = mapFlagToTaskPayload(baseFlag({ issueTitle: 'Broken pot' }))
-    expect(payload.name).toBe('[Maintenance] Ballito Villa 204 — Broken pot')
+    expect(payload.name).toBe('Broken pot — Ballito Villa 204 [Maintenance]')
   })
 
   it('falls back to the description summary when issueTitle is missing or blank', () => {
     const missing = mapFlagToTaskPayload(baseFlag())
     expect(missing.name).toBe(
-      '[Maintenance] Ballito Villa 204 — Leaking tap under kitchen sink',
+      'Leaking tap under kitchen sink — Ballito Villa 204 [Maintenance]',
     )
     const blank = mapFlagToTaskPayload(baseFlag({ issueTitle: '   ' }))
     expect(blank.name).toBe(
-      '[Maintenance] Ballito Villa 204 — Leaking tap under kitchen sink',
+      'Leaking tap under kitchen sink — Ballito Villa 204 [Maintenance]',
     )
   })
 
-  it('keeps the [GUEST CHARGE] prefix alongside a title', () => {
+  it('keeps the guest-charge tag alongside a title', () => {
     const payload = mapFlagToTaskPayload(
       baseFlag({
         issueTitle: 'Broken pot',
@@ -195,7 +195,7 @@ describe('mapFlagToTaskPayload — issue title (title-ready)', () => {
         accountabilityLabel: 'Guest damage',
       }),
     )
-    expect(payload.name).toBe('[GUEST CHARGE] [Maintenance] Ballito Villa 204 — Broken pot')
+    expect(payload.name).toBe('Broken pot — Ballito Villa 204 [Maintenance] [Guest charge]')
   })
 
   it('truncates an over-long issueTitle and strips newlines', () => {

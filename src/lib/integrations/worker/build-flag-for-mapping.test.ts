@@ -8,6 +8,7 @@ function row(overrides: Partial<OutboxFlagRow> = {}): OutboxFlagRow {
   return {
     id: 'flag-1',
     description: 'Leaking tap',
+    issueTitle: null,
     severity: 'med',
     status: 'raised',
     accountability: null,
@@ -55,5 +56,15 @@ describe('buildFlagForMapping', () => {
   it('falls back the reporter name when missing', () => {
     const m = buildFlagForMapping(row({ reporterName: null }), { appBaseUrl: 'https://x' })
     expect(m.reporterName).toBe('Unknown')
+  })
+
+  it('passes issueTitle through (null becomes undefined)', () => {
+    expect(
+      buildFlagForMapping(row({ issueTitle: 'Broken pot' }), { appBaseUrl: 'https://x' })
+        .issueTitle,
+    ).toBe('Broken pot')
+    expect(
+      buildFlagForMapping(row({ issueTitle: null }), { appBaseUrl: 'https://x' }).issueTitle,
+    ).toBeUndefined()
   })
 })

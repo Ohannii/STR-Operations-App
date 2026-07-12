@@ -9,8 +9,8 @@
  *    re-assert that via assertAllowedProject — a bug can never point a
  *    task at a live project.
  *  - Guest charges are the main recovery workflow, so guest-chargeable
- *    accountability is made visually unmissable: a `[GUEST CHARGE]`
- *    name prefix and a marked body line. (For the beta we do NOT
+ *    accountability is made visually unmissable: a `[Guest charge]`
+ *    name tag and a marked body line. (For the beta we do NOT
  *    override section routing — routing stays category-based.)
  *
  * Routing reuses the app's existing category-group logic
@@ -100,14 +100,14 @@ export function mapFlagToTaskPayload(flag: FlagForMapping): TaskPayload {
   assertAllowedProject(projectGid)
 
   const guestCharge = isGuestChargeable(flag.accountability)
-  const namePrefix = guestCharge ? '[GUEST CHARGE] ' : ''
-  // Title-ready: prefer a short inspector title; fall back to the
-  // description summary when none is present. Both go through the same
-  // trim/truncate so the name stays clean.
+  // Prefer a short inspector title; fall back to the description summary.
+  // Both go through the same trim/truncate so the name stays clean.
   const trimmedTitle = flag.issueTitle?.trim() ?? ''
   const titleOrSummary =
     trimmedTitle.length > 0 ? summarise(trimmedTitle) : summarise(flag.description)
-  const name = `${namePrefix}[${groupLabel(groupId)}] ${flag.propertyName} — ${titleOrSummary}`
+  // Human-scannable order: "<title> — <property> [<Category>] [Guest charge]".
+  const chargeTag = guestCharge ? ' [Guest charge]' : ''
+  const name = `${titleOrSummary} — ${flag.propertyName} [${groupLabel(groupId)}]${chargeTag}`
 
   const appUrl = `${flag.appBaseUrl.replace(/\/+$/, '')}/properties/${flag.propertyId}/flags/${flag.id}`
 
