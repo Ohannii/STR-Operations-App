@@ -83,6 +83,8 @@ type FlagRow = {
   status: string
   severity: string
   description: string | null
+  issue_title?: string | null
+  asana_task_url?: string | null
   raised_at: string
   // Session 7: needed for inline chip eligibility on Action Centre.
   chargeable_party_decision?: string | null
@@ -158,6 +160,8 @@ export default async function PropertyPage({
       status,
       severity,
       description,
+      issue_title,
+      asana_task_url,
       raised_at,
       chargeable_party_decision,
       flag_category:flag_categories (
@@ -1148,11 +1152,20 @@ function FlagCardInline({
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 mb-1">
-                <span className="text-sm font-semibold text-slate-900">
+                <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
                   {cat?.label ?? 'Flag'}
                 </span>
                 <Badge tone={sev.tone}>{sev.label}</Badge>
                 <Badge tone="slate">{flag.status}</Badge>
+                <span className="inline-flex items-center gap-1 text-[11px] font-medium">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${flag.asana_task_url ? 'bg-emerald-500' : 'bg-amber-400'}`}
+                    aria-hidden
+                  />
+                  <span className={flag.asana_task_url ? 'text-emerald-700' : 'text-amber-700'}>
+                    {flag.asana_task_url ? 'Asana logged' : 'Asana pending'}
+                  </span>
+                </span>
                 {photoCount > 0 ? (
                   <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-600">
                     <Camera size={11} aria-hidden />
@@ -1160,11 +1173,14 @@ function FlagCardInline({
                   </span>
                 ) : null}
               </div>
-              {flag.description ? (
-                <p className="text-sm text-slate-700 leading-snug">{flag.description}</p>
-              ) : (
-                <p className="text-sm text-slate-400 italic">No description</p>
-              )}
+              <p className="text-sm font-semibold text-slate-900 leading-snug line-clamp-2">
+                {flag.issue_title?.trim() || flag.description?.trim() || 'No description'}
+              </p>
+              {flag.issue_title?.trim() && flag.description?.trim() ? (
+                <p className="text-xs text-slate-500 leading-snug mt-0.5 line-clamp-2">
+                  {flag.description}
+                </p>
+              ) : null}
               {activeChipKinds.length > 0 ? (
                 <div className="flex flex-wrap gap-1 mt-2">
                   {activeChipKinds.map((kind) => {
@@ -1258,9 +1274,9 @@ function FlagCardInline({
             <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 pt-3 border-t border-slate-100">
               <Link
                 href={`/properties/${propertyId}/flags/${flag.id}`}
-                className="text-xs text-slate-600 hover:text-slate-900 hover:underline inline-flex items-center gap-1"
+                className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 active:bg-slate-100 transition"
               >
-                View details <ChevronRight size={12} aria-hidden />
+                View details <ChevronRight size={14} aria-hidden />
               </Link>
               <form action={updateFlagAction}>
                 <input type="hidden" name="property_id" value={propertyId} />

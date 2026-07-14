@@ -539,6 +539,9 @@ export default async function FlagDetailPage({
                 <Badge tone={status.tone}>{status.label}</Badge>
                 <Badge tone={sev.tone}>{sev.label}</Badge>
                 <Badge tone={charge.tone}>Responsibility: {charge.label}</Badge>
+                <Badge tone={flag.asana_task_url ? 'emerald' : 'amber'}>
+                  {flag.asana_task_url ? 'Asana logged' : 'Asana pending'}
+                </Badge>
               </div>
               {/* Secondary actions below the title so they don't squeeze the
                   heading on mobile. Both open in a new tab. */}
