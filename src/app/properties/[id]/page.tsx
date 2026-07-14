@@ -25,6 +25,7 @@ import { Card } from '@/components/ui/card'
 import { StaticChip, ToggleChip } from '@/components/ui/chip'
 import { EmptyState } from '@/components/ui/empty-state'
 import { getUserContext } from '@/lib/auth/get-user-context'
+import { startPerf } from '@/lib/perf'
 import { createClient } from '@/lib/supabase/server'
 import {
   CHIP_WORKFLOW_GROUPS,
@@ -114,9 +115,11 @@ export default async function PropertyPage({
     capture_now?: string
   }>
 }) {
+  const perf = startPerf('/properties/[id]')
   const ctx = await getUserContext()
   if (!ctx) redirect('/login')
   if (!ctx.company) redirect('/onboard')
+  perf.mark('context')
 
   const { id } = await params
   const {
@@ -313,6 +316,8 @@ export default async function PropertyPage({
       draftPackPhotosQuery,
       submittedPackPhotosQuery,
     ])
+  perf.mark('queries')
+  perf.done()
 
   const activeMarksByFlagId = (marksRes?.data ?? []).reduce<
     Record<string, ChipKind[]>

@@ -1,3 +1,4 @@
+import { cache } from 'react'
 import { createClient } from '@/lib/supabase/server'
 
 /**
@@ -58,13 +59,22 @@ function pickEmbedded(value: EmbeddedCompany | EmbeddedCompany[] | null): Embedd
   return Array.isArray(value) ? (value[0] ?? null) : value
 }
 
-export async function getUserContext(): Promise<UserContext | null> {
+export const getUserContext = cache(async (): Promise<UserContext | null> => {
+  // TEMPORARY perf diagnostics (Slice 11a-perf) — remove after measuring.
+  const _t0 = performance.now()
   const supabase = await createClient()
+  const _t1 = performance.now()
 
   const {
     data: { user },
   } = await supabase.auth.getUser()
-  if (!user) return null
+  const _t2 = performance.now()
+  if (!user) {
+    console.log(
+      `[perf][getUserContext] client=${(_t1 - _t0).toFixed(0)}ms getUser=${(_t2 - _t1).toFixed(0)}ms (no user)`,
+    )
+    return null
+  }
 
   // Two parallel reads:
   //   - profile (own profile only)
@@ -98,6 +108,9 @@ export async function getUserContext(): Promise<UserContext | null> {
     { data: profile },
     { data: memberships, error: membershipError },
   ] = await Promise.all([profilePromise, membershipPromise])
+  console.log(
+    `[perf][getUserContext] client=${(_t1 - _t0).toFixed(0)}ms getUser=${(_t2 - _t1).toFixed(0)}ms ctxQueries=${(performance.now() - _t2).toFixed(0)}ms`,
+  )
 
   if (membershipError) {
     console.error('[getUserContext] membership lookup error:', membershipError)
@@ -115,4 +128,4 @@ export async function getUserContext(): Promise<UserContext | null> {
     membership,
     company,
   }
-}
+})

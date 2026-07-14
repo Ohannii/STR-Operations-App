@@ -4,6 +4,7 @@ import { ArrowLeft, ChevronRight, Flag as FlagIcon } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { Badge } from '@/components/ui/badge'
 import { getUserContext } from '@/lib/auth/get-user-context'
+import { startPerf } from '@/lib/perf'
 import { createClient } from '@/lib/supabase/server'
 import { getFlagCategoryDisplay, severityDisplay } from '@/lib/ui/flag-category'
 import { flagStatusDisplay } from '@/lib/ui/flag-status'
@@ -43,9 +44,11 @@ function pick(value: Rel): { id?: string; key?: string; name?: string } | null {
 }
 
 export default async function DashboardFlagsPage() {
+  const perf = startPerf('/dashboard/flags')
   const ctx = await getUserContext()
   if (!ctx) redirect('/login')
   if (!ctx.company) redirect('/onboard')
+  perf.mark('context')
 
   const supabase = await createClient()
   const { data: flags, error } = await supabase
@@ -63,6 +66,8 @@ export default async function DashboardFlagsPage() {
     .order('raised_at', { ascending: false })
     .limit(200)
     .returns<OpenFlagRow[]>()
+  perf.mark('queries')
+  perf.done()
 
   const rows = flags ?? []
 
