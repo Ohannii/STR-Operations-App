@@ -126,10 +126,11 @@ export default async function DashboardPage() {
             icon={Flag}
             label="Open flags"
             value={openFlagsCount ?? 0}
+            href="/dashboard/flags"
             hint={
               (openFlagsCount ?? 0) === 0
                 ? 'Nothing open right now.'
-                : 'Across all apartments.'
+                : 'View all open flags.'
             }
           />
           <SnapshotCard
@@ -323,15 +324,17 @@ function SnapshotCard({
   value,
   hint,
   muted = false,
+  href,
 }: {
   icon: LucideIcon
   label: string
   value: number
   hint?: string
   muted?: boolean
+  href?: string
 }) {
-  return (
-    <Card>
+  const inner = (
+    <Card className={href ? 'h-full transition hover:border-slate-300 hover:shadow-sm' : undefined}>
       <div className="p-4">
         <div className="flex items-center justify-between mb-3">
           <span className="text-xs font-medium text-slate-600">{label}</span>
@@ -349,6 +352,17 @@ function SnapshotCard({
         {hint ? <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">{hint}</p> : null}
       </div>
     </Card>
+  )
+
+  return href ? (
+    <Link
+      href={href}
+      className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900"
+    >
+      {inner}
+    </Link>
+  ) : (
+    inner
   )
 }
 

@@ -1110,6 +1110,7 @@ function FlagCardInline({
     ? expandedArr.filter((idValue) => idValue !== flag.id).sort()
     : [...expandedArr, flag.id].sort()
   const toggleHref = `/properties/${propertyId}${buildOpenQuery(nextOpenIds)}#flag-${flag.id}`
+  const detailHref = `/properties/${propertyId}/flags/${flag.id}`
 
   // return_to URLs:
   //   - chip toggles preserve the current expansion (so the flag
@@ -1134,13 +1135,15 @@ function FlagCardInline({
     <li id={`flag-${flag.id}`}>
       <Card className="overflow-hidden">
         {/* Collapsed summary header (also the expand/collapse control) */}
-        <Link
-          href={toggleHref}
-          aria-expanded={isExpanded}
-          aria-label={`${isExpanded ? 'Collapse' : 'Expand'} flag: ${cat?.label ?? 'Flag'}`}
-          className="block p-4 hover:bg-slate-50/60 focus-visible:outline-none focus-visible:bg-slate-50 transition-colors"
-        >
-          <div className="flex items-start gap-3">
+        <div className="flex items-start gap-3 p-4">
+          {/* Card body opens the flag detail page (tap-to-open). The
+              chevron beside it is a separate control that expands the
+              inline operational panel. */}
+          <Link
+            href={detailHref}
+            aria-label={`Open flag: ${flag.issue_title?.trim() || cat?.label || 'Flag'}`}
+            className="flex items-start gap-3 min-w-0 flex-1 rounded-lg hover:bg-slate-50/60 focus-visible:outline-none focus-visible:bg-slate-50 transition-colors"
+          >
             <div
               className={
                 cat?.tone === 'red'
@@ -1201,15 +1204,20 @@ function FlagCardInline({
                 Raised {relativeTime(flag.raised_at)}
               </p>
             </div>
+          </Link>
+          <Link
+            href={toggleHref}
+            aria-expanded={isExpanded}
+            aria-label={`${isExpanded ? 'Collapse' : 'Expand'} operational status`}
+            className="shrink-0 self-start p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 transition-colors"
+          >
             <ChevronDown
               size={18}
-              className={`shrink-0 text-slate-400 transition-transform ${
-                isExpanded ? 'rotate-180' : ''
-              }`}
+              className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`}
               aria-hidden
             />
-          </div>
-        </Link>
+          </Link>
+        </div>
 
         {/* Expanded panel — workflow chip groups + Mark Resolved */}
         {isExpanded ? (
