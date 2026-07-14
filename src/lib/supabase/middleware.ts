@@ -42,9 +42,12 @@ export async function updateSession(request: NextRequest) {
 
   // IMPORTANT: getUser() (not getSession()) is the only way to revalidate
   // the user against the Auth server. getSession() trusts the JWT locally.
+  // TEMPORARY perf diagnostics (Slice 11a-perf) — remove after measuring.
+  const _t = performance.now()
   const {
     data: { user },
   } = await supabase.auth.getUser()
+  console.log(`[perf][proxy] getUser=${(performance.now() - _t).toFixed(0)}ms`)
 
   return { response, user }
 }

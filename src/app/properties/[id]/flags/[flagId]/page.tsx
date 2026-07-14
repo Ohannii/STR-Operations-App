@@ -23,6 +23,7 @@ import { Card } from '@/components/ui/card'
 import { RadioChip, ToggleChip } from '@/components/ui/chip'
 import { Field } from '@/components/ui/input'
 import { getUserContext } from '@/lib/auth/get-user-context'
+import { startPerf } from '@/lib/perf'
 import {
   THUMB_TTL_SECONDS,
   signEvidencePaths,
@@ -203,9 +204,11 @@ export default async function FlagDetailPage({
     error?: string
   }>
 }) {
+  const perf = startPerf('/properties/[id]/flags/[flagId]')
   const ctx = await getUserContext()
   if (!ctx) redirect('/login')
   if (!ctx.company) redirect('/onboard')
+  perf.mark('context')
 
   const { id: propertyId, flagId } = await params
   const {
@@ -327,6 +330,8 @@ export default async function FlagDetailPage({
     marksPromise,
     photosPromise,
   ])
+  perf.mark('queries')
+  perf.done()
 
   if (!property || !flag) notFound()
 

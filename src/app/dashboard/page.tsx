@@ -19,6 +19,7 @@ import { buttonClasses } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
 import { getUserContext } from '@/lib/auth/get-user-context'
+import { startPerf } from '@/lib/perf'
 import { createClient } from '@/lib/supabase/server'
 import { propertyStatusDisplay } from '@/lib/ui/property-status'
 
@@ -39,9 +40,11 @@ import { propertyStatusDisplay } from '@/lib/ui/property-status'
  *   4. Tiny footer note about the staging environment.
  */
 export default async function DashboardPage() {
+  const perf = startPerf('/dashboard')
   const ctx = await getUserContext()
   if (!ctx) redirect('/login')
   if (!ctx.company) redirect('/onboard')
+  perf.mark('context')
 
   const supabase = await createClient()
 
@@ -86,6 +89,8 @@ export default async function DashboardPage() {
     openFlagsCountPromise,
     openRecoveryCountPromise,
   ])
+  perf.mark('queries')
+  perf.done()
 
   const propertyCount = properties?.length ?? 0
   const userDisplayName = ctx.profile?.full_name ?? ctx.user.email ?? 'there'
