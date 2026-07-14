@@ -15,8 +15,15 @@ import {
   deriveRetentionClass,
   type RetentionClass,
 } from '@/lib/photos/retention'
+import { isUuid } from '@/lib/photos/finalize-helpers'
+import { checkFlagPhotoCollision } from '@/lib/photos/collision-check'
+import {
+  buildFlagPhotoSlot,
+  type FlagPhotoSlotResult,
+} from '@/lib/photos/flag-upload-plan'
 import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 
 /**
  * Evidence photo server actions.
@@ -262,6 +269,231 @@ export async function requestPhotoUploadSlot(input: {
 }
 
 // ----------------------------------------------------------------
+// requestFlagPhotoUploadSlot — new-flag capture (Slice 11B-1)
+// ----------------------------------------------------------------
+//
+// Dedicated signing endpoint for the field-team new-flag flow, where the
+// flag does NOT exist yet and the client generates the flag + photo ids.
+// Kept separate from requestPhotoUploadSlot because the return shape
+// differs (create-only, per-object, and an already_uploaded state).
+//
+// Evidence-integrity guarantees:
+//   * CREATE-ONLY signed URLs (no upsert). A signed URL outlives its
+//     issuance, so an upsert URL could overwrite evidence finalised in the
+//     meantime. Create-only means a stale URL fails the moment its target
+//     object exists — finalised evidence is never overwritable.
+//   * Collision guard (service-role, RLS-bypassing) rejects any existing
+//     flag/photo row, including soft-deleted or cross-company.
+//   * Per-object existence check → partial retries only re-sign the object
+//     still missing; when both exist we return already_uploaded with NO
+//     overwrite URLs. To replace a pre-finalisation photo, delete it first
+//     via removeFlagPhotoObjects, then request fresh URLs.
+//   * Storage paths are derived server-side; never accepted from the caller.
+
+export async function requestFlagPhotoUploadSlot(input: {
+  propertyId: string
+  proposedFlagId: string
+  photoId: string
+}): Promise<FlagPhotoSlotResult> {
+  const ctx = await getUserContext()
+  if (!ctx || !ctx.company) {
+    return { ok: false, error: 'Not authenticated.' }
+  }
+
+  const propertyId = String(input.propertyId ?? '').trim()
+  const proposedFlagId = String(input.proposedFlagId ?? '').trim()
+  const photoId = String(input.photoId ?? '').trim()
+
+  if (!propertyId) {
+    return { ok: false, error: 'Missing property reference.' }
+  }
+  if (!isUuid(proposedFlagId) || !isUuid(photoId)) {
+    return { ok: false, error: 'Invalid flag or photo id.' }
+  }
+
+  const supabase = await createClient()
+
+  // Verify the property belongs to the caller's company (RLS-scoped).
+  const { data: property, error: propertyErr } = await supabase
+    .from('properties')
+    .select('id, company_id')
+    .eq('id', propertyId)
+    .is('deleted_at', null)
+    .maybeSingle<{ id: string; company_id: string }>()
+  if (propertyErr) {
+    console.error('[photos/sign-flag] property read error:', propertyErr)
+    return { ok: false, error: propertyErr.message }
+  }
+  if (!property) {
+    return { ok: false, error: 'Property not found.' }
+  }
+  if (property.company_id !== ctx.company.id) {
+    return { ok: false, error: 'Property is not in your company.' }
+  }
+
+  // Collision guard (service-role) — reject any existing flag/photo row,
+  // including soft-deleted / cross-company. Runs only after auth + company
+  // + property-ownership above. Never writes.
+  const admin = createServiceClient()
+  const collision = await checkFlagPhotoCollision(admin, { proposedFlagId, photoId })
+  if (!collision.ok) {
+    return { ok: false, error: collision.error }
+  }
+
+  // Paths derived server-side (never from the caller).
+  const storageCtx: StorageContext = {
+    kind: 'flag',
+    companyId: property.company_id,
+    flagId: proposedFlagId,
+    photoId,
+  }
+  const masterPath = masterStoragePath(storageCtx)
+  const thumbPath = thumbStoragePath(storageCtx)
+
+  // Exact object-existence check for partial-retry planning.
+  const prefix = `companies/${property.company_id}/flags/${proposedFlagId}`
+  const { data: objects, error: listErr } = await supabase.storage
+    .from(EVIDENCE_BUCKET)
+    .list(prefix, { limit: 100 })
+  if (listErr) {
+    console.error('[photos/sign-flag] storage list error:', listErr)
+    return { ok: false, error: `Could not check existing uploads: ${listErr.message}` }
+  }
+  const present = new Set((objects ?? []).map((o) => o.name))
+  const masterExists = present.has(`${photoId}.jpg`)
+  const thumbExists = present.has(`${photoId}_thumb.jpg`)
+
+  // Create-only signer — NO upsert. (The CreateOnlySigner type has no
+  // upsert parameter, so overwrite cannot be requested here.)
+  const sign = async (path: string) => {
+    const { data, error } = await supabase.storage
+      .from(EVIDENCE_BUCKET)
+      .createSignedUploadUrl(path)
+    if (error || !data) {
+      console.error('[photos/sign-flag] create-only sign error:', error)
+      return null
+    }
+    return { signedUrl: data.signedUrl, token: data.token }
+  }
+
+  return buildFlagPhotoSlot(
+    {
+      photoId,
+      companyId: property.company_id,
+      masterPath,
+      thumbPath,
+      masterExists,
+      thumbExists,
+    },
+    sign,
+  )
+}
+
+// ----------------------------------------------------------------
+// removeFlagPhotoObjects — pre-finalisation cleanup (Slice 11B)
+// ----------------------------------------------------------------
+//
+// When a field inspector removes a photo from the uploader BEFORE
+// submitting the flag, its bytes are already in Storage but no
+// photos row exists yet. We delete the orphaned master + thumb so
+// they don't linger.
+//
+// Decision A (11B-1): there is deliberately NO broad company-scoped
+// storage.objects DELETE policy (migration 0012 header). Deletion
+// runs through a service-role client instead — but tightly fenced:
+//   * caller must be authenticated;
+//   * company is resolved server-side from the property (not trusted
+//     from the client);
+//   * we accept ONLY { propertyId, proposedFlagId, photoId } and
+//     validate every id;
+//   * paths are DERIVED server-side under the caller's company —
+//     an arbitrary Storage path can never be passed in;
+//   * removal is allowed ONLY before finalisation: if the flag row
+//     or a matching photos row already exists, we refuse (finalised
+//     evidence is immutable / soft-delete only).
+// The service-role key stays server-only (createServiceClient begins
+// with `import 'server-only'`).
+//
+// If deletion cannot complete cleanly the bytes are left as orphans
+// (see the orphan-cleanup note at the foot of this file); we never
+// block the user's flow on a best-effort cleanup.
+
+export async function removeFlagPhotoObjects(input: {
+  propertyId: string
+  proposedFlagId: string
+  photoId: string
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const ctx = await getUserContext()
+  if (!ctx || !ctx.company) {
+    return { ok: false, error: 'Not authenticated.' }
+  }
+
+  const propertyId = String(input.propertyId ?? '').trim()
+  const proposedFlagId = String(input.proposedFlagId ?? '').trim()
+  const photoId = String(input.photoId ?? '').trim()
+
+  if (!propertyId || !isUuid(proposedFlagId) || !isUuid(photoId)) {
+    return { ok: false, error: 'Invalid id.' }
+  }
+
+  const supabase = await createClient()
+
+  // Company resolved server-side from the property (RLS-scoped read).
+  const { data: property, error: propertyErr } = await supabase
+    .from('properties')
+    .select('id, company_id')
+    .eq('id', propertyId)
+    .is('deleted_at', null)
+    .maybeSingle<{ id: string; company_id: string }>()
+  if (propertyErr) {
+    console.error('[photos/remove] property read error:', propertyErr)
+    return { ok: false, error: propertyErr.message }
+  }
+  if (!property || property.company_id !== ctx.company.id) {
+    return { ok: false, error: 'Property is not in your company.' }
+  }
+
+  // Refuse once finalised: either the flag exists, or a photos row
+  // for this id already exists. (RLS scopes both reads to the
+  // caller's company.)
+  const [{ data: existingFlag }, { data: existingPhoto }] = await Promise.all([
+    supabase.from('flags').select('id').eq('id', proposedFlagId).maybeSingle(),
+    supabase.from('photos').select('id').eq('id', photoId).maybeSingle(),
+  ])
+  if (existingFlag) {
+    return { ok: false, error: 'This flag is already finalised.' }
+  }
+  if (existingPhoto) {
+    return { ok: false, error: 'This photo is already recorded.' }
+  }
+
+  // Paths derived server-side under the caller's own company —
+  // never a client-supplied path, so we can only ever target the
+  // caller's own company prefix.
+  const master = masterStoragePath({
+    kind: 'flag',
+    companyId: ctx.company.id,
+    flagId: proposedFlagId,
+    photoId,
+  })
+  const thumb = thumbStoragePath({
+    kind: 'flag',
+    companyId: ctx.company.id,
+    flagId: proposedFlagId,
+    photoId,
+  })
+
+  const admin = createServiceClient()
+  const { error } = await admin.storage.from(EVIDENCE_BUCKET).remove([master, thumb])
+  if (error) {
+    console.error('[photos/remove] storage remove error:', error)
+    return { ok: false, error: error.message }
+  }
+
+  return { ok: true }
+}
+
+// ----------------------------------------------------------------
 // attachEvidencePhoto — phase 2 of upload
 // ----------------------------------------------------------------
 //
@@ -494,3 +726,25 @@ export async function softDeleteEvidencePhoto(formData: FormData) {
   if (returnTo) redirect(returnTo)
   redirect(`${detailUrl}?photo_deleted=1`)
 }
+
+// ----------------------------------------------------------------
+// Orphan-cleanup rule (documented; no cleanup worker this slice)
+// ----------------------------------------------------------------
+//
+// Two ways bytes can end up in Storage with no matching photos row:
+//   1. A new-flag capture uploads master/thumb, then the inspector
+//      abandons the flag without submitting (removeFlagPhotoObjects
+//      is best-effort — a failed remove leaves the bytes behind).
+//   2. A submitted photo is later soft-deleted (deleted_at set); its
+//      bytes are intentionally retained today (see migration 0012).
+//
+// A FUTURE service-role cleanup job (NOT part of 11B) may safely purge
+// objects under companies/{companyId}/flags/{flagId}/ when:
+//   * there is NO non-deleted photos row whose storage_path /
+//     thumbnail_path matches the object, AND
+//   * the object is older than a safety window (e.g. 7 days) so an
+//     in-flight upload is never deleted mid-capture.
+// Retention-classed, finalised photos are out of scope for any such
+// job — only genuine orphans are eligible. No worker is required for
+// the beta; orphan storage cost is negligible next to retained
+// evidence.
