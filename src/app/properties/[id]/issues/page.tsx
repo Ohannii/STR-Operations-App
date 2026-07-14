@@ -43,6 +43,8 @@ type IssueRow = {
   status: string
   severity: string
   description: string | null
+  issue_title?: string | null
+  asana_task_url?: string | null
   raised_at: string
   flag_category: CategoryRel
 }
@@ -81,7 +83,7 @@ export default async function IssuesPage({
     .from('flags')
     .select(
       `
-      id, status, severity, description, raised_at,
+      id, status, severity, description, issue_title, asana_task_url, raised_at,
       flag_category:flag_categories ( id, key )
       `,
     )
@@ -328,17 +330,29 @@ function IssueRowCard({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2 mb-0.5">
-            <span className="text-sm font-semibold text-slate-900">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
               {display?.label ?? 'Issue'}
             </span>
             <Badge tone={sev.tone}>{sev.label}</Badge>
             <Badge tone={status.tone}>{status.label}</Badge>
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium">
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${issue.asana_task_url ? 'bg-emerald-500' : 'bg-amber-400'}`}
+                aria-hidden
+              />
+              <span className={issue.asana_task_url ? 'text-emerald-700' : 'text-amber-700'}>
+                {issue.asana_task_url ? 'Asana logged' : 'Asana pending'}
+              </span>
+            </span>
           </div>
-          {issue.description ? (
-            <p className="text-sm text-slate-700 leading-snug">{issue.description}</p>
-          ) : (
-            <p className="text-sm text-slate-400 italic">No description</p>
-          )}
+          <p className="text-sm font-semibold text-slate-900 leading-snug line-clamp-2">
+            {issue.issue_title?.trim() || issue.description?.trim() || 'No description'}
+          </p>
+          {issue.issue_title?.trim() && issue.description?.trim() ? (
+            <p className="text-xs text-slate-500 leading-snug mt-0.5 line-clamp-2">
+              {issue.description}
+            </p>
+          ) : null}
           <p className="text-[11px] text-slate-500 mt-1">
             Raised {relativeTime(issue.raised_at)}
           </p>
