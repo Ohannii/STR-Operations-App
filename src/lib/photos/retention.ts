@@ -41,6 +41,13 @@ export type RetentionClass =
  * `guest_damage` / `owner_chargeable` / `company_responsibility` (the
  * planned re-seed/back-fill has not run). Those legacy category keys are
  * handled here so no existing evidence is under-retained before back-fill.
+ *
+ * LOCKSTEP: the finalize_flag_with_photos RPC derives retention in SQL
+ * (public.derive_photo_retention_class, migration
+ * 20260712120000_finalize_flag_with_photos.sql) because that function is
+ * directly callable by authenticated users and must not trust a
+ * client-supplied class. Keep the SQL CASE and this function in sync
+ * (the SQL omits hasOpenDispute, which is always false at creation time).
  */
 export function deriveRetentionClass(input: {
   categoryKey: FlagCategoryKey | string | null | undefined
