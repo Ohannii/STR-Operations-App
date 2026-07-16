@@ -101,8 +101,22 @@ describe('safeAsciiFilename', () => {
   it('falls back to report.pdf for empty/garbage input', () => {
     expect(safeAsciiFilename('你好')).toBe('report.pdf')
   })
-  it('flagShareFilename is ascii + .pdf', () => {
-    const out = flagShareFilename('FR-ABCD1234', 'Unit 12 — Sea View', '2026-07-16')
+  it('flagShareFilename builds "{unit} - {title} - {date}.pdf"', () => {
+    expect(flagShareFilename('Test 1', 'Photo test', '16-07-2026')).toBe(
+      'Test 1 - Photo test - 16-07-2026.pdf',
+    )
+  })
+  it('flagShareFilename falls back to "Flag" when the title is empty', () => {
+    expect(flagShareFilename('Test 1', '', '16-07-2026')).toBe(
+      'Test 1 - Flag - 16-07-2026.pdf',
+    )
+    expect(flagShareFilename('Test 1', null, '16-07-2026')).toBe(
+      'Test 1 - Flag - 16-07-2026.pdf',
+    )
+  })
+  it('flagShareFilename stays ascii/filesystem-safe with unicode + em dashes', () => {
+    const out = flagShareFilename('Café — Sea View', 'Résumé 你好', '16-07-2026')
     expect(out).toMatch(/^[\x20-\x7E]+\.pdf$/)
+    expect(out).not.toMatch(/[/\\?%*:|"<>—]/)
   })
 })

@@ -34,6 +34,8 @@ export type FlagReportData = {
   description: string | null
   noActionReason: string | null
   raisedText: string
+  /** Raw raised-at ISO timestamp (for the stable share filename date). */
+  raisedAtIso: string
   raisedByName: string
   closedText: string | null
   photos: ReportPhoto[]
@@ -196,6 +198,7 @@ export async function loadFlagReportData(
     description: flag.description?.trim() || null,
     noActionReason: flag.no_action_reason?.trim() || null,
     raisedText: formatDateTimeSAST(flag.raised_at),
+    raisedAtIso: flag.raised_at,
     raisedByName: nameById.get(flag.raised_by) ?? 'Unknown',
     closedText: flag.closed_at ? formatDateTimeSAST(flag.closed_at) : null,
     photos,

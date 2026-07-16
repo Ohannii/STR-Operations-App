@@ -4,7 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { loadFlagReportData } from '@/lib/reports/report-data'
 import { ensureAndSignFlagReport } from '@/lib/reports/ensure-report-artifact'
 import { flagShareFilename } from '@/lib/reports/report-paths'
-import { formatDateSAST } from '@/lib/ui/datetime'
+import { formatDateDMY } from '@/lib/ui/datetime'
 
 // Node runtime — @react-pdf/renderer + Storage download/upload.
 export const runtime = 'nodejs'
@@ -53,9 +53,9 @@ export async function POST(
     }
     const url = await ensureAndSignFlagReport(ctx.company.id, flagId, data)
     const filename = flagShareFilename(
-      data.reportId,
       data.propertyName,
-      formatDateSAST(new Date().toISOString()),
+      data.issueTitle,
+      formatDateDMY(data.raisedAtIso),
     )
     return NextResponse.json({ url, filename })
   } catch (err) {

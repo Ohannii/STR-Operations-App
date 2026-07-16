@@ -110,12 +110,19 @@ export function safeAsciiFilename(raw: string, maxLen = 120): string {
   return /\.pdf$/i.test(base) ? base : `${base}.pdf`
 }
 
+/**
+ * Flag share/download filename: `{Unit Name} - {Flag Title} - DD-MM-YYYY.pdf`
+ * (e.g. "Test 1 - Photo test - 16-07-2026.pdf"). Flag Title is the flag's
+ * issue_title, falling back to "Flag" when empty. Sanitised to ASCII /
+ * filesystem-safe and length-limited by safeAsciiFilename.
+ */
 export function flagShareFilename(
-  reportId: string,
-  propertyName: string,
+  unitName: string,
+  flagTitle: string | null | undefined,
   dateStr: string,
 ): string {
-  return safeAsciiFilename(`Flag ${reportId} ${propertyName} ${dateStr}`)
+  const title = (flagTitle ?? '').trim() || 'Flag'
+  return safeAsciiFilename(`${unitName} - ${title} - ${dateStr}`)
 }
 
 export function packShareFilename(
