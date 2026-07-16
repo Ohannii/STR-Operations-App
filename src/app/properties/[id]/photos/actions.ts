@@ -334,8 +334,23 @@ export async function requestFlagPhotoUploadSlot(input: {
   // Collision guard (service-role) — reject any existing flag/photo row,
   // including soft-deleted / cross-company. Runs only after auth + company
   // + property-ownership above. Never writes.
-  const admin = createServiceClient()
-  const collision = await checkFlagPhotoCollision(admin, { proposedFlagId, photoId })
+  //
+  // createServiceClient() throws if SUPABASE_SERVICE_ROLE_KEY is not present
+  // in the deployment env (e.g. a preview deployment where the key is scoped
+  // to production only). Without this guard that throw becomes an OPAQUE
+  // server-action error the client can only show as "Failed". Catch it and
+  // return a clear, safe message instead (no secret/env detail leaked).
+  let collision: Awaited<ReturnType<typeof checkFlagPhotoCollision>>
+  try {
+    const admin = createServiceClient()
+    collision = await checkFlagPhotoCollision(admin, { proposedFlagId, photoId })
+  } catch (err) {
+    console.error('[photos/sign-flag] collision guard unavailable:', err)
+    return {
+      ok: false,
+      error: 'Could not start the photo upload (server configuration error).',
+    }
+  }
   if (!collision.ok) {
     return { ok: false, error: collision.error }
   }

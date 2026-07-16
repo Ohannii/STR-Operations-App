@@ -42,6 +42,7 @@ import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Field, Label } from '@/components/ui/input'
 import { compressForEvidence } from '@/lib/photos/compress'
+import { describeUploadFailure } from '@/lib/photos/upload-error'
 import {
   requestFlagPhotoUploadSlot,
   removeFlagPhotoObjects,
@@ -105,14 +106,15 @@ async function putBlob(signedUrl: string, blob: Blob): Promise<void> {
     body: blob,
   })
   if (!res.ok) {
-    let detail = ''
+    let body = ''
     try {
-      const body = await res.text()
-      detail = body ? `: ${body.slice(0, 200)}` : ''
+      body = await res.text()
     } catch {
       /* ignore */
     }
-    throw new Error(`Storage upload failed (${res.status})${detail}`)
+    // describeUploadFailure returns a SAFE message (status + parsed storage
+    // message only) — it never includes the signed URL or token.
+    throw new Error(describeUploadFailure(res.status, body))
   }
 }
 
@@ -624,65 +626,78 @@ function PhotoTile({
           : 'Failed'
 
   return (
-    <li className="relative rounded-md border border-slate-200 overflow-hidden bg-slate-50">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={item.localUrl}
-        alt="Selected evidence"
-        className="w-full h-24 object-cover"
-      />
+    <li className="rounded-md border border-slate-200 overflow-hidden bg-slate-50">
+      <div className="relative">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={item.localUrl}
+          alt="Selected evidence"
+          className="w-full h-24 object-cover"
+        />
 
-      {/* Remove — allowed only when the photo is Uploaded or Failed.
-          Disabled WHILE compressing/uploading so a delete can't race an
-          in-flight PUT (which would re-create an orphaned object), and
-          while its own delete is in flight. */}
-      <button
-        type="button"
-        onClick={onRemove}
-        disabled={busy || item.removing}
-        title={busy ? 'Wait for the photo to finish uploading' : 'Remove photo'}
-        aria-label={
-          busy ? 'Remove photo (available once the upload finishes)' : 'Remove photo'
-        }
-        className="absolute top-1 right-1 inline-flex items-center justify-center h-6 w-6 rounded-full bg-black/55 text-white hover:bg-black/75 disabled:opacity-50 disabled:cursor-not-allowed transition"
-      >
-        {item.removing ? (
-          <Loader2 size={13} className="animate-spin" aria-hidden />
-        ) : (
-          <X size={13} aria-hidden />
-        )}
-      </button>
+        {/* Remove — allowed only when the photo is Uploaded or Failed.
+            Disabled WHILE compressing/uploading so a delete can't race an
+            in-flight PUT (which would re-create an orphaned object), and
+            while its own delete is in flight. */}
+        <button
+          type="button"
+          onClick={onRemove}
+          disabled={busy || item.removing}
+          title={busy ? 'Wait for the photo to finish uploading' : 'Remove photo'}
+          aria-label={
+            busy ? 'Remove photo (available once the upload finishes)' : 'Remove photo'
+          }
+          className="absolute top-1 right-1 inline-flex items-center justify-center h-6 w-6 rounded-full bg-black/55 text-white hover:bg-black/75 disabled:opacity-50 disabled:cursor-not-allowed transition"
+        >
+          {item.removing ? (
+            <Loader2 size={13} className="animate-spin" aria-hidden />
+          ) : (
+            <X size={13} aria-hidden />
+          )}
+        </button>
 
-      <div
-        className={
-          'absolute inset-x-0 bottom-0 flex items-center gap-1 px-1.5 py-1 text-[11px] font-medium text-white ' +
-          (item.status === 'uploaded'
-            ? 'bg-emerald-600/85'
-            : item.status === 'failed'
-              ? 'bg-red-600/85'
-              : 'bg-slate-800/80')
-        }
-      >
-        {busy ? (
-          <Loader2 size={12} className="animate-spin" aria-hidden />
-        ) : item.status === 'uploaded' ? (
-          <CheckCircle2 size={12} aria-hidden />
-        ) : (
-          <XCircle size={12} aria-hidden />
-        )}
-        <span className="truncate">{label}</span>
-        {item.status === 'failed' ? (
-          <button
-            type="button"
-            onClick={onRetry}
-            className="ml-auto inline-flex items-center gap-0.5 rounded bg-white/20 px-1.5 py-0.5 hover:bg-white/30 transition"
-            title="Retry"
-          >
-            <RotateCw size={11} aria-hidden />
-            Retry
-          </button>
-        ) : null}
+        <div
+          className={
+            'absolute inset-x-0 bottom-0 flex items-center gap-1 px-1.5 py-1 text-[11px] font-medium text-white ' +
+            (item.status === 'uploaded'
+              ? 'bg-emerald-600/85'
+              : item.status === 'failed'
+                ? 'bg-red-600/85'
+                : 'bg-slate-800/80')
+          }
+        >
+          {busy ? (
+            <Loader2 size={12} className="animate-spin" aria-hidden />
+          ) : item.status === 'uploaded' ? (
+            <CheckCircle2 size={12} aria-hidden />
+          ) : (
+            <XCircle size={12} aria-hidden />
+          )}
+          <span className="truncate">{label}</span>
+          {item.status === 'failed' ? (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="ml-auto inline-flex items-center gap-0.5 rounded bg-white/20 px-1.5 py-0.5 hover:bg-white/30 transition"
+              title="Retry"
+            >
+              <RotateCw size={11} aria-hidden />
+              Retry
+            </button>
+          ) : null}
+        </div>
       </div>
+
+      {/* Surface the actual (safe) failure reason beneath the tile so the
+          user isn't left with only the word "Failed". */}
+      {item.status === 'failed' && item.error ? (
+        <p
+          className="px-1.5 py-1 text-[10px] leading-tight text-red-600 break-words"
+          title={item.error}
+        >
+          {item.error}
+        </p>
+      ) : null}
     </li>
   )
 }
