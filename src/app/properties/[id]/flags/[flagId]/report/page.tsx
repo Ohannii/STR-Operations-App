@@ -1,8 +1,7 @@
 import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
 import { AlertCircle, ArrowLeft, FileText } from 'lucide-react'
-import { PrintButton } from '@/components/photos/print-button'
-import { ShareButton } from '@/components/photos/share-button'
+import { SharePdfButton } from '@/components/reports/share-pdf-button'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import {
   THUMB_TTL_SECONDS,
@@ -253,18 +252,12 @@ export default async function FlagReportPage({
             Back to flag
           </Link>
           <div className="flex items-center gap-2">
-            <ShareButton
-              title={`Flag Evidence Report — ${cat?.label ?? 'Flag'}`}
-              text={`${property.name} · ${cat?.label ?? 'Flag'} · ${status.label}`}
+            <SharePdfButton
+              prepareUrl={`/properties/${property.id}/flags/${flag.id}/report/prepare`}
+              shareTitle={`Flag Evidence Report — ${cat?.label ?? 'Flag'}`}
             />
-            <PrintButton />
           </div>
         </div>
-        <p className="max-w-4xl mx-auto px-6 pb-2 -mt-1 text-xs text-slate-500">
-          To send as PDF: tap <span className="font-medium">Print / Save as PDF</span> first, save
-          the file, then share it via WhatsApp / email from your device. &ldquo;Share link&rdquo; sends
-          a web link, useful for internal teams.
-        </p>
       </div>
 
       <article className="max-w-4xl mx-auto px-6 py-8 print:p-0 print:max-w-none">
