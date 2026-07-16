@@ -53,3 +53,18 @@ export function formatDateSAST(input: DateInput): string {
     day: 'numeric',
   })
 }
+
+/** Date in SAST as DD-MM-YYYY, e.g. "16-07-2026". Empty string when invalid
+ *  (used for filesystem-safe share filenames). */
+export function formatDateDMY(input: DateInput): string {
+  const d = toDate(input)
+  if (!d) return ''
+  return d
+    .toLocaleDateString('en-GB', {
+      timeZone: SAST_TIME_ZONE,
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    })
+    .replace(/\//g, '-')
+}
