@@ -85,8 +85,47 @@ export function flagReportObjectPath(
   return `companies/${companyId}/flags/${flagId}/flag-report-t${TEMPLATE_VERSION}-${contentHash}.pdf`
 }
 
-export function packReportObjectPath(companyId: string, packId: string): string {
-  return `companies/${companyId}/packs/${packId}/pack-report-t${TEMPLATE_VERSION}.pdf`
+/**
+ * Pre-arrival pack content that affects the rendered PDF. Submitted packs are
+ * immutable, but the report also renders PROPERTY data (bedroom count) and
+ * per-photo notes, which can change — so the artifact is keyed by a content
+ * hash (like flags) rather than a bare stable path, ensuring a bedroom/notes
+ * change never reuses an older render.
+ */
+export type PackFingerprintInput = {
+  packType: string
+  title: string
+  submittedAt: string | null
+  bedrooms: number | null
+  photos: PhotoFingerprint[]
+}
+
+export function packContentHash(input: PackFingerprintInput): string {
+  const canonical = JSON.stringify({
+    t: TEMPLATE_VERSION,
+    packType: input.packType,
+    title: input.title,
+    submittedAt: input.submittedAt ?? '',
+    bedrooms: input.bedrooms ?? -1, // distinguishes null (absent) from 0 (studio)
+    photos: input.photos.map((p) => ({
+      id: p.id,
+      storagePath: p.storagePath,
+      capturedAt: p.capturedAt ?? '',
+      uploadedAt: p.uploadedAt ?? '',
+      notes: p.notes ?? '',
+      width: p.width ?? 0,
+      height: p.height ?? 0,
+    })),
+  })
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 16)
+}
+
+export function packReportObjectPath(
+  companyId: string,
+  packId: string,
+  contentHash: string,
+): string {
+  return `companies/${companyId}/packs/${packId}/pack-report-t${TEMPLATE_VERSION}-${contentHash}.pdf`
 }
 
 /**
@@ -134,10 +173,11 @@ export function flagShareFilename(
   return safeAsciiFilename(`${unitName} - ${title} - ${dateStr}`)
 }
 
-export function packShareFilename(
-  title: string,
-  propertyName: string,
-  dateStr: string,
-): string {
-  return safeAsciiFilename(`${title} ${propertyName} ${dateStr}`)
+/**
+ * Pre-arrival pack share/download filename: `{Unit Name} - DD-MM-YYYY.pdf`
+ * (e.g. "Unit Nr - 95 - 18-07-2026.pdf"). No report title, time, or report ID.
+ * When the date is empty, the date segment is omitted.
+ */
+export function packShareFilename(unitName: string, dateStr: string): string {
+  return safeAsciiFilename(dateStr ? `${unitName} - ${dateStr}` : unitName)
 }

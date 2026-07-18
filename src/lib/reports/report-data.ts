@@ -4,7 +4,11 @@ import { EVIDENCE_BUCKET } from '@/lib/photos/paths'
 import { getFlagCategoryDisplay } from '@/lib/ui/flag-category'
 import { flagStatusDisplay, chargeablePartyDisplay } from '@/lib/ui/flag-status'
 import { formatDateSAST, formatDateTimeSAST } from '@/lib/ui/datetime'
-import type { FlagFingerprintInput, PhotoFingerprint } from '@/lib/reports/report-paths'
+import type {
+  FlagFingerprintInput,
+  PackFingerprintInput,
+  PhotoFingerprint,
+} from '@/lib/reports/report-paths'
 
 /**
  * Server-only report data loaders. These run under `service_role` and are
@@ -49,9 +53,14 @@ export type PackReportData = {
   propertySubtitle: string
   title: string
   packTypeLabel: string
+  /** Property bedroom count (null when unknown → the line is omitted). */
+  bedrooms: number | null
   submittedText: string
   submittedByName: string
+  /** Stable report date ISO (submitted_at, falling back to started_at). */
+  reportDateIso: string | null
   photos: ReportPhoto[]
+  fingerprint: PackFingerprintInput
 }
 
 type PhotoRow = {
@@ -230,7 +239,7 @@ export async function loadPackReportData(
 
   const { data: pack } = await admin
     .from('evidence_packs')
-    .select('id, property_id, pack_type, status, title, submitted_by, submitted_at')
+    .select('id, property_id, pack_type, status, title, submitted_by, submitted_at, started_at')
     .eq('id', packId)
     .is('deleted_at', null)
     .maybeSingle<{
@@ -239,6 +248,7 @@ export async function loadPackReportData(
       pack_type: string
       status: string
       title: string | null
+      started_at: string | null
       submitted_by: string | null
       submitted_at: string | null
     }>()
@@ -247,9 +257,14 @@ export async function loadPackReportData(
   const [{ data: property }, { data: photoRows }] = await Promise.all([
     admin
       .from('properties')
-      .select('name, address, unit_reference')
+      .select('name, address, unit_reference, bedrooms')
       .eq('id', pack.property_id)
-      .maybeSingle<{ name: string; address: string | null; unit_reference: string | null }>(),
+      .maybeSingle<{
+        name: string
+        address: string | null
+        unit_reference: string | null
+        bedrooms: number | null
+      }>(),
     admin
       .from('photos')
       .select('id, storage_path, notes, captured_at, uploaded_at, uploaded_by, width, height')
@@ -265,18 +280,29 @@ export async function loadPackReportData(
     pack.submitted_by ?? '',
     ...rows.map((r) => r.uploaded_by),
   ])
-  const { photos } = await buildPhotos(admin, rows, nameById)
+  const { photos, fingerprint } = await buildPhotos(admin, rows, nameById)
 
   const packTypeLabel = PACK_TYPE_LABEL[pack.pack_type] ?? 'Evidence Pack'
+  const bedrooms = property?.bedrooms ?? null
+  const title = pack.title?.trim() || packTypeLabel
   return {
     companyName,
     reportId: `PA-${pack.id.slice(0, 8).toUpperCase()}`,
     propertyName: property?.name ?? 'Unknown property',
     propertySubtitle: property ? subtitleOf(property) : '',
-    title: pack.title?.trim() || packTypeLabel,
+    title,
     packTypeLabel,
+    bedrooms,
     submittedText: pack.submitted_at ? formatDateSAST(pack.submitted_at) : '',
     submittedByName: pack.submitted_by ? (nameById.get(pack.submitted_by) ?? 'Unknown') : '',
+    reportDateIso: pack.submitted_at ?? pack.started_at ?? null,
     photos,
+    fingerprint: {
+      packType: pack.pack_type,
+      title,
+      submittedAt: pack.submitted_at,
+      bedrooms,
+      photos: fingerprint,
+    },
   }
 }

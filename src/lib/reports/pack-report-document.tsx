@@ -8,16 +8,20 @@ import {
   renderToBuffer,
 } from '@react-pdf/renderer'
 import { formatDateSAST } from '@/lib/ui/datetime'
+import { bedroomLabel } from '@/lib/reports/pack-share'
 import type { PackReportData } from '@/lib/reports/report-data'
 
 const s = StyleSheet.create({
   page: { paddingTop: 32, paddingBottom: 40, paddingHorizontal: 36, fontSize: 10, color: '#0f172a', lineHeight: 1.4 },
-  header: { backgroundColor: '#0f172a', color: '#ffffff', padding: 16, borderRadius: 4 },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  header: { backgroundColor: '#0f172a', color: '#ffffff', padding: 18, borderRadius: 4 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  headerLeft: { width: '64%' },
+  headerRight: { width: '32%', alignItems: 'flex-end' },
   company: { fontSize: 8, letterSpacing: 1, textTransform: 'uppercase', color: '#94a3b8' },
-  title: { fontSize: 18, fontFamily: 'Helvetica-Bold', marginTop: 2 },
-  propertyLine: { fontSize: 10, color: '#e2e8f0', marginTop: 3 },
-  headerMeta: { fontSize: 8, color: '#cbd5e1', textAlign: 'right' },
+  title: { fontSize: 16, fontFamily: 'Helvetica-Bold', marginTop: 5, lineHeight: 1.2 },
+  propertyLine: { fontSize: 11, color: '#f1f5f9', marginTop: 8, lineHeight: 1.3 },
+  propertySub: { fontSize: 9, color: '#cbd5e1', marginTop: 3, lineHeight: 1.3 },
+  headerMeta: { fontSize: 8, color: '#cbd5e1', textAlign: 'right', marginTop: 3 },
   row: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#e2e8f0', paddingVertical: 5 },
   rowLabel: { width: '28%', fontSize: 8, fontFamily: 'Helvetica-Bold', letterSpacing: 0.5, textTransform: 'uppercase', color: '#64748b' },
   rowValue: { width: '72%', fontSize: 10 },
@@ -45,15 +49,18 @@ export function PackReportDocument({ data }: { data: PackReportData }) {
       <Page size="A4" style={s.page}>
         <View style={s.header}>
           <View style={s.headerRow}>
-            <View>
+            <View style={s.headerLeft}>
               <Text style={s.company}>{data.companyName}</Text>
               <Text style={s.title}>{data.packTypeLabel}</Text>
-              <Text style={s.propertyLine}>
-                {data.propertyName}
-                {data.propertySubtitle ? ` — ${data.propertySubtitle}` : ''}
-              </Text>
+              <Text style={s.propertyLine}>{data.propertyName}</Text>
+              {data.propertySubtitle ? (
+                <Text style={s.propertySub}>{data.propertySubtitle}</Text>
+              ) : null}
+              {bedroomLabel(data.bedrooms) ? (
+                <Text style={s.propertySub}>{bedroomLabel(data.bedrooms)}</Text>
+              ) : null}
             </View>
-            <View>
+            <View style={s.headerRight}>
               <Text style={s.headerMeta}>Generated {generated}</Text>
               <Text style={s.headerMeta}>Report ID {data.reportId}</Text>
             </View>

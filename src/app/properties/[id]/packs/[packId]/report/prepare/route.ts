@@ -4,7 +4,8 @@ import { createClient } from '@/lib/supabase/server'
 import { loadPackReportData } from '@/lib/reports/report-data'
 import { ensureAndSignPackReport } from '@/lib/reports/ensure-report-artifact'
 import { packShareFilename } from '@/lib/reports/report-paths'
-import { formatDateSAST } from '@/lib/ui/datetime'
+import { buildPackShareNotes } from '@/lib/reports/pack-share'
+import { formatDateDMY } from '@/lib/ui/datetime'
 
 export const runtime = 'nodejs'
 
@@ -54,12 +55,11 @@ export async function POST(
       return NextResponse.json({ error: 'Pack not found.' }, { status: 404 })
     }
     const url = await ensureAndSignPackReport(ctx.company.id, packId, data)
-    const filename = packShareFilename(
-      data.title,
-      data.propertyName,
-      formatDateSAST(new Date().toISOString()),
-    )
-    return NextResponse.json({ url, filename })
+    // {Unit Name} - DD-MM-YYYY.pdf using the stable submission (report) date.
+    const filename = packShareFilename(data.propertyName, formatDateDMY(data.reportDateIso))
+    // Readable photo-notes bullet list to accompany the native share.
+    const shareText = buildPackShareNotes(data.propertyName, data.photos)
+    return NextResponse.json({ url, filename, shareText })
   } catch (err) {
     console.error('[reports/pack/prepare] generation error:', err)
     return NextResponse.json({ error: 'Could not prepare the PDF.' }, { status: 500 })

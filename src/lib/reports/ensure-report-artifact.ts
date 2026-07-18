@@ -4,6 +4,7 @@ import {
   REPORT_ARTIFACTS_BUCKET,
   flagContentHash,
   flagReportObjectPath,
+  packContentHash,
   packReportObjectPath,
 } from '@/lib/reports/report-paths'
 import { renderFlagReportPdf } from '@/lib/reports/flag-report-document'
@@ -64,7 +65,7 @@ export async function ensureAndSignPackReport(
   data: PackReportData,
 ): Promise<string> {
   const admin = createServiceClient()
-  const path = packReportObjectPath(companyId, packId)
+  const path = packReportObjectPath(companyId, packId, packContentHash(data.fingerprint))
   return ensureAndSignArtifact(realStore(admin), path, () => renderPackReportPdf(data))
 }
 
