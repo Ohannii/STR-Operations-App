@@ -13,8 +13,15 @@
 /** Outbound task systems. Phase 1 ships only 'asana'. */
 export type IntegrationProvider = 'asana'
 
-/** Outbox event kinds. Phase 1 ships only flag → create-task. */
-export type OutboxEventType = 'asana.create_task_for_flag'
+/**
+ * Outbox event kinds.
+ *   - asana.create_task_for_flag  (Slice 4/8): create the Asana task.
+ *   - asana.attach_flag_evidence  (Slice 11C2): attach the flag PDF +
+ *     each compressed master photo to the existing task.
+ */
+export type OutboxEventType =
+  | 'asana.create_task_for_flag'
+  | 'asana.attach_flag_evidence'
 
 /** Internal entity kinds that can be projected outward. Phase 1: flag. */
 export type IntegrationEntityType = 'flag'

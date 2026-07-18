@@ -11,6 +11,7 @@ import { renderPackReportPdf } from '@/lib/reports/pack-report-document'
 import type { FlagReportData, PackReportData } from '@/lib/reports/report-data'
 import {
   ensureAndSignArtifact,
+  ensureArtifactBytes,
   isReportConflict,
   type ArtifactStore,
 } from '@/lib/reports/ensure-report-artifact-core'
@@ -39,6 +40,11 @@ function realStore(admin: ReturnType<typeof createServiceClient>): ArtifactStore
       if (!error) return { ok: true, conflict: false }
       return { ok: false, conflict: isReportConflict(error), error: error.message }
     },
+    async download(path) {
+      const { data, error } = await bucket.download(path)
+      if (error || !data) return null
+      return Buffer.from(await data.arrayBuffer())
+    },
   }
 }
 
@@ -60,4 +66,23 @@ export async function ensureAndSignPackReport(
   const admin = createServiceClient()
   const path = packReportObjectPath(companyId, packId)
   return ensureAndSignArtifact(realStore(admin), path, () => renderPackReportPdf(data))
+}
+
+/**
+ * Server-only: ensure the flag report PDF exists (create-only, reusing the
+ * PR #49 artifact) and return its bytes + content hash. Used by the Asana
+ * attach worker to upload the canonical PDF.
+ */
+export async function ensureFlagReportBytes(
+  companyId: string,
+  flagId: string,
+  data: FlagReportData,
+): Promise<{ bytes: Buffer; contentHash: string }> {
+  const admin = createServiceClient()
+  const contentHash = flagContentHash(data.fingerprint)
+  const path = flagReportObjectPath(companyId, flagId, contentHash)
+  const bytes = await ensureArtifactBytes(realStore(admin), path, () =>
+    renderFlagReportPdf(data),
+  )
+  return { bytes, contentHash }
 }
