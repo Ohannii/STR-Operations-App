@@ -19,16 +19,26 @@ describe('bedroomLabel', () => {
 })
 
 describe('buildPackShareNotes', () => {
-  it('builds a header + ordered bullet list from captioned photos', () => {
+  it('builds a bold PDF-referencing heading + ordered bullet list from captioned photos', () => {
     const out = buildPackShareNotes('Unit Nr - 95', [
       { caption: 'Fridge door has a small mark' },
       { caption: 'Bathroom towel rail is loose' },
     ])
     expect(out).toBe(
-      'Pre-arrival report — Unit Nr - 95\nPhoto notes:\n' +
+      '*📝 Notes for the pre-arrival report below — Unit Nr - 95*\n' +
         '• Photo 1: Fridge door has a small mark\n' +
         '• Photo 2: Bathroom towel rail is loose',
     )
+  })
+
+  it('bolds the complete heading with WhatsApp asterisk syntax (single opening/closing pair)', () => {
+    const out = buildPackShareNotes('Test 1', [{ caption: 'First caption' }])
+    const firstLine = out.split('\n')[0]
+    expect(firstLine).toBe('*📝 Notes for the pre-arrival report below — Test 1*')
+    expect(firstLine.startsWith('*')).toBe(true)
+    expect(firstLine.endsWith('*')).toBe(true)
+    // Exactly one asterisk pair wrapping the whole heading — no stray asterisks.
+    expect((firstLine.match(/\*/g) ?? []).length).toBe(2)
   })
 
   it('omits blank/whitespace/undefined captions and numbers by report position', () => {
@@ -45,15 +55,24 @@ describe('buildPackShareNotes', () => {
     expect(out).not.toContain('undefined')
   })
 
-  it('returns just the header when no photo has a caption', () => {
+  it('returns an empty string (PDF only, no heading-only message) when no photo has a caption', () => {
     const out = buildPackShareNotes('Unit B', [{ caption: null }, { caption: '' }])
-    expect(out).toBe('Pre-arrival report — Unit B')
-    expect(out).not.toContain('Photo notes')
+    expect(out).toBe('')
+  })
+
+  it('returns an empty string for an empty photo list', () => {
+    expect(buildPackShareNotes('Unit C', [])).toBe('')
   })
 
   it('preserves order', () => {
-    const out = buildPackShareNotes('U', [{ caption: 'a' }, { caption: 'b' }, { caption: 'c' }])
-    expect(out.indexOf('a')).toBeLessThan(out.indexOf('b'))
-    expect(out.indexOf('b')).toBeLessThan(out.indexOf('c'))
+    // Distinctive captions that never appear in the heading text, so the
+    // index assertions test bullet order (not incidental heading characters).
+    const out = buildPackShareNotes('U', [
+      { caption: 'zzz-one' },
+      { caption: 'zzz-two' },
+      { caption: 'zzz-three' },
+    ])
+    expect(out.indexOf('zzz-one')).toBeLessThan(out.indexOf('zzz-two'))
+    expect(out.indexOf('zzz-two')).toBeLessThan(out.indexOf('zzz-three'))
   })
 })
