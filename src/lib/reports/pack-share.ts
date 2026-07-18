@@ -10,13 +10,16 @@ export function bedroomLabel(count: number | null | undefined): string | null {
 }
 
 /**
- * Readable share text for a pre-arrival pack: a header plus a bullet list of
- * the photos that HAVE a description, numbered by their position in the
- * report (matching the PDF's "Photo N" labels). Photos with a blank/undefined
- * caption are omitted. If no photo has a caption, only the header is returned.
+ * Readable share text for a pre-arrival pack: a bold heading (WhatsApp
+ * asterisk syntax) that refers to the PDF shared underneath, plus a bullet
+ * list of the photos that HAVE a description, numbered by their position in
+ * the report (matching the PDF's "Photo N" labels). Photos with a
+ * blank/undefined caption are omitted.
  *
- *   Pre-arrival report — Unit Nr - 95
- *   Photo notes:
+ * When NO photo has a caption, returns an EMPTY STRING so the native share
+ * carries only the PDF — never an empty or heading-only notes message.
+ *
+ *   *📝 Notes for the pre-arrival report below — Unit Nr - 95*
  *   • Photo 1: Fridge door has a small mark
  *   • Photo 2: Bathroom towel rail is loose
  */
@@ -29,6 +32,7 @@ export function buildPackShareNotes(
     const cap = (p.caption ?? '').trim()
     if (cap) bullets.push(`• Photo ${i + 1}: ${cap}`)
   })
-  const header = `Pre-arrival report — ${unitLabel}`
-  return bullets.length === 0 ? header : `${header}\nPhoto notes:\n${bullets.join('\n')}`
+  if (bullets.length === 0) return ''
+  const heading = `*📝 Notes for the pre-arrival report below — ${unitLabel}*`
+  return `${heading}\n${bullets.join('\n')}`
 }
