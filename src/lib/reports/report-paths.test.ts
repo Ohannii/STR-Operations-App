@@ -3,10 +3,13 @@ import {
   flagContentHash,
   flagReportObjectPath,
   packReportObjectPath,
+  packContentHash,
   safeAsciiFilename,
   flagShareFilename,
+  packShareFilename,
   TEMPLATE_VERSION,
   type FlagFingerprintInput,
+  type PackFingerprintInput,
 } from '@/lib/reports/report-paths'
 
 function baseFlag(overrides: Partial<FlagFingerprintInput> = {}): FlagFingerprintInput {
@@ -75,9 +78,9 @@ describe('object paths', () => {
       `companies/co1/flags/f1/flag-report-t${TEMPLATE_VERSION}-${h}.pdf`,
     )
   })
-  it('pack path is stable (template only)', () => {
-    expect(packReportObjectPath('co1', 'pk1')).toBe(
-      `companies/co1/packs/pk1/pack-report-t${TEMPLATE_VERSION}.pdf`,
+  it('pack path embeds template version + content hash', () => {
+    expect(packReportObjectPath('co1', 'pk1', 'deadbeefcafef00d')).toBe(
+      `companies/co1/packs/pk1/pack-report-t${TEMPLATE_VERSION}-deadbeefcafef00d.pdf`,
     )
   })
 })
@@ -118,5 +121,58 @@ describe('safeAsciiFilename', () => {
     const out = flagShareFilename('Café — Sea View', 'Résumé 你好', '16-07-2026')
     expect(out).toMatch(/^[\x20-\x7E]+\.pdf$/)
     expect(out).not.toMatch(/[/\\?%*:|"<>—]/)
+  })
+})
+
+describe('packShareFilename', () => {
+  it('is "{Unit Name} - DD-MM-YYYY.pdf" — no title/time/report id', () => {
+    expect(packShareFilename('Unit Nr - 95', '18-07-2026')).toBe(
+      'Unit Nr - 95 - 18-07-2026.pdf',
+    )
+  })
+  it('contains no time component', () => {
+    const out = packShareFilename('Unit Nr - 95', '18-07-2026')
+    expect(out).not.toMatch(/\d{2}:\d{2}/)
+  })
+  it('omits the date segment when the date is empty', () => {
+    expect(packShareFilename('Unit Nr - 95', '')).toBe('Unit Nr - 95.pdf')
+  })
+})
+
+function basePack(overrides: Partial<PackFingerprintInput> = {}): PackFingerprintInput {
+  return {
+    packType: 'pre_arrival',
+    title: 'Pre-arrival Evidence Pack',
+    submittedAt: '2026-07-18T10:00:00Z',
+    bedrooms: 2,
+    photos: [
+      { id: 'p1', storagePath: 'a/1.jpg', capturedAt: null, uploadedAt: null, notes: 'note', width: null, height: null },
+    ],
+    ...overrides,
+  }
+}
+
+describe('packContentHash', () => {
+  it('is deterministic and 16 hex', () => {
+    expect(packContentHash(basePack())).toBe(packContentHash(basePack()))
+    expect(packContentHash(basePack())).toMatch(/^[0-9a-f]{16}$/)
+  })
+  it('covers the rendered bedroom value (a change busts the cache)', () => {
+    expect(packContentHash(basePack({ bedrooms: 2 }))).not.toBe(
+      packContentHash(basePack({ bedrooms: 3 })),
+    )
+    // null (absent) vs 0 (studio) also differ.
+    expect(packContentHash(basePack({ bedrooms: null }))).not.toBe(
+      packContentHash(basePack({ bedrooms: 0 })),
+    )
+  })
+  it('changes when a photo note changes', () => {
+    expect(packContentHash(basePack())).not.toBe(
+      packContentHash(
+        basePack({
+          photos: [{ id: 'p1', storagePath: 'a/1.jpg', capturedAt: null, uploadedAt: null, notes: 'changed', width: null, height: null }],
+        }),
+      ),
+    )
   })
 })

@@ -17,9 +17,9 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Download, Loader2, RotateCw, Share2 } from 'lucide-react'
+import { ClipboardCheck, Copy, Download, Loader2, RotateCw, Share2 } from 'lucide-react'
 
-type PrepareOk = { url: string; filename: string }
+type PrepareOk = { url: string; filename: string; shareText?: string }
 type Phase = 'preparing' | 'ready' | 'error'
 
 type NavigatorWithShare = Navigator & {
@@ -27,7 +27,7 @@ type NavigatorWithShare = Navigator & {
   share?: (data?: ShareData) => Promise<void>
 }
 
-type PreparedPdf = { file: File; objectUrl: string }
+type PreparedPdf = { file: File; objectUrl: string; shareText: string | null }
 
 function isAbort(e: unknown): boolean {
   return (e as { name?: string } | null)?.name === 'AbortError'
@@ -53,7 +53,8 @@ async function loadPdf(prepareUrl: string, signal: AbortSignal): Promise<Prepare
   if (!pdfRes.ok) throw new Error('Could not download the prepared PDF.')
   const blob = await pdfRes.blob()
   const file = new File([blob], json.filename, { type: 'application/pdf' })
-  return { file, objectUrl: URL.createObjectURL(file) }
+  const shareText = typeof json.shareText === 'string' && json.shareText.trim() ? json.shareText : null
+  return { file, objectUrl: URL.createObjectURL(file), shareText }
 }
 
 export function SharePdfButton({
@@ -68,6 +69,8 @@ export function SharePdfButton({
   const [objectUrl, setObjectUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [fallback, setFallback] = useState(false)
+  const [shareText, setShareText] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
   // Live object URL (for revocation across reloads/unmount), mount tracking,
   // and a handle to abort a retry in flight.
   const objectUrlRef = useRef<string | null>(null)
@@ -92,6 +95,7 @@ export function SharePdfButton({
         objectUrlRef.current = prepared.objectUrl
         setFile(prepared.file)
         setObjectUrl(prepared.objectUrl)
+        setShareText(prepared.shareText)
         setPhase('ready')
       })
       .catch((e: unknown) => {
@@ -140,6 +144,7 @@ export function SharePdfButton({
         objectUrlRef.current = prepared.objectUrl
         setFile(prepared.file)
         setObjectUrl(prepared.objectUrl)
+        setShareText(prepared.shareText)
         setPhase('ready')
       })
       .catch((e: unknown) => {
@@ -152,6 +157,10 @@ export function SharePdfButton({
   const onShare = useCallback(async () => {
     if (!file) return
     const nav = navigator as NavigatorWithShare
+    // Include the notes as share text (some targets keep it, some discard it —
+    // the "Copy notes" fallback covers the latter).
+    const shareData: ShareData = { files: [file], title: shareTitle }
+    if (shareText) shareData.text = shareText
     // Feature-detect synchronously, then call share() as the first async
     // op so the user activation is preserved.
     if (
@@ -160,7 +169,7 @@ export function SharePdfButton({
       nav.canShare({ files: [file] })
     ) {
       try {
-        await nav.share({ files: [file], title: shareTitle })
+        await nav.share(shareData)
       } catch (e) {
         // AbortError = user cancelled the share sheet — not a failure.
         if ((e as Error)?.name !== 'AbortError') {
@@ -171,7 +180,22 @@ export function SharePdfButton({
     }
     // No file-share support on this browser (e.g. some in-app webviews).
     setFallback(true)
-  }, [file, shareTitle])
+  }, [file, shareTitle, shareText])
+
+  // "Copy notes" is a USER action — we only write to the clipboard on tap,
+  // never automatically.
+  const onCopyNotes = useCallback(async () => {
+    if (!shareText) return
+    try {
+      await navigator.clipboard.writeText(shareText)
+      setCopied(true)
+      window.setTimeout(() => {
+        if (mountedRef.current) setCopied(false)
+      }, 2000)
+    } catch {
+      // Clipboard blocked (e.g. insecure context) — no-op; sharing still works.
+    }
+  }, [shareText])
 
   if (phase === 'preparing') {
     return (
@@ -201,14 +225,31 @@ export function SharePdfButton({
   // ready
   return (
     <span className="inline-flex flex-col items-end gap-1.5">
-      <button
-        type="button"
-        onClick={() => void onShare()}
-        className="inline-flex items-center gap-1.5 rounded-md bg-slate-900 text-white px-3.5 py-1.5 text-sm font-medium hover:bg-slate-800 active:bg-slate-950 transition"
-      >
-        <Share2 size={14} aria-hidden />
-        Share PDF
-      </button>
+      <span className="inline-flex items-center gap-2">
+        {shareText ? (
+          <button
+            type="button"
+            onClick={() => void onCopyNotes()}
+            title="Copy the photo-notes list to paste alongside the PDF"
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition"
+          >
+            {copied ? (
+              <ClipboardCheck size={14} aria-hidden />
+            ) : (
+              <Copy size={14} aria-hidden />
+            )}
+            {copied ? 'Copied' : 'Copy notes'}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => void onShare()}
+          className="inline-flex items-center gap-1.5 rounded-md bg-slate-900 text-white px-3.5 py-1.5 text-sm font-medium hover:bg-slate-800 active:bg-slate-950 transition"
+        >
+          <Share2 size={14} aria-hidden />
+          Share PDF
+        </button>
+      </span>
       {fallback ? (
         <span className="inline-flex flex-col items-end gap-1">
           <span className="text-xs text-slate-500 max-w-[18rem] text-right">
