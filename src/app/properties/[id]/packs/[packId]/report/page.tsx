@@ -1,7 +1,8 @@
 import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
-import { ArrowLeft, Camera, Check, FileText, Trash2 } from 'lucide-react'
+import { ArrowLeft, Camera, FileText, Trash2 } from 'lucide-react'
 import { SharePdfButton } from '@/components/reports/share-pdf-button'
+import { PackSubmitButton } from '@/components/photos/pack-submit-button'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import {
   THUMB_TTL_SECONDS,
@@ -13,7 +14,6 @@ import {
   softDeleteEvidencePhoto,
   updatePhotoNote,
 } from '../../../photos/actions'
-import { submitEvidencePackAction } from '../../actions'
 
 /**
  * GET /properties/[id]/packs/[packId]/report
@@ -192,18 +192,11 @@ export default async function PackReportPage({
           </Link>
           <div className="flex items-center gap-2 flex-wrap">
             {isDraft ? (
-              <form action={submitEvidencePackAction}>
-                <input type="hidden" name="property_id" value={property.id} />
-                <input type="hidden" name="pack_id" value={pack.id} />
-                <button
-                  type="submit"
-                  className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 text-white px-3.5 py-1.5 text-sm font-semibold hover:bg-emerald-700 active:bg-emerald-800 transition"
-                  title="Mark this pack as submitted. Submitted packs become an immutable record."
-                >
-                  <Check size={14} aria-hidden />
-                  Submit pack
-                </button>
-              </form>
+              <PackSubmitButton
+                propertyId={property.id}
+                packId={pack.id}
+                linkedPhotoCount={photos?.length ?? 0}
+              />
             ) : null}
             {!isDraft ? (
               <SharePdfButton
@@ -531,17 +524,13 @@ export default async function PackReportPage({
               an immutable record. After submit, a new pre-arrival pack can be
               started for the next turnover.
             </p>
-            <form action={submitEvidencePackAction} className="mt-3">
-              <input type="hidden" name="property_id" value={property.id} />
-              <input type="hidden" name="pack_id" value={pack.id} />
-              <button
-                type="submit"
-                className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 text-white px-4 py-2 text-sm font-semibold hover:bg-emerald-700 active:bg-emerald-800 transition"
-              >
-                <Check size={14} aria-hidden />
-                Submit pack
-              </button>
-            </form>
+            <div className="mt-3">
+              <PackSubmitButton
+                propertyId={property.id}
+                packId={pack.id}
+                linkedPhotoCount={photos?.length ?? 0}
+              />
+            </div>
           </div>
         ) : null}
 
