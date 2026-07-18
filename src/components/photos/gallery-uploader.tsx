@@ -39,7 +39,7 @@
  * packs), so users add captions there if they need them.
  */
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   CheckCircle2,
@@ -48,6 +48,7 @@ import {
   XCircle,
 } from 'lucide-react'
 import { compressForEvidence } from '@/lib/photos/compress'
+import { packCapture } from '@/lib/photos/pack-capture-store'
 import {
   attachEvidencePhoto,
   requestPhotoUploadSlot,
@@ -78,6 +79,18 @@ type PerFile = {
   size: number
   status: FileStatus
   error?: string
+  /** Kept in memory so a failed upload can be retried (never persisted). */
+  file?: File
+  // Idempotent-retry state — all reused across attempts so a retry targets
+  // the SAME photo id / paths and never duplicates a row or object.
+  slot?: UploadSlot
+  master?: Blob
+  thumb?: Blob
+  width?: number
+  height?: number
+  sizeBytes?: number
+  masterDone?: boolean
+  thumbDone?: boolean
 }
 
 function clientId(): string {
@@ -104,141 +117,207 @@ export function GalleryUploader({
   const inputRef = useRef<HTMLInputElement | null>(null)
   const [items, setItems] = useState<PerFile[]>([])
   const [busy, setBusy] = useState(false)
+  // Mirror of `items` for reads inside the async worker (state is stale in
+  // closures). Lets a retry reuse a row's stored slot / compressed blobs.
+  const itemsRef = useRef<PerFile[]>([])
+  useEffect(() => {
+    itemsRef.current = items
+  }, [items])
 
   const updateItem = useCallback(
     (id: string, patch: Partial<PerFile>) => {
-      setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)))
+      setItems((prev) => {
+        const next = prev.map((it) => (it.id === id ? { ...it, ...patch } : it))
+        itemsRef.current = next
+        return next
+      })
     },
     [],
   )
 
-  const handleFiles = useCallback(
-    async (files: File[]) => {
-      // Pre-filter: only images. Surface a row for everything else
-      // so the user sees the skip explicitly.
-      const all: PerFile[] = files.map((f) => ({
-        id: clientId(),
-        name: f.name || 'photo',
-        size: f.size,
-        status: 'compressing',
-        ...(f.type.startsWith('image/')
-          ? {}
-          : { status: 'error' as FileStatus, error: 'Not an image file — skipped.' }),
-      }))
-      setItems(all)
-      setBusy(true)
+  // Upload one row by id, reading the LATEST row from itemsRef so a retry
+  // reuses the row's stored compressed blobs + upload slot + PUT progress.
+  // This makes retry idempotent: the same photo id/paths are targeted, a
+  // Storage 409 (create-only) counts as already-uploaded, and the server
+  // attach treats a PK conflict as success — so a lost response can never
+  // duplicate a row or object.
+  const processRow = useCallback(
+    async (rowId: string): Promise<boolean> => {
+      const current = () => itemsRef.current.find((r) => r.id === rowId)
+      try {
+        const row = current()
+        if (!row || !row.file) throw new Error('Nothing to upload for this file.')
 
-      const queue = files.map((f, i) => ({ file: f, row: all[i] }))
-        .filter((p) => p.row.status === 'compressing')
+        let { master, thumb, width, height, sizeBytes } = row
+        if (!master || !thumb) {
+          updateItem(rowId, { status: 'compressing' })
+          const c = await compressForEvidence(row.file)
+          master = c.master
+          thumb = c.thumb
+          width = c.width
+          height = c.height
+          sizeBytes = c.sizeBytes
+          updateItem(rowId, { master, thumb, width, height, sizeBytes })
+        }
 
-      const uploadOne = async (file: File, row: PerFile): Promise<boolean> => {
-        try {
-          updateItem(row.id, { status: 'compressing' })
-          const compressed = await compressForEvidence(file)
-
-          updateItem(row.id, { status: 'signing' })
-          const slot = (await requestPhotoUploadSlot({
+        let slot = current()?.slot
+        if (!slot) {
+          updateItem(rowId, { status: 'signing' })
+          const requested = (await requestPhotoUploadSlot({
             propertyId,
             flagId: flagId ?? null,
             evidencePackId: evidencePackId ?? null,
           })) as UploadSlot | { ok: false; error: string }
-          if (!slot.ok) {
-            throw new Error(`Could not get upload slot: ${slot.error}`)
-          }
+          if (!requested.ok) throw new Error(`Could not get upload slot: ${requested.error}`)
+          slot = requested
+          updateItem(rowId, { slot })
+        }
 
-          updateItem(row.id, { status: 'uploading' })
-          const put = async (signedUrl: string, blob: Blob) => {
-            const res = await fetch(signedUrl, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'image/jpeg' },
-              body: blob,
-            })
-            if (!res.ok) {
-              // Pull the body text for the diagnostic — Supabase
-              // returns a JSON error with a `message` field on
-              // most failures.
-              let detail = ''
-              try {
-                const body = await res.text()
-                detail = body ? `: ${body.slice(0, 200)}` : ''
-              } catch {
-                /* ignore */
-              }
-              throw new Error(`Storage PUT failed (${res.status})${detail}`)
-            }
-          }
-          await Promise.all([
-            put(slot.masterUpload.signedUrl, compressed.master),
-            put(slot.thumbUpload.signedUrl, compressed.thumb),
-          ])
-
-          updateItem(row.id, { status: 'attaching' })
-          const attached = await attachEvidencePhoto({
-            photoId: slot.photoId,
-            propertyId,
-            flagId: flagId ?? null,
-            evidencePackId: slot.evidencePackId,
-            masterPath: slot.masterPath,
-            thumbPath: slot.thumbPath,
-            width: compressed.width,
-            height: compressed.height,
-            sizeBytes: compressed.sizeBytes,
-            capturedAt: file.lastModified
-              ? new Date(file.lastModified).toISOString()
-              : new Date().toISOString(),
-            note: null,
-            retentionClass: slot.retentionClass,
+        updateItem(rowId, { status: 'uploading' })
+        if (evidencePackId) packCapture.mark(evidencePackId, rowId, 'uploading')
+        const putOnce = async (signedUrl: string, blob: Blob, already: boolean) => {
+          if (already) return
+          const res = await fetch(signedUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'image/jpeg' },
+            body: blob,
           })
-          if (!attached.ok) {
-            throw new Error(`Attach failed: ${attached.error}`)
+          // 409 = object already landed from a prior attempt (create-only).
+          if (!res.ok && res.status !== 409) {
+            let detail = ''
+            try {
+              const body = await res.text()
+              detail = body ? `: ${body.slice(0, 200)}` : ''
+            } catch {
+              /* ignore */
+            }
+            throw new Error(`Storage PUT failed (${res.status})${detail}`)
           }
-
-          updateItem(row.id, { status: 'done' })
-          return true
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Unknown upload error.'
-          console.error('[GalleryUploader] upload error:', msg, err)
-          updateItem(row.id, { status: 'error', error: msg })
-          return false
         }
-      }
+        await putOnce(slot.masterUpload.signedUrl, master as Blob, !!current()?.masterDone)
+        updateItem(rowId, { masterDone: true })
+        await putOnce(slot.thumbUpload.signedUrl, thumb as Blob, !!current()?.thumbDone)
+        updateItem(rowId, { thumbDone: true })
 
-      // Worker pool. Concurrency 4 — sequential is too slow for
-      // 10+ photo batches, full parallel saturates mobile radios.
-      // Bumped to 4 alongside the smaller compressed file size.
-      const UPLOAD_CONCURRENCY = 4
-      const workQueue = [...queue]
-      const worker = async () => {
-        while (true) {
-          const next = workQueue.shift()
-          if (!next) return
-          await uploadOne(next.file, next.row)
-        }
+        updateItem(rowId, { status: 'attaching' })
+        if (evidencePackId) packCapture.mark(evidencePackId, rowId, 'attaching')
+        const attached = await attachEvidencePhoto({
+          photoId: slot.photoId,
+          propertyId,
+          flagId: flagId ?? null,
+          evidencePackId: slot.evidencePackId,
+          masterPath: slot.masterPath,
+          thumbPath: slot.thumbPath,
+          width: width ?? 0,
+          height: height ?? 0,
+          sizeBytes: sizeBytes ?? 0,
+          capturedAt: row.file.lastModified
+            ? new Date(row.file.lastModified).toISOString()
+            : new Date().toISOString(),
+          note: null,
+          retentionClass: slot.retentionClass,
+        })
+        if (!attached.ok) throw new Error(`Attach failed: ${attached.error}`)
+
+        updateItem(rowId, { status: 'done' })
+        if (evidencePackId) packCapture.mark(evidencePackId, rowId, 'saved')
+        return true
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unknown upload error.'
+        console.error('[GalleryUploader] upload error:', msg, err)
+        updateItem(rowId, { status: 'error', error: msg })
+        if (evidencePackId) packCapture.mark(evidencePackId, rowId, 'failed')
+        return false
       }
-      await Promise.all(
-        Array.from(
-          { length: Math.min(UPLOAD_CONCURRENCY, workQueue.length) },
-          worker,
-        ),
-      )
+    },
+    [propertyId, flagId, evidencePackId, updateItem],
+  )
+
+  const runPool = useCallback(async (ids: string[]) => {
+    const UPLOAD_CONCURRENCY = 4
+    const queue = [...ids]
+    const worker = async () => {
+      while (true) {
+        const id = queue.shift()
+        if (!id) return
+        await processRow(id)
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(UPLOAD_CONCURRENCY, queue.length) }, worker),
+    )
+  }, [processRow])
+
+  const handleFiles = useCallback(
+    async (files: File[]) => {
+      // Only image files get a file (and thus become processable/retriable);
+      // everything else surfaces as an explicit, non-retriable skip.
+      const rows: PerFile[] = files.map((f) => {
+        const isImg = f.type.startsWith('image/')
+        return {
+          id: clientId(),
+          name: f.name || 'photo',
+          size: f.size,
+          status: isImg ? 'compressing' : 'error',
+          error: isImg ? undefined : 'Not an image file — skipped.',
+          file: isImg ? f : undefined,
+        }
+      })
+      setItems(rows)
+      itemsRef.current = rows
+      setBusy(true)
+
+      const processable = rows.filter((r) => r.file)
+      // Commit each logical photo to the pack intent map (pre-arrival only)
+      // so the Submit control blocks until they actually land.
+      if (evidencePackId) {
+        for (const r of processable) packCapture.commit(evidencePackId, r.id)
+      }
+      await runPool(processable.map((r) => r.id))
 
       setBusy(false)
-      // Invalidate the RSC cache in place — does NOT do a full
-      // window.location.reload() (which iOS Safari may serve from
-      // its disk cache, hiding new photos). router.refresh() asks
-      // the server for fresh data and re-streams the components
-      // while preserving any client state we want to keep visible
-      // (the per-file status list above).
+      // Refresh the RSC payload in place (no full reload — iOS Safari may
+      // serve a cached GET and hide new photos). Client state is preserved.
       router.refresh()
     },
-    [propertyId, flagId, evidencePackId, updateItem, router],
+    [evidencePackId, runPool, router],
   )
+
+  // Retry only the failed uploads, REUSING each row's stored slot + blobs
+  // (idempotent). Their File blobs live only in memory, so this recovers a
+  // failed save instead of losing it.
+  const retryFailed = useCallback(async () => {
+    const failed = itemsRef.current.filter((r) => r.status === 'error' && r.file)
+    if (failed.length === 0) return
+    setBusy(true)
+    if (evidencePackId) {
+      for (const r of failed) packCapture.mark(evidencePackId, r.id, 'uploading')
+    }
+    for (const r of failed) updateItem(r.id, { status: 'compressing', error: undefined })
+    await runPool(failed.map((r) => r.id))
+    setBusy(false)
+    router.refresh()
+  }, [evidencePackId, runPool, updateItem, router])
 
   const isMisconfigured = !flagId && !evidencePackId
 
   const buttonLabel = label ?? 'Upload from gallery'
   const successCount = items.filter((i) => i.status === 'done').length
   const errorCount = items.filter((i) => i.status === 'error').length
+
+  // Warn before leaving/reloading while an upload is in flight or a
+  // failed file still needs a retry — the compressed bytes live only in
+  // memory and would be lost silently otherwise.
+  const hasUnsavedWork = busy || errorCount > 0
+  useEffect(() => {
+    if (!hasUnsavedWork) return
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [hasUnsavedWork])
 
   return (
     <div className="inline-flex flex-col gap-2 min-w-0">
@@ -351,12 +430,40 @@ export function GalleryUploader({
                 <button
                   type="button"
                   onClick={() => {
+                    // Destructive: clearing failed rows discards them. It
+                    // releases them from the intent map (so they stop
+                    // blocking) but does NOT lower the pack's target — the
+                    // inspector must still retry or recapture. Confirm first,
+                    // and never imply they were saved.
+                    if (errorCount > 0) {
+                      const ok =
+                        typeof window === 'undefined' ||
+                        window.confirm(
+                          `${errorCount} photo${errorCount === 1 ? '' : 's'} did NOT save and ` +
+                            `will be discarded. They were not added to the pack. Clear anyway?`,
+                        )
+                      if (!ok) return
+                    }
+                    if (evidencePackId) {
+                      for (const it of itemsRef.current) {
+                        if (it.status === 'error') packCapture.remove(evidencePackId, it.id)
+                      }
+                    }
                     setItems([])
                   }}
                   className="text-slate-500 hover:text-slate-700 transition"
                 >
                   Clear
                 </button>
+                {errorCount > 0 ? (
+                  <button
+                    type="button"
+                    onClick={retryFailed}
+                    className="rounded bg-amber-500 text-white px-2 py-1 font-medium hover:bg-amber-600 transition"
+                  >
+                    Retry {errorCount} failed
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => router.refresh()}

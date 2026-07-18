@@ -16,6 +16,7 @@ import {
   type RetentionClass,
 } from '@/lib/photos/retention'
 import { isUuid } from '@/lib/photos/finalize-helpers'
+import { photoIdentityMatches } from '@/lib/photos/attach-idempotency'
 import { checkFlagPhotoCollision } from '@/lib/photos/collision-check'
 import { maybeReArmAttachEvidence } from '@/lib/integrations/outbox'
 import {
@@ -578,6 +579,62 @@ export async function attachEvidencePhoto(
   })
 
   if (insertErr) {
+    // Idempotent retry (req 9): a lost response can leave a photo that
+    // actually attached looking like a failure. Because the client reuses
+    // the SAME server-issued photo id on retry, a primary-key conflict
+    // (23505) MAY mean "already attached". Treat it as success ONLY after
+    // reading the existing row and confirming it is the exact same logical
+    // photo (company, property, pack/flag, storage paths, not deleted). Any
+    // mismatch — or an unreadable row (e.g. another company, hidden by RLS)
+    // — FAILS CLOSED.
+    if (insertErr.code === '23505') {
+      const { data: existing } = await supabase
+        .from('photos')
+        .select(
+          'company_id, property_id, flag_id, evidence_pack_id, storage_path, thumbnail_path, deleted_at',
+        )
+        .eq('id', photoId)
+        .maybeSingle<{
+          company_id: string
+          property_id: string
+          flag_id: string | null
+          evidence_pack_id: string | null
+          storage_path: string
+          thumbnail_path: string
+          deleted_at: string | null
+        }>()
+
+      if (
+        existing &&
+        photoIdentityMatches(
+          {
+            companyId: existing.company_id,
+            propertyId: existing.property_id,
+            flagId: existing.flag_id,
+            evidencePackId: existing.evidence_pack_id,
+            storagePath: existing.storage_path,
+            thumbnailPath: existing.thumbnail_path,
+            deletedAt: existing.deleted_at,
+          },
+          {
+            companyId: ctx.company.id,
+            propertyId,
+            flagId,
+            evidencePackId,
+            storagePath: input.masterPath,
+            thumbnailPath: input.thumbPath,
+          },
+        )
+      ) {
+        return { ok: true, photoId }
+      }
+
+      console.error('[photos/attach] 23505 with non-matching / unreadable row:', photoId)
+      return {
+        ok: false,
+        error: 'This photo could not be saved (id conflict). Retry the capture.',
+      }
+    }
     console.error('[photos/attach] insert error:', insertErr)
     return { ok: false, error: insertErr.message }
   }

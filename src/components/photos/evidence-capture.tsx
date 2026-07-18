@@ -56,6 +56,7 @@ import {
   X,
 } from 'lucide-react'
 import { compressForEvidence } from '@/lib/photos/compress'
+import { packCapture } from '@/lib/photos/pack-capture-store'
 import {
   attachEvidencePhoto,
   requestPhotoUploadSlot,
@@ -85,6 +86,13 @@ type Pending = {
   state: 'compressing' | 'ready' | 'uploading' | 'uploaded' | 'error'
   /** Last error message, if any. */
   error?: string
+  /** Upload slot issued for THIS logical photo, reused across retries so a
+   *  lost-response retry targets the same id/paths (idempotent). */
+  slot?: UploadSlot
+  /** Whether the master / thumb object has already been PUT to Storage
+   *  (so a retry skips re-uploading what already landed). */
+  masterDone?: boolean
+  thumbDone?: boolean
 }
 
 type Props = {
@@ -363,19 +371,25 @@ export function EvidenceCapture({
     [ingestBlob],
   )
 
-  const removePending = useCallback((id: string) => {
-    setPending((prev) => {
-      const next: Pending[] = []
-      for (const p of prev) {
-        if (p.id === id) {
-          URL.revokeObjectURL(p.previewUrl)
-        } else {
-          next.push(p)
+  const removePending = useCallback(
+    (id: string) => {
+      // Release the logical photo from the pack intent map (no-op if it was
+      // never committed). Does not lower the persisted target.
+      if (evidencePackId) packCapture.remove(evidencePackId, id)
+      setPending((prev) => {
+        const next: Pending[] = []
+        for (const p of prev) {
+          if (p.id === id) {
+            URL.revokeObjectURL(p.previewUrl)
+          } else {
+            next.push(p)
+          }
         }
-      }
-      return next
-    })
-  }, [])
+        return next
+      })
+    },
+    [evidencePackId],
+  )
 
   // --------------------------------------------------------------
   // Modal open/close
@@ -417,6 +431,29 @@ export function EvidenceCapture({
     setBatchError(null)
   }, [stopCamera])
 
+  // Dismiss guard (req 8): closing a session that still holds unattached,
+  // uploading or failed photos requires an explicit DESTRUCTIVE confirm and
+  // never implies they were saved. On confirm, those logical photos are
+  // released from the pack intent map (the persisted target is unchanged, so
+  // the pack still requires those photos be recaptured before it can submit).
+  const dismiss = useCallback(() => {
+    const unresolved = pending.filter((p) => p.state !== 'uploaded')
+    if (unresolved.length > 0) {
+      const ok =
+        typeof window === 'undefined' ||
+        window.confirm(
+          `${unresolved.length} photo${unresolved.length === 1 ? '' : 's'} ` +
+            `${unresolved.length === 1 ? 'has' : 'have'} NOT been saved to the pack and ` +
+            `will be discarded. Close anyway?`,
+        )
+      if (!ok) return
+      if (evidencePackId) {
+        for (const p of unresolved) packCapture.remove(evidencePackId, p.id)
+      }
+    }
+    closeModal()
+  }, [pending, evidencePackId, closeModal])
+
   // --------------------------------------------------------------
   // Attach pipeline
   // --------------------------------------------------------------
@@ -437,31 +474,51 @@ export function EvidenceCapture({
           p.id === item.id ? { ...p, state: 'uploading', error: undefined } : p,
         ),
       )
+      if (evidencePackId) packCapture.mark(evidencePackId, item.id, 'uploading')
       try {
-        const slot = (await requestPhotoUploadSlot({
-          propertyId,
-          flagId: flagId ?? null,
-          evidencePackId: evidencePackId ?? null,
-        })) as UploadSlot | { ok: false; error: string }
+        // Reuse a slot already issued for this logical photo on retry, so the
+        // SAME photo id + storage paths are targeted. Combined with the
+        // idempotent attach (a PK conflict = already attached) and treating a
+        // Storage 409 as "already uploaded", a lost-response retry can never
+        // create a duplicate row or object.
+        let slot = item.slot
+        if (!slot) {
+          const requested = (await requestPhotoUploadSlot({
+            propertyId,
+            flagId: flagId ?? null,
+            evidencePackId: evidencePackId ?? null,
+          })) as UploadSlot | { ok: false; error: string }
+          if (!requested.ok) throw new Error(requested.error)
+          slot = requested
+          const issued = slot
+          setPending((prev) =>
+            prev.map((p) => (p.id === item.id ? { ...p, slot: issued } : p)),
+          )
+        }
 
-        if (!slot.ok) throw new Error(slot.error)
-
-        // Master + thumb in parallel; they're independent objects.
-        const put = async (signedUrl: string, blob: Blob) => {
+        // Create-only Storage: a 409 means the object already landed from a
+        // prior attempt — idempotent, treat as done. Skip anything already PUT.
+        const putOnce = async (signedUrl: string, blob: Blob, already: boolean) => {
+          if (already) return
           const res = await fetch(signedUrl, {
             method: 'PUT',
             headers: { 'Content-Type': 'image/jpeg' },
             body: blob,
           })
-          if (!res.ok) {
+          if (!res.ok && res.status !== 409) {
             throw new Error(`Upload failed (${res.status}).`)
           }
         }
-        await Promise.all([
-          put(slot.masterUpload.signedUrl, item.master as Blob),
-          put(slot.thumbUpload.signedUrl, item.thumb as Blob),
-        ])
+        await putOnce(slot.masterUpload.signedUrl, item.master as Blob, !!item.masterDone)
+        setPending((prev) =>
+          prev.map((p) => (p.id === item.id ? { ...p, masterDone: true } : p)),
+        )
+        await putOnce(slot.thumbUpload.signedUrl, item.thumb as Blob, !!item.thumbDone)
+        setPending((prev) =>
+          prev.map((p) => (p.id === item.id ? { ...p, thumbDone: true } : p)),
+        )
 
+        if (evidencePackId) packCapture.mark(evidencePackId, item.id, 'attaching')
         const finalNote = (item.note?.trim() || attachAllNote.trim() || null) as
           | string
           | null
@@ -486,6 +543,7 @@ export function EvidenceCapture({
         setPending((prev) =>
           prev.map((p) => (p.id === item.id ? { ...p, state: 'uploaded' } : p)),
         )
+        if (evidencePackId) packCapture.mark(evidencePackId, item.id, 'saved')
         return true
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Upload failed.'
@@ -494,6 +552,7 @@ export function EvidenceCapture({
             p.id === item.id ? { ...p, state: 'error', error: msg } : p,
           ),
         )
+        if (evidencePackId) packCapture.mark(evidencePackId, item.id, 'failed')
         return false
       }
     },
@@ -536,9 +595,35 @@ export function EvidenceCapture({
     }
     setStage('uploading')
     setBatchError(null)
+    // Commit each logical photo to the pack's intent map. The gate + server
+    // verify the pack actually reaches this total.
+    if (evidencePackId) {
+      for (const it of readyItems) packCapture.commit(evidencePackId, it.id)
+    }
     await runUploads(readyItems)
     setStage('done')
-  }, [pending, runUploads])
+  }, [pending, runUploads, evidencePackId])
+
+  // Retry photos whose upload/attach failed, so a failed save is never a
+  // silent loss (the compressed blobs are still held in memory here — they
+  // are NOT saved to the device, so leaving/reloading would lose them).
+  // Each retry requests a FRESH upload slot + photo id, so the failed
+  // attempt (which never persisted a row) cannot create a duplicate.
+  const retryFailed = useCallback(async () => {
+    const failedItems = pending.filter((p) => p.state === 'error' && p.master && p.thumb)
+    if (failedItems.length === 0) return
+    setStage('uploading')
+    setBatchError(null)
+    if (evidencePackId) {
+      for (const it of failedItems) packCapture.mark(evidencePackId, it.id, 'uploading')
+    }
+    setPending((prev) =>
+      prev.map((p) => (p.state === 'error' ? { ...p, state: 'ready', error: undefined } : p)),
+    )
+    // Reuses each item's stored slot + PUT progress → idempotent retry.
+    await runUploads(failedItems.map((f) => ({ ...f, state: 'ready' as const })))
+    setStage('done')
+  }, [pending, runUploads, evidencePackId])
 
   // Raise-flag shortcut: attaches any pending-and-ready photos to
   // the current pack first (so they're not silently lost), then
@@ -550,6 +635,11 @@ export function EvidenceCapture({
     if (readyItems.length > 0) {
       setStage('uploading')
       setBatchError(null)
+      // Same intent accounting as handleAttach so the shared store stays
+      // balanced when photos are attached via the Report-issue shortcut.
+      if (evidencePackId) {
+        for (const it of readyItems) packCapture.commit(evidencePackId, it.id)
+      }
       const allOk = await runUploads(readyItems)
       if (!allOk) {
         setBatchError(
@@ -570,7 +660,7 @@ export function EvidenceCapture({
       console.info('[EvidenceCapture] navigating to raise-flag:', target)
       window.location.href = target
     }
-  }, [pending, runUploads, propertyId, stopCamera])
+  }, [pending, runUploads, propertyId, stopCamera, evidencePackId])
 
   const finishAndReload = useCallback(() => {
     closeModal()
@@ -591,6 +681,24 @@ export function EvidenceCapture({
   const uploadedCount = pending.filter((p) => p.state === 'uploaded').length
   const errorCount = pending.filter((p) => p.state === 'error').length
   const isMidUpload = stage === 'uploading'
+
+  // Warn before leaving/reloading while there is unsaved photo work
+  // (captured/selected/failed but not yet linked). These compressed
+  // blobs live only in memory — a reload would lose them silently, which
+  // is exactly how evidence went missing. Native beforeunload only; no
+  // new deps, and it self-removes once everything is saved.
+  const hasUnsavedWork = pending.some(
+    (p) => p.state === 'ready' || p.state === 'uploading' || p.state === 'error',
+  )
+  useEffect(() => {
+    if (!hasUnsavedWork) return
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [hasUnsavedWork])
 
   // --------------------------------------------------------------
   // Render
@@ -669,9 +777,12 @@ export function EvidenceCapture({
               ) : null}
               <button
                 type="button"
-                onClick={closeModal}
-                className="rounded-full p-1.5 hover:bg-white/10 transition"
+                onClick={dismiss}
+                className="rounded-full p-1.5 hover:bg-white/10 transition disabled:opacity-40 disabled:cursor-not-allowed"
                 aria-label="Close camera"
+                // Disabled only during an active upload batch (in flight);
+                // otherwise closing with unattached/failed photos goes through
+                // the destructive confirm in `dismiss` (req 8).
                 disabled={isMidUpload}
               >
                 <X size={20} aria-hidden />
@@ -968,19 +1079,38 @@ export function EvidenceCapture({
               </ul>
 
               {stage === 'done' ? (
-                <div className="mt-5 flex items-center justify-end gap-3">
+                <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
                   {errorCount > 0 ? (
                     <p className="text-sm text-red-400 mr-auto">
-                      {errorCount} photo{errorCount === 1 ? '' : 's'} failed to attach.
+                      {errorCount} photo{errorCount === 1 ? '' : 's'} failed to save — retry,
+                      or discard to submit only what saved.
                     </p>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={finishAndReload}
-                    className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-white active:bg-emerald-600 transition"
-                  >
-                    Done
-                  </button>
+                  ) : (
+                    <p className="text-sm text-emerald-400 mr-auto">
+                      All {uploadedCount} photo{uploadedCount === 1 ? '' : 's'} saved.
+                    </p>
+                  )}
+                  {/* No "Done" while failures remain, and no bulk "discard →
+                      submit what saved" escape (Outcome 1). Failed evidence
+                      must be Retried; abandoning it is only possible via the
+                      destructive close confirm, which never implies it saved. */}
+                  {errorCount > 0 ? (
+                    <button
+                      type="button"
+                      onClick={retryFailed}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-amber-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-amber-300 active:bg-amber-500 transition"
+                    >
+                      Retry {errorCount} failed
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={finishAndReload}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-white active:bg-emerald-600 transition"
+                    >
+                      Done
+                    </button>
+                  )}
                 </div>
               ) : null}
             </div>

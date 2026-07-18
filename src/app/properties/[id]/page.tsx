@@ -18,6 +18,11 @@ import {
 import { AppShell } from '@/components/app-shell'
 import { InsecureContextBanner } from '@/components/insecure-context-banner'
 import { EvidenceCapture } from '@/components/photos/evidence-capture'
+import {
+  DiscardDraftButton,
+  PackStatusBanner,
+  PackSubmitButton,
+} from '@/components/photos/pack-submit-button'
 import { GalleryUploader } from '@/components/photos/gallery-uploader'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -44,11 +49,7 @@ import { propertyStatusDisplay } from '@/lib/ui/property-status'
 import { relativeTime } from '@/lib/ui/relative-time'
 import { updateFlagAction } from './flags/[flagId]/actions'
 import { toggleFlagMarkAction } from './flags/[flagId]/marks/actions'
-import {
-  discardEvidencePackAction,
-  startPreArrivalPackAction,
-  submitEvidencePackAction,
-} from './packs/actions'
+import { startPreArrivalPackAction } from './packs/actions'
 
 /**
  * GET /properties/[id]
@@ -487,83 +488,92 @@ export default async function PropertyPage({
               repeatable turnover capture. */}
           <div className="mt-4 pt-4 border-t border-slate-100">
             {draftPack ? (
-              <div>
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-slate-900">
-                      Pre-arrival pack in progress
-                    </p>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      {draftPack.title ?? 'Pre-arrival pack'} ·{' '}
-                      {draftPackPhotoCount} photo
-                      {draftPackPhotoCount === 1 ? '' : 's'} so far · started{' '}
-                      {relativeTime(draftPack.started_at)}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <EvidenceCapture
-                      propertyId={property.id}
-                      evidencePackId={draftPack.id}
-                      launchLabel={
-                        draftPackPhotoCount > 0 ? 'Continue capturing' : 'Take photos'
-                      }
-                      raiseFlagHref={`/properties/${property.id}/flags/new`}
-                      autoOpen={capture_now === '1'}
-                    />
-                    {/* Bulletproof gallery path — no modal, no
-                        getUserMedia. Just a styled <label> wrapping
-                        a plain <input type="file" multiple>. iOS
-                        Safari can't block this because the picker
-                        opens from a direct user gesture (the label
-                        tap). Lives as a separate component so the
-                        EvidenceCapture modal complexity stays out
-                        of this code path. */}
-                    <GalleryUploader
-                      propertyId={property.id}
-                      evidencePackId={draftPack.id}
-                      label="Upload from gallery"
-                    />
+              <div className="min-w-0">
+                {/* Heading + meta. The photo count deliberately lives ONLY in
+                    the status banner below — one authoritative status. */}
+                <p className="text-sm font-medium text-slate-900">
+                  Pre-arrival pack in progress
+                </p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {draftPack.title ?? 'Pre-arrival pack'} · started{' '}
+                  {relativeTime(draftPack.started_at)}
+                </p>
+
+                {/* 1. The one authoritative, prominent safety status. */}
+                <PackStatusBanner
+                  packId={draftPack.id}
+                  linkedPhotoCount={draftPackPhotoCount}
+                  className="mt-3"
+                />
+
+                {/* 2. Add-photos group. */}
+                <p className="mt-4 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+                  Add photos
+                </p>
+                <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                  <EvidenceCapture
+                    propertyId={property.id}
+                    evidencePackId={draftPack.id}
+                    launchLabel={
+                      draftPackPhotoCount > 0 ? 'Continue capturing' : 'Take photos'
+                    }
+                    // Capturing leads only while the pack is empty; once there
+                    // are photos, Submit becomes the dominant action.
+                    launchVariant={draftPackPhotoCount === 0 ? 'primary' : 'subtle'}
+                    raiseFlagHref={`/properties/${property.id}/flags/new`}
+                    autoOpen={capture_now === '1'}
+                  />
+                  {/* Bulletproof gallery path — no modal, no
+                      getUserMedia. Just a styled <label> wrapping
+                      a plain <input type="file" multiple>. iOS
+                      Safari can't block this because the picker
+                      opens from a direct user gesture (the label
+                      tap). Lives as a separate component so the
+                      EvidenceCapture modal complexity stays out
+                      of this code path. */}
+                  <GalleryUploader
+                    propertyId={property.id}
+                    evidencePackId={draftPack.id}
+                    label="Upload from gallery"
+                  />
+                </div>
+
+                {/* 3. Pack actions, ordered, with Submit as the final primary. */}
+                <div className="mt-4 pt-3 border-t border-slate-100">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                    <Link
+                      href={`/properties/${property.id}/packs/${draftPack.id}/report`}
+                      target="_blank"
+                      rel="noopener"
+                      className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2 sm:w-auto"
+                    >
+                      <FileText size={13} aria-hidden />
+                      Open pack
+                    </Link>
+                    <Link
+                      href={`/properties/${property.id}/flags/new`}
+                      className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 transition hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-700 focus-visible:ring-offset-2 sm:w-auto"
+                    >
+                      <Flag size={13} aria-hidden />
+                      Spotted an issue — report it
+                    </Link>
+                    <div className="sm:ml-auto">
+                      <PackSubmitButton
+                        propertyId={property.id}
+                        packId={draftPack.id}
+                        linkedPhotoCount={draftPackPhotoCount}
+                        showStatus={false}
+                      />
+                    </div>
                   </div>
                 </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <Link
-                    href={`/properties/${property.id}/packs/${draftPack.id}/report`}
-                    target="_blank"
-                    rel="noopener"
-                    className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition"
-                  >
-                    <FileText size={13} aria-hidden />
-                    Open pack
-                  </Link>
-                  <Link
-                    href={`/properties/${property.id}/flags/new`}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 transition"
-                  >
-                    <Flag size={13} aria-hidden />
-                    Spotted an issue — report it
-                  </Link>
-                  <form action={submitEvidencePackAction} className="contents">
-                    <input type="hidden" name="property_id" value={property.id} />
-                    <input type="hidden" name="pack_id" value={draftPack.id} />
-                    <button
-                      type="submit"
-                      className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 text-white px-3 py-1.5 text-xs font-semibold hover:bg-emerald-700 active:bg-emerald-800 transition"
-                    >
-                      <Check size={13} aria-hidden />
-                      Submit pack
-                    </button>
-                  </form>
-                  <form action={discardEvidencePackAction} className="contents">
-                    <input type="hidden" name="property_id" value={property.id} />
-                    <input type="hidden" name="pack_id" value={draftPack.id} />
-                    <button
-                      type="submit"
-                      className="inline-flex items-center gap-1.5 rounded-md text-xs font-medium text-slate-500 hover:text-red-600 px-2 py-1.5 transition"
-                      title="Discard this draft pack"
-                    >
-                      Discard draft
-                    </button>
-                  </form>
+
+                {/* 4. Destructive action, separated from everything else. */}
+                <div className="mt-4 pt-3 border-t border-slate-100">
+                  <DiscardDraftButton
+                    propertyId={property.id}
+                    packId={draftPack.id}
+                  />
                 </div>
               </div>
             ) : (

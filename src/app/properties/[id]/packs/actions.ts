@@ -6,6 +6,7 @@ import { getUserContext } from '@/lib/auth/get-user-context'
 import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
 import { formatDateTimeSAST } from '@/lib/ui/datetime'
+import { evaluatePackSubmit, parseExpectedCount } from '@/lib/packs/submit-guard'
 
 /**
  * Evidence-pack lifecycle server actions.
@@ -153,12 +154,13 @@ export async function submitEvidencePackAction(formData: FormData) {
   // Verify pack belongs to this property + is currently a draft.
   const { data: pack, error: readErr } = await supabase
     .from('evidence_packs')
-    .select('id, status, property_id, company_id')
+    .select('id, status, pack_type, property_id, company_id')
     .eq('id', packId)
     .is('deleted_at', null)
     .maybeSingle<{
       id: string
       status: string
+      pack_type: string
       property_id: string
       company_id: string
     }>()
@@ -176,12 +178,60 @@ export async function submitEvidencePackAction(formData: FormData) {
     const url = returnTo ?? `/properties/${propertyId}`
     redirect(`${url}?error=${encodeURIComponent('Pack does not belong to this property.')}`)
   }
+  if (pack.status === 'submitted') {
+    // Idempotent submit: a lost response or a duplicate click lands here.
+    // The pack is already submitted — treat it as SUCCESS (don't create
+    // anything, don't show a misleading destructive error).
+    if (returnTo) redirect(returnTo)
+    redirect(`/properties/${propertyId}?pack_submitted=1`)
+  }
   if (pack.status !== 'draft') {
     const url = returnTo ?? `/properties/${propertyId}`
-    redirect(`${url}?error=${encodeURIComponent('Pack is already submitted.')}`)
+    redirect(`${url}?error=${encodeURIComponent('Pack is in an unexpected state and was not submitted.')}`)
+  }
+
+  // ----------------------------------------------------------------
+  // FAIL-CLOSED PHOTO GUARD (fix/prearrival-photo-submit-guard)
+  // ----------------------------------------------------------------
+  // Scoped to the pre-arrival workflow. Never let a pre-arrival pack
+  // become `submitted` while it has zero active linked photos, or
+  // fewer than the client says it expected (partial-upload race). This
+  // is server-authoritative — it runs regardless of the client's
+  // disabled button, so a direct/stale/duplicate/manipulated request
+  // is rejected too. On failure the pack stays a draft and we redirect
+  // back with a useful error (never a fake success). The count query is
+  // company-scoped by RLS, filtered to this pack, and excludes
+  // soft-deleted rows, so deleted photos can't satisfy the requirement.
+  if (pack.pack_type === 'pre_arrival') {
+    const { count: linkedCount, error: countErr } = await supabase
+      .from('photos')
+      .select('id', { count: 'exact', head: true })
+      .eq('evidence_pack_id', packId)
+      .is('deleted_at', null)
+
+    if (countErr) {
+      console.error('[packs/submit] photo count error:', countErr)
+      const url = returnTo ?? `/properties/${propertyId}`
+      redirect(
+        `${url}?error=${encodeURIComponent(
+          'Could not verify the pack photos. It is still a draft — please try again.',
+        )}`,
+      )
+    }
+
+    const decision = evaluatePackSubmit({
+      linkedActivePhotoCount: linkedCount ?? 0,
+      expected: parseExpectedCount(formData.get('expected_count')),
+    })
+    if (!decision.ok) {
+      const url = returnTo ?? `/properties/${propertyId}`
+      redirect(`${url}?error=${encodeURIComponent(decision.message)}`)
+    }
   }
 
   const now = new Date().toISOString()
+  // Atomic flip: only transition a row that is STILL a draft, so
+  // concurrent/duplicate submits can't double-process.
   const { error: updateErr } = await supabase
     .from('evidence_packs')
     .update({
@@ -190,6 +240,7 @@ export async function submitEvidencePackAction(formData: FormData) {
       submitted_by: ctx.user.id,
     })
     .eq('id', packId)
+    .eq('status', 'draft')
 
   if (updateErr) {
     console.error('[packs/submit] update error:', updateErr)
