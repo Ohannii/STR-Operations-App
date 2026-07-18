@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { createClient } from '@/lib/supabase/server'
-import { maybeEnqueueFlagCreated } from '@/lib/integrations/outbox'
+import { maybeEnqueueFlagCreated, maybeEnqueueFlagEvents } from '@/lib/integrations/outbox'
 import { VALID_CHARGEABLE_VALUES } from '@/lib/ui/flag-status'
 import { EVIDENCE_BUCKET } from '@/lib/photos/paths'
 import { isUuid, validatePhotoDescriptors } from '@/lib/photos/finalize-helpers'
@@ -315,9 +315,10 @@ export async function finalizeFlagWithPhotos(
   const result: 'created' | 'already_finalized' =
     rpcResult === 'already_finalized' ? 'already_finalized' : 'created'
 
-  // Enqueue Asana ONLY after the flag + all photos are finalised
-  // (create OR valid idempotent replay). Failure-isolated: never throws.
-  await maybeEnqueueFlagCreated(supabase, {
+  // Enqueue Asana ONLY after the flag + all photos are finalised (create OR
+  // valid idempotent replay). Enqueues BOTH the create-task and the
+  // attach-evidence events. Failure-isolated: never throws, never blocks.
+  await maybeEnqueueFlagEvents(supabase, {
     companyId: ctx.company.id,
     flagId: proposedFlagId,
     createdBy: ctx.user.id,

@@ -32,6 +32,8 @@ export type ArtifactStore = {
     path: string,
     bytes: Buffer,
   ) => Promise<{ ok: boolean; conflict: boolean; error?: string }>
+  /** Download the object bytes, or null if it does not exist. */
+  download?: (path: string) => Promise<Buffer | null>
 }
 
 /**
@@ -61,4 +63,34 @@ export async function ensureAndSignArtifact(
     throw new Error('report artifact could not be signed after write')
   }
   return signed
+}
+
+/**
+ * Ensure the immutable artifact exists at `path` and RETURN ITS BYTES (for
+ * server-side consumers like the Asana attach worker). Create-only + reuse:
+ *   - already present → download the stored bytes (never re-render);
+ *   - absent → render + create-only upload → return the rendered bytes;
+ *   - lost the create race → download the winner's bytes.
+ * Requires a store with `download`.
+ */
+export async function ensureArtifactBytes(
+  store: ArtifactStore,
+  path: string,
+  render: () => Promise<Buffer>,
+): Promise<Buffer> {
+  if (!store.download) throw new Error('store does not support download')
+
+  const existing = await store.download(path)
+  if (existing) return existing
+
+  const bytes = await render()
+  const put = await store.createOnly(path, bytes)
+  if (put.ok) return bytes
+  if (!put.conflict) {
+    throw new Error(`report upload failed: ${put.error ?? 'unknown error'}`)
+  }
+  // Lost the race → load the winner's bytes.
+  const winner = await store.download(path)
+  if (!winner) throw new Error('report artifact vanished after conflict')
+  return winner
 }

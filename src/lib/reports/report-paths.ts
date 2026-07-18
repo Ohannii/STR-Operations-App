@@ -94,7 +94,12 @@ export function packReportObjectPath(companyId: string, packId: string): string 
  * non-ASCII, converts dashes (incl. em dash) to hyphens, replaces unsafe
  * characters, and always ends in `.pdf`.
  */
-export function safeAsciiFilename(raw: string, maxLen = 120): string {
+/**
+ * Sanitize to ASCII / filesystem-safe, length-limited. Preserves whatever
+ * extension the caller already put in `raw` (e.g. `.jpg` or `.pdf`) — it does
+ * NOT force one. Use this when the extension matters (Asana attachment names).
+ */
+export function sanitizeFilename(raw: string, maxLen = 120): string {
   const cleaned = (raw ?? '')
     .normalize('NFKD')
     .replace(/[‐-―−]/g, '-') // hyphen/en/em dash, minus → '-'
@@ -105,8 +110,12 @@ export function safeAsciiFilename(raw: string, maxLen = 120): string {
     .replace(/-{2,}/g, '-')
     .trim()
     .replace(/^[-.\s]+|[-.\s]+$/g, '')
+  return (cleaned || 'report').slice(0, maxLen).replace(/[-.\s]+$/g, '')
+}
 
-  const base = (cleaned || 'report').slice(0, maxLen).replace(/[-.\s]+$/g, '')
+/** Sanitized PDF filename — always ends in `.pdf` (for the manual Share PDF). */
+export function safeAsciiFilename(raw: string, maxLen = 120): string {
+  const base = sanitizeFilename(raw, maxLen)
   return /\.pdf$/i.test(base) ? base : `${base}.pdf`
 }
 

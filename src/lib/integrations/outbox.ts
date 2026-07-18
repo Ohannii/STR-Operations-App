@@ -144,3 +144,130 @@ export async function maybeEnqueueFlagCreated(
     console.error('[outbox] flag-created enqueue skipped:', err)
   }
 }
+
+// ---------------------------------------------------------------
+// Slice 11C2 — attach flag evidence (PDF + photos) to the task.
+// ---------------------------------------------------------------
+
+/**
+ * PURE. Build the outbox row for "attach flag evidence". `content_generation`
+ * starts at 1 and is bumped on every re-arm; the worker uses it as a
+ * compare-and-set token so a change during processing is never lost.
+ */
+export function buildAttachEvidenceEvent(input: FlagCreatedOutboxInput): OutboxInsertRow {
+  return {
+    company_id: input.companyId,
+    provider: 'asana',
+    event_type: 'asana.attach_flag_evidence',
+    entity_type: 'flag',
+    entity_id: input.flagId,
+    payload: { ...(input.payload ?? {}), flag_id: input.flagId, content_generation: 1 },
+    created_by: input.createdBy,
+  }
+}
+
+/** Thin I/O. Enqueue an attach-evidence event; 23505 → skipped duplicate. */
+export async function enqueueAttachEvidenceEvent(
+  supabase: SupabaseClient,
+  input: FlagCreatedOutboxInput,
+): Promise<EnqueueResult> {
+  try {
+    const { error } = await supabase
+      .from('integration_outbox')
+      .insert(buildAttachEvidenceEvent(input))
+    if (error) {
+      if (error.code === '23505') return { enqueued: false, skipped: 'duplicate' }
+      return { enqueued: false, error: error.message }
+    }
+    return { enqueued: true }
+  } catch (err) {
+    return { enqueued: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * At finalisation: enqueue BOTH the create-task and attach-evidence events
+ * (each ON CONFLICT DO NOTHING). NEVER throws. Only when Asana is enabled.
+ */
+export async function maybeEnqueueFlagEvents(
+  supabase: SupabaseClient,
+  input: FlagCreatedOutboxInput,
+): Promise<void> {
+  try {
+    if (await isAsanaEnabled(supabase, input.companyId)) {
+      await enqueueFlagCreatedEvent(supabase, input)
+      await enqueueAttachEvidenceEvent(supabase, input)
+    }
+  } catch (err) {
+    console.error('[outbox] flag events enqueue skipped:', err)
+  }
+}
+
+/**
+ * Re-arm ONLY the attach-evidence event after a report-relevant change, so
+ * new photos / a new PDF revision get attached. NEVER re-arms create-task
+ * (that would risk a duplicate Asana task). NEVER throws.
+ *
+ * Race-safe: if the event is mid-`processing`, we bump `content_generation`
+ * only — the worker's compare-and-set completion detects the change and
+ * reschedules. Otherwise we reset it to `pending` (fresh dependency-wait
+ * window, attempts cleared). If no attach event exists yet (e.g. a flag
+ * created before this slice), we insert one.
+ */
+export async function maybeReArmAttachEvidence(
+  supabase: SupabaseClient,
+  input: FlagCreatedOutboxInput,
+): Promise<void> {
+  try {
+    if (!(await isAsanaEnabled(supabase, input.companyId))) return
+
+    const { data: existing } = await supabase
+      .from('integration_outbox')
+      .select('id, status, payload')
+      .eq('company_id', input.companyId)
+      .eq('provider', 'asana')
+      .eq('event_type', 'asana.attach_flag_evidence')
+      .eq('entity_type', 'flag')
+      .eq('entity_id', input.flagId)
+      .is('deleted_at', null)
+      .maybeSingle<{ id: string; status: string; payload: Record<string, unknown> | null }>()
+
+    if (!existing) {
+      await enqueueAttachEvidenceEvent(supabase, input)
+      return
+    }
+
+    const payload = existing.payload ?? {}
+    const nextGen = Number(payload.content_generation ?? 0) + 1
+    const nextPayload: Record<string, unknown> = {
+      ...payload,
+      flag_id: input.flagId,
+      content_generation: nextGen,
+    }
+
+    if (existing.status === 'processing') {
+      // Mid-run: bump generation only; do not disturb the worker's lease.
+      await supabase
+        .from('integration_outbox')
+        .update({ payload: nextPayload })
+        .eq('id', existing.id)
+      return
+    }
+
+    // Otherwise re-arm to pending and reset the dependency-wait window.
+    delete nextPayload.dep_wait_started_at
+    await supabase
+      .from('integration_outbox')
+      .update({
+        status: 'pending',
+        available_at: new Date().toISOString(),
+        attempt_count: 0,
+        last_error: null,
+        locked_at: null,
+        payload: nextPayload,
+      })
+      .eq('id', existing.id)
+  } catch (err) {
+    console.error('[outbox] attach re-arm skipped:', err)
+  }
+}

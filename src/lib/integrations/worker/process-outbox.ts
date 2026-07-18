@@ -31,7 +31,7 @@ import {
   buildFlagForMapping,
   type OutboxFlagRow,
 } from '@/lib/integrations/worker/build-flag-for-mapping'
-import type { TaskPayload, TaskProvider } from '@/lib/integrations/types'
+import type { OutboxEventType, TaskPayload, TaskProvider } from '@/lib/integrations/types'
 
 /** Give up (mark dead) after this many failed attempts. */
 const MAX_ATTEMPTS = 8
@@ -65,21 +65,34 @@ export type RealRunResult =
     }
   | { status: 'error'; outboxId: string; flagId: string; error: string }
 
-type GuardOutcome =
+export type GuardOutcome =
   | { kind: 'no_pending' }
   | { kind: 'refused'; outboxId: string; reason: string }
-  | { kind: 'ok'; outboxId: string; companyId: string; flagId: string; attemptCount: number }
+  | {
+      kind: 'ok'
+      outboxId: string
+      companyId: string
+      flagId: string
+      attemptCount: number
+      payload: Record<string, unknown>
+    }
 
-/** Read ONE pending Asana outbox row and run the company allowlist guard. */
-async function readAndGuardOutbox(
+/**
+ * Read ONE pending Asana outbox row of the given event type and run the
+ * company allowlist guard. `eventType` scopes the queue so create-task and
+ * attach-evidence events are drained independently.
+ */
+export async function readAndGuardOutbox(
   supabase: SupabaseClient,
   deps: DryRunDeps,
+  eventType: OutboxEventType = 'asana.create_task_for_flag',
 ): Promise<GuardOutcome> {
   const nowIso = new Date().toISOString()
   const { data: rows, error } = await supabase
     .from('integration_outbox')
-    .select('id, company_id, entity_type, entity_id, status, attempt_count')
+    .select('id, company_id, entity_type, entity_id, status, attempt_count, payload')
     .eq('provider', 'asana')
+    .eq('event_type', eventType)
     .eq('status', 'pending')
     .is('deleted_at', null)
     .lte('available_at', nowIso)
@@ -95,6 +108,7 @@ async function readAndGuardOutbox(
   const companyId = String(outbox.company_id)
   const flagId = String(outbox.entity_id)
   const attemptCount = Number(outbox.attempt_count ?? 0)
+  const payload = (outbox.payload ?? {}) as Record<string, unknown>
 
   try {
     assertAllowedCompany(companyId, deps.allowedCompanyIds)
@@ -105,7 +119,7 @@ async function readAndGuardOutbox(
     throw err
   }
 
-  return { kind: 'ok', outboxId, companyId, flagId, attemptCount }
+  return { kind: 'ok', outboxId, companyId, flagId, attemptCount, payload }
 }
 
 /** Re-read authoritative flag data and build the task payload. Null = flag not found. */

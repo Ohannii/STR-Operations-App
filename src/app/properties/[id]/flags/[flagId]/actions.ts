@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
+import { maybeReArmAttachEvidence } from '@/lib/integrations/outbox'
 import {
   FLAG_STATUSES,
   VALID_CHARGEABLE_VALUES,
@@ -176,6 +177,15 @@ export async function updateFlagAction(formData: FormData) {
     console.error('[flag/update] audit write failed:', auditErr)
   }
 
+  // Slice 11C2: a report-relevant change → re-arm the Asana evidence attach
+  // so the updated PDF (new content hash) is attached. Attach-only; never
+  // re-arms task creation. Failure-isolated (never throws / blocks).
+  await maybeReArmAttachEvidence(supabase, {
+    companyId: ctx.company.id,
+    flagId,
+    createdBy: ctx.user.id,
+  })
+
   // Session 8 fix: explicit cache invalidation. Without this, the
   // Action Centre at /properties/[id] may serve a stale RSC payload
   // after the redirect — closed flags show as still-open in the
@@ -317,6 +327,13 @@ export async function reopenFlagAction(formData: FormData) {
   if (auditErr) {
     console.error('[flag/reopen] audit write failed:', auditErr)
   }
+
+  // Slice 11C2: reopening changes the rendered report → re-arm attach.
+  await maybeReArmAttachEvidence(supabase, {
+    companyId: ctx.company.id,
+    flagId,
+    createdBy: ctx.user.id,
+  })
 
   revalidatePath(`/properties/${propertyId}`)
   revalidatePath(`/properties/${propertyId}/flags/${flagId}`)

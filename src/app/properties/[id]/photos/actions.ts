@@ -17,6 +17,7 @@ import {
 } from '@/lib/photos/retention'
 import { isUuid } from '@/lib/photos/finalize-helpers'
 import { checkFlagPhotoCollision } from '@/lib/photos/collision-check'
+import { maybeReArmAttachEvidence } from '@/lib/integrations/outbox'
 import {
   buildFlagPhotoSlot,
   type FlagPhotoSlotResult,
@@ -609,6 +610,17 @@ export async function attachEvidencePhoto(
   }
   if (evidencePackId) {
     revalidatePath(`/properties/${propertyId}/packs/${evidencePackId}/report`)
+  }
+
+  // Slice 11C2: a follow-up photo on an existing flag changes the report
+  // content → re-arm the Asana evidence attach (attach-only, failure-isolated)
+  // so the new photo + new PDF revision get attached. Pack photos don't apply.
+  if (flagId) {
+    await maybeReArmAttachEvidence(supabase, {
+      companyId: ctx.company.id,
+      flagId,
+      createdBy: ctx.user.id,
+    })
   }
 
   return { ok: true, photoId }
