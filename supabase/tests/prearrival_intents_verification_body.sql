@@ -63,7 +63,12 @@ begin
 end $$;
 
 -- Resolve fixtures ONCE, failing hard if the expected environment is absent.
-create or replace function pg_temp.fixtures(out o_user uuid, out o_company uuid, out o_property uuid)
+create or replace function pg_temp.fixtures(
+  out o_user uuid,
+  out o_company uuid,
+  out o_property uuid,
+  out o_denial_property uuid
+)
 language plpgsql as $$
 begin
   o_company := '1669c464-8d26-40fc-9956-9f8955fd27c7';
@@ -72,11 +77,39 @@ begin
     raise exception 'VERIFICATION ABORTED: test company % not found on this database', o_company;
   end if;
 
-  select id into o_property from public.properties
-  where company_id = o_company and deleted_at is null and name = 'Test 1'
+  select p.id into o_property
+  from public.properties p
+  where p.company_id = o_company
+    and p.deleted_at is null
+    and not exists (
+      select 1
+      from public.evidence_packs ep
+      where ep.property_id = p.id
+        and ep.pack_type = 'pre_arrival'
+        and ep.status = 'draft'
+        and ep.deleted_at is null
+    )
+  order by p.name, p.id
   limit 1;
-  if o_property is null then
-    raise exception 'VERIFICATION ABORTED: property "Test 1" not found in the test company';
+
+  select p.id into o_denial_property
+  from public.properties p
+  where p.company_id = o_company
+    and p.deleted_at is null
+    and p.id <> o_property
+    and not exists (
+      select 1
+      from public.evidence_packs ep
+      where ep.property_id = p.id
+        and ep.pack_type = 'pre_arrival'
+        and ep.status = 'draft'
+        and ep.deleted_at is null
+    )
+  order by p.name, p.id
+  limit 1;
+
+  if o_property is null or o_denial_property is null then
+    raise exception 'VERIFICATION ABORTED: fewer than two properties without active pre-arrival drafts';
   end if;
 
   select cm.user_id into o_user from public.company_memberships cm
@@ -259,7 +292,7 @@ do $$
 declare
   v_user uuid; v_company uuid; v_property uuid; v_pack uuid;
 begin
-  select o_user, o_company, o_property into v_user, v_company, v_property
+  select o_user, o_company, o_denial_property into v_user, v_company, v_property
   from pg_temp.fixtures();
 
   insert into public.evidence_packs
@@ -293,12 +326,9 @@ begin
     v_user);
 end $$;
 
-\echo ''
-\echo 'RACES (require TWO psql sessions — not simulatable in one transaction):'
-\echo '  A) s1: begin; select attach_prearrival_photo(...);   -- hold open'
-\echo '     s2: begin; select finalize_prearrival_pack(...);  -- must BLOCK'
-\echo '     commit s1 -> s2 proceeds and sees the photo, or fails closed.'
-\echo '  B) s1: begin; select finalize_prearrival_pack(...);  -- hold open'
-\echo '     s2: select attach_prearrival_photo(...);          -- must BLOCK, then fail'
-\echo '         with "pack is not a draft" once s1 commits.'
-\echo '  Lock order is always evidence_packs -> photo_upload_intents (no deadlock).'
+-- MANUAL TWO-SESSION RACE CHECKS (not simulatable in one transaction):
+-- A) Session 1 holds attach_prearrival_photo open; Session 2 finalise must block.
+--    After Session 1 commits, Session 2 must see the photo or fail closed.
+-- B) Session 1 holds finalize_prearrival_pack open; Session 2 attach must block,
+--    then fail with "pack is not a draft" after Session 1 commits.
+-- Expected lock order: evidence_packs -> photo_upload_intents; no deadlock.
