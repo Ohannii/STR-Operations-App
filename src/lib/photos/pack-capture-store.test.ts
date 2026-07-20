@@ -88,6 +88,62 @@ describe('pack-capture-store: baseline + derived totals', () => {
   })
 })
 
+describe('REGRESSION: a background uploader MUST report back or the pack sticks', () => {
+  // Live incident, 20 Jul 2026. The server had stored the pack completely
+  // (linked 8, completed_intents 8, unresolved 0) while the screen read
+  // "Uploading 3 of 13" for over an hour and Submit stayed disabled. Cause:
+  // evidence-capture committed each released photo here as 'pending', then the
+  // durable queue took over uploading and nothing ever marked them saved.
+  // Only a page reload cleared it.
+  it('committed-but-never-marked photos block FOREVER — this is the trap', () => {
+    const p = freshPack()
+    packCapture.syncBaseline(p, 10)
+    for (const id of ['a', 'b', 'c']) packCapture.commit(p, id)
+    // No amount of elapsed time or server success changes this on its own.
+    expect(packCapture.snapshot(p)).toMatchObject({
+      intendedTotal: 13,
+      pending: 3,
+      blocking: true,
+    })
+  })
+
+  it('marking saved — what the queue now does — releases the pack', () => {
+    const p = freshPack()
+    packCapture.syncBaseline(p, 10)
+    for (const id of ['a', 'b', 'c']) packCapture.commit(p, id)
+    for (const id of ['a', 'b', 'c']) packCapture.mark(p, id, 'saved')
+    expect(packCapture.snapshot(p)).toMatchObject({
+      intendedTotal: 13,
+      pending: 0,
+      saved: 3,
+      blocking: false,
+    })
+  })
+
+  it('a partially reported batch still blocks on exactly the stragglers', () => {
+    const p = freshPack()
+    packCapture.syncBaseline(p, 10)
+    for (const id of ['a', 'b', 'c']) packCapture.commit(p, id)
+    packCapture.mark(p, 'a', 'saved')
+    packCapture.mark(p, 'b', 'failed')
+    expect(packCapture.snapshot(p)).toMatchObject({ pending: 2, failed: 1, blocking: true })
+  })
+
+  it('reporting an id this session never committed is a safe no-op', () => {
+    // Resumed-after-reload records: the queue addresses photos the fresh store
+    // has never seen. It must not invent local work and re-block the pack.
+    const p = freshPack()
+    packCapture.syncBaseline(p, 8)
+    packCapture.mark(p, 'from-a-previous-session', 'saved')
+    packCapture.mark(p, 'from-a-previous-session', 'failed')
+    expect(packCapture.snapshot(p)).toMatchObject({
+      intendedTotal: 8,
+      pending: 0,
+      blocking: false,
+    })
+  })
+})
+
 describe('pack-capture-store: no persistence => no deadlock after reload', () => {
   it('a reload (fresh store entry) derives intent from the server, not history', () => {
     // Session 1: commit 5 on top of 10, only 3 land, then the tab is closed.

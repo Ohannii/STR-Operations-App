@@ -7,6 +7,7 @@ import {
   requestPhotoUploadSlot,
   type UploadSlot,
 } from '@/app/properties/[id]/photos/actions'
+import { packCapture } from '@/lib/photos/pack-capture-store'
 import {
   deleteQueuedPhoto,
   listQueuedForPack,
@@ -260,6 +261,16 @@ async function withTimeout<T>(work: Promise<T>, ms: number, label: string): Prom
 
 async function uploadOne(record: QueuedPhotoRecord): Promise<void> {
   await patchQueuedPhoto(record.id, { state: 'uploading' })
+  // REPORT BACK to the in-memory session store. evidence-capture commits every
+  // released photo there as 'pending', and that store drives both the status
+  // banner and the submit gate. When pack uploads moved out of the modal into
+  // this worker, nothing marked those photos saved any more — so a pack the
+  // server had stored completely still read "Uploading 3 of 13" and stayed
+  // unsubmittable until a page reload. The logical id is the same one
+  // ingestBlob minted, so these address the exact same photo. mark() no-ops
+  // safely for records this session never committed (e.g. resumed after a
+  // reload), which is correct: there is nothing local to unblock.
+  packCapture.mark(record.packId, record.id, 'uploading')
   await refreshQueue(record.packId)
 
   // 1+2. Intent + slot. The SAME uuid always returns the same relationship and
@@ -307,6 +318,7 @@ async function uploadOne(record: QueuedPhotoRecord): Promise<void> {
 
   // 5. Atomic attach.
   await patchQueuedPhoto(record.id, { state: 'attaching' })
+  packCapture.mark(record.packId, record.id, 'attaching')
   await refreshQueue(record.packId)
   const attached = await withTimeout(
     attachEvidencePhoto({
@@ -330,6 +342,9 @@ async function uploadOne(record: QueuedPhotoRecord): Promise<void> {
 
   // 6. ONLY now are the device bytes redundant.
   await deleteQueuedPhoto(record.id)
+  // The server has confirmed. This is the call whose absence stuck the banner
+  // and the Submit button.
+  packCapture.mark(record.packId, record.id, 'saved')
   // Mark the server-rendered linked count stale. We deliberately do NOT
   // refresh per photo — 40 photos would mean 40 server round-trips competing
   // with the uploads. The React binding refreshes ONCE when the drain cycle
@@ -395,6 +410,7 @@ export async function drainQueue(packId: string): Promise<void> {
           attempts: record.attempts + 1,
           lastAttemptAt: Date.now(),
         })
+        packCapture.mark(packId, record.id, 'failed')
         await refreshQueue(packId)
         // Stop this pass; a resume trigger or Retry will pick it up again.
         break
