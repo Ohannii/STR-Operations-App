@@ -99,6 +99,12 @@ export async function requestPhotoUploadSlot(input: {
    * captures don't carry a packId.
    */
   evidencePackId?: string | null
+  /**
+   * Logical photo id, generated once by the client and REUSED on every
+   * retry of the same photo. For pre-arrival packs this is the durable
+   * intent's primary key, which makes slot issuance idempotent.
+   */
+  photoId?: string | null
 }): Promise<UploadSlot | UploadSlotError> {
   const ctx = await getUserContext()
   if (!ctx || !ctx.company) {
@@ -214,23 +220,41 @@ export async function requestPhotoUploadSlot(input: {
     }
   }
 
-  const photoId = randomUUID()
-  const storageCtx: StorageContext = flagId
-    ? {
-        kind: 'flag',
-        companyId: property.company_id,
-        flagId,
-        photoId,
-      }
-    : {
-        kind: 'property',
-        companyId: property.company_id,
-        propertyId,
-        photoId,
-      }
+  // The client REUSES its logical photo id across retries so slot issuance,
+  // attach and (on replay) the durable intent all target the same identity.
+  const requestedId = input.photoId ? String(input.photoId).trim() : ''
+  const photoId = requestedId && isUuid(requestedId) ? requestedId : randomUUID()
 
-  const masterPath = masterStoragePath(storageCtx)
-  const thumbPath = thumbStoragePath(storageCtx)
+  let masterPath: string
+  let thumbPath: string
+
+  if (!flagId && evidencePackId) {
+    // Outcome 2: a durable server-side INTENT must exist BEFORE any upload
+    // URL is handed out, so a promised pre-arrival photo can never be
+    // invisible to the server. The RPC derives company/property from the
+    // pack, re-checks membership + draft status, derives the exact paths,
+    // and is idempotent for a replayed logical id (mismatch fails closed).
+    const { data: intentRows, error: intentErr } = await supabase.rpc(
+      'create_prearrival_photo_intent',
+      { p_pack_id: evidencePackId, p_photo_id: photoId },
+    )
+    if (intentErr) {
+      console.error('[photos/sign] intent error:', intentErr)
+      return { ok: false, error: intentErr.message }
+    }
+    const intent = Array.isArray(intentRows) ? intentRows[0] : intentRows
+    if (!intent?.master_path || !intent?.thumb_path) {
+      return { ok: false, error: 'Could not create the upload intent.' }
+    }
+    masterPath = intent.master_path as string
+    thumbPath = intent.thumb_path as string
+  } else {
+    const storageCtx: StorageContext = flagId
+      ? { kind: 'flag', companyId: property.company_id, flagId, photoId }
+      : { kind: 'property', companyId: property.company_id, propertyId, photoId }
+    masterPath = masterStoragePath(storageCtx)
+    thumbPath = thumbStoragePath(storageCtx)
+  }
 
   // createSignedUploadUrl returns a one-shot upload URL valid for
   // 2 hours by default. Even if the URL leaks, it cannot be used
@@ -558,12 +582,41 @@ export async function attachEvidencePhoto(
   const note = input.note ? String(input.note).trim().slice(0, 2000) : null
   const supabase = await createClient()
 
+  // Outcome 2: pre-arrival photos are recorded by the atomic RPC, which locks
+  // the durable intent, verifies the exact Storage objects exist, inserts (or
+  // relationship-verifies) the photos row and flips the intent to completed —
+  // all in one transaction. A lost response replays safely; any cross-company
+  // / property / pack / path mismatch fails closed. The mandatory FLAG capture
+  // path is deliberately unchanged below.
+  if (!flagId && evidencePackId) {
+    const { error: rpcErr } = await supabase.rpc('attach_prearrival_photo', {
+      p_photo_id: photoId,
+      p_width: input.width,
+      p_height: input.height,
+      p_size_bytes: input.sizeBytes,
+      p_captured_at: input.capturedAt ?? null,
+      p_note: note,
+    })
+    if (rpcErr) {
+      console.error('[photos/attach] prearrival rpc error:', rpcErr)
+      return { ok: false, error: rpcErr.message }
+    }
+
+    revalidatePath(`/properties/${propertyId}`)
+    revalidatePath(`/properties/${propertyId}/packs/${evidencePackId}/report`)
+    return { ok: true, photoId }
+  }
+
+  // NOTE: `evidence_pack_id` is deliberately NOT named here. Clients no longer
+  // hold the column privilege for it (only the pre-arrival RPCs may link a
+  // photo to a pack), and naming a column you cannot write fails even when the
+  // value is null. This path is flag / unlinked photos only, where it is
+  // always null anyway — behaviour is unchanged.
   const { error: insertErr } = await supabase.from('photos').insert({
     id: photoId,
     company_id: ctx.company.id,
     property_id: propertyId,
     flag_id: flagId,
-    evidence_pack_id: evidencePackId,
     entity_type: flagId ? 'flag' : 'property',
     retention_class: input.retentionClass,
     uploaded_by: ctx.user.id,

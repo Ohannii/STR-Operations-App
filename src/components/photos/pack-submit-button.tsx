@@ -7,68 +7,64 @@ import {
   submitEvidencePackAction,
 } from '@/app/properties/[id]/packs/actions'
 import { packCapture, usePackCapture } from '@/lib/photos/pack-capture-store'
+import { usePackQueue } from '@/lib/photos/photo-queue'
+import {
+  canSubmitPack,
+  describePackStatus,
+  shouldSuppressPackStatusBanner,
+  type PackStatusTone,
+} from '@/lib/photos/pack-status'
 
 /**
- * Pre-arrival pack controls (UI grouping only — no submit/upload logic
- * changes). Three pieces so the Action Centre can lay them out with a clear
- * hierarchy: ONE authoritative status, then "add photos", then pack actions
- * with Submit as the final primary, then the destructive action separated.
+ * Pre-arrival pack controls. Three pieces so the Action Centre can lay them
+ * out with a clear hierarchy: ONE authoritative status, then "add photos",
+ * then pack actions with Submit as the final primary, then the destructive
+ * action separated.
+ *
+ * Authority note (Outcome 2): the AUTHORITATIVE state is server-side —
+ * `serverUnresolvedCount` (pending upload intents) and `linkedPhotoCount`
+ * (active photo rows) both come from the server and survive reloads, other
+ * tabs and other devices. The client capture store only adds live in-flight
+ * detail for the current session; the real gate is the finalise RPC.
  */
 
-type StatusTone = 'ready' | 'uploading' | 'failed' | 'empty'
-
-/** The single source of the pack's operational status wording. */
-function describePackStatus(input: {
-  linked: number
-  intended: number
-  pending: number
-  failed: number
-}): { tone: StatusTone; text: string } {
-  const { linked, intended, pending, failed } = input
-  const inFlight = Math.max(0, pending - failed)
-
-  if (failed > 0) {
-    return {
-      tone: 'failed',
-      text: `${failed} photo${failed === 1 ? '' : 's'} failed to save — retry before submitting`,
-    }
-  }
-  if (inFlight > 0) {
-    return {
-      tone: 'uploading',
-      text: `Uploading ${inFlight} of ${intended} photo${intended === 1 ? '' : 's'} — keep this page open`,
-    }
-  }
-  const missing = Math.max(0, intended - linked)
-  if (missing > 0) {
-    return {
-      tone: 'failed',
-      text: `${missing} photo${missing === 1 ? '' : 's'} not saved — retry or recapture before submitting`,
-    }
-  }
-  if (linked < 1) {
-    return { tone: 'empty', text: 'Add at least one photo before submitting' }
-  }
-  return {
-    tone: 'ready',
-    text: `${linked} photo${linked === 1 ? '' : 's'} safely saved`,
-  }
-}
-
-function useIntended(packId: string, linkedPhotoCount: number) {
+function useIntended(
+  packId: string,
+  linkedPhotoCount: number,
+  serverUnresolved: number | null,
+) {
   const { intendedTotal, blocking, pending, failed } = usePackCapture(packId)
+  // Durable device queue (Outcome 3): photos whose bytes are safe on this
+  // device but which the server has not confirmed yet.
+  const queue = usePackQueue(packId)
   useEffect(() => {
     packCapture.syncBaseline(packId, linkedPhotoCount)
   }, [packId, linkedPhotoCount])
   const intended = Math.max(intendedTotal, linkedPhotoCount)
-  return { intended, blocking, pending, failed }
+  // Blocked by: unknown server state (fail closed), the durable device queue,
+  // server-side unresolved intents, or live in-session work.
+  return {
+    intended,
+    blocking:
+      blocking ||
+      serverUnresolved === null ||
+      serverUnresolved > 0 ||
+      queue.summary.blocking ||
+      queue.storageError !== null,
+    pending,
+    failed,
+    queuedLocal: queue.summary.total,
+    queueDescribe: queue.describe,
+    storageError: queue.storageError,
+  }
 }
 
-const BANNER_STYLE: Record<StatusTone, string> = {
+const BANNER_STYLE: Record<PackStatusTone, string> = {
   ready: 'bg-emerald-50 border-emerald-200 text-emerald-900',
   uploading: 'bg-amber-50 border-amber-200 text-amber-900',
   failed: 'bg-red-50 border-red-200 text-red-900',
   empty: 'bg-slate-50 border-slate-200 text-slate-700',
+  unknown: 'bg-slate-50 border-slate-300 text-slate-800',
 }
 
 /**
@@ -78,18 +74,35 @@ const BANNER_STYLE: Record<StatusTone, string> = {
 export function PackStatusBanner({
   packId,
   linkedPhotoCount,
+  serverUnresolvedCount = 0,
   className,
 }: {
   packId: string
   linkedPhotoCount: number
+  serverUnresolvedCount?: number | null
   className?: string
 }) {
-  const { intended, pending, failed } = useIntended(packId, linkedPhotoCount)
+  const { intended, pending, failed, queuedLocal, storageError } = useIntended(
+    packId,
+    linkedPhotoCount,
+    serverUnresolvedCount,
+  )
+
+  // PackQueuePanel owns the message whenever the device queue has records or
+  // storage is unusable — it is the surface with Retry / Attach. Rendering
+  // here too showed the same failure twice. Submission stays blocked either
+  // way: canSubmitPack is untouched by this purely visual suppression.
+  if (shouldSuppressPackStatusBanner({ queuedLocal, hasStorageError: !!storageError })) {
+    return null
+  }
+
   const status = describePackStatus({
     linked: linkedPhotoCount,
     intended,
     pending,
     failed,
+    serverUnresolved: serverUnresolvedCount,
+    queuedLocal,
   })
 
   const Icon =
@@ -122,8 +135,8 @@ export function PackStatusBanner({
 }
 
 /**
- * The ONE guarded submit control. Blocked while any committed photo is not
- * saved, and while the server's linked count is below the intended total.
+ * The ONE guarded submit control. The server's finalise RPC is authoritative;
+ * this button simply avoids sending a request that is certain to be rejected.
  * `showStatus` keeps the inline helper line for surfaces that don't render
  * the banner (e.g. the pack report page).
  */
@@ -131,22 +144,43 @@ export function PackSubmitButton({
   propertyId,
   packId,
   linkedPhotoCount,
+  serverUnresolvedCount = 0,
   showStatus = true,
 }: {
   propertyId: string
   packId: string
   /** Server-rendered count of active, non-deleted linked photos. */
   linkedPhotoCount: number
+  /**
+   * Server-side unresolved upload intents (authoritative, cross-device).
+   * `null` = UNKNOWN (could not be read) → fail closed.
+   */
+  serverUnresolvedCount?: number | null
   showStatus?: boolean
 }) {
-  const { intended, blocking, pending, failed } = useIntended(packId, linkedPhotoCount)
+  const { intended, blocking, pending, failed, queuedLocal } = useIntended(
+    packId,
+    linkedPhotoCount,
+    serverUnresolvedCount,
+  )
   const status = describePackStatus({
     linked: linkedPhotoCount,
     intended,
     pending,
     failed,
+    serverUnresolved: serverUnresolvedCount,
+    queuedLocal,
   })
-  const canSubmit = !blocking && linkedPhotoCount >= 1 && linkedPhotoCount >= intended
+  const canSubmit =
+    !blocking &&
+    canSubmitPack({
+      linked: linkedPhotoCount,
+      intended,
+      pending,
+      failed,
+      serverUnresolved: serverUnresolvedCount,
+      queuedLocal,
+    })
 
   return (
     <div className="flex w-full flex-col items-stretch gap-1 sm:w-auto sm:items-start">

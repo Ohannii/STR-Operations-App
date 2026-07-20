@@ -229,9 +229,47 @@ export async function submitEvidencePackAction(formData: FormData) {
     }
   }
 
+  // ----------------------------------------------------------------
+  // AUTHORITATIVE FINALISE (Outcome 2)
+  // ----------------------------------------------------------------
+  // The RPC locks the pack and proves the whole invariant in ONE
+  // transaction: no unresolved intents, every completed intent has its exact
+  // active photos row AND Storage objects, at least one active photo — then
+  // flips draft -> submitted. No client-supplied count is trusted; the
+  // expected_count check above is only a fast, non-authoritative pre-check
+  // retained from Outcome 1. An already-submitted pack replays idempotently.
+  if (pack.pack_type === 'pre_arrival') {
+    const { data: outcome, error: rpcErr } = await supabase.rpc(
+      'finalize_prearrival_pack',
+      { p_pack_id: packId },
+    )
+    if (rpcErr) {
+      console.error('[packs/submit] finalize rpc error:', rpcErr)
+      const url = returnTo ?? `/properties/${propertyId}`
+      redirect(`${url}?error=${encodeURIComponent(rpcErr.message)}`)
+    }
+
+    const { error: auditErr } = await supabase.from('audit_events').insert({
+      company_id: pack.company_id,
+      actor_id: ctx.user.id,
+      event_kind: 'evidence_pack_submit',
+      entity_type: 'evidence_pack',
+      entity_id: packId,
+      before: { status: 'draft' },
+      after: { status: 'submitted', outcome },
+    })
+    if (auditErr) {
+      console.error('[packs/submit] audit write failed:', auditErr)
+    }
+
+    revalidatePath(`/properties/${propertyId}`)
+    revalidatePath(`/properties/${propertyId}/packs/${packId}/report`)
+    if (returnTo) redirect(returnTo)
+    redirect(`/properties/${propertyId}?pack_submitted=1`)
+  }
+
   const now = new Date().toISOString()
-  // Atomic flip: only transition a row that is STILL a draft, so
-  // concurrent/duplicate submits can't double-process.
+  // Non-pre-arrival packs keep the previous direct transition.
   const { error: updateErr } = await supabase
     .from('evidence_packs')
     .update({
@@ -266,6 +304,89 @@ export async function submitEvidencePackAction(formData: FormData) {
 
   if (returnTo) redirect(returnTo)
   redirect(`/properties/${propertyId}?pack_submitted=1`)
+}
+
+
+// ----------------------------------------------------------------
+// recoverPrearrivalPhotoIntentAction — rescue already-uploaded bytes
+// ----------------------------------------------------------------
+//
+// If the images reached Storage but the attach response was lost (tab closed,
+// device reloaded, network died at the wrong moment), the evidence EXISTS.
+// This completes the intent from Storage alone — no device file required — so
+// an inspector is never sent back to a property whose photos are already
+// stored. If the bytes really are absent the RPC says so, and the only
+// remaining option is recapture or an audited exclusion.
+export async function recoverPrearrivalPhotoIntentAction(formData: FormData) {
+  const propertyId = String(formData.get('property_id') ?? '').trim()
+  const photoId = String(formData.get('photo_id') ?? '').trim()
+  const returnTo = safeReturnTo(formData.get('return_to'), propertyId)
+  const url = returnTo ?? `/properties/${propertyId}`
+
+  if (!propertyId || !photoId) {
+    redirect(`/dashboard?error=${encodeURIComponent('Missing photo reference.')}`)
+  }
+
+  const ctx = await getUserContext()
+  if (!ctx || !ctx.company) redirect('/login')
+
+  const supabase = await createClient()
+  const { error } = await supabase.rpc('recover_prearrival_photo_intent', {
+    p_photo_id: photoId,
+  })
+  if (error) {
+    console.error('[packs/recover-intent] rpc error:', error)
+    redirect(`${url}?error=${encodeURIComponent(error.message)}`)
+  }
+
+  revalidatePath(`/properties/${propertyId}`)
+  redirect(`${url}?intent_recovered=1`)
+}
+
+
+// ----------------------------------------------------------------
+// discardPrearrivalPhotoIntentAction — audited abandon of ONE photo
+// ----------------------------------------------------------------
+//
+// The only sanctioned way to clear an unresolved (pending) upload intent that
+// can no longer be retried — e.g. the browser was closed and the in-memory
+// image is gone. A REASON IS REQUIRED and is stored with the actor and
+// timestamp by the RPC. Completed photos can never be discarded here, and no
+// Storage evidence is deleted. The inspector is told the photo must be
+// recaptured or deliberately excluded.
+export async function discardPrearrivalPhotoIntentAction(formData: FormData) {
+  const propertyId = String(formData.get('property_id') ?? '').trim()
+  const photoId = String(formData.get('photo_id') ?? '').trim()
+  const reason = String(formData.get('reason') ?? '').trim()
+  const returnTo = safeReturnTo(formData.get('return_to'), propertyId)
+  const url = returnTo ?? `/properties/${propertyId}`
+
+  if (!propertyId || !photoId) {
+    redirect(`/dashboard?error=${encodeURIComponent('Missing photo reference.')}`)
+  }
+  if (!reason) {
+    redirect(
+      `${url}?error=${encodeURIComponent(
+        'A reason is required to exclude a missing photo.',
+      )}`,
+    )
+  }
+
+  const ctx = await getUserContext()
+  if (!ctx || !ctx.company) redirect('/login')
+
+  const supabase = await createClient()
+  const { error } = await supabase.rpc('discard_prearrival_photo_intent', {
+    p_photo_id: photoId,
+    p_reason: reason,
+  })
+  if (error) {
+    console.error('[packs/discard-intent] rpc error:', error)
+    redirect(`${url}?error=${encodeURIComponent(error.message)}`)
+  }
+
+  revalidatePath(`/properties/${propertyId}`)
+  redirect(`${url}?intent_discarded=1`)
 }
 
 

@@ -23,6 +23,8 @@ import {
   PackStatusBanner,
   PackSubmitButton,
 } from '@/components/photos/pack-submit-button'
+import { PackQueuePanel } from '@/components/photos/pack-queue-panel'
+import { UnresolvedIntentsPanel } from '@/components/photos/unresolved-intents-panel'
 import { GalleryUploader } from '@/components/photos/gallery-uploader'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -300,6 +302,19 @@ export default async function PropertyPage({
         .is('deleted_at', null)
     : null
 
+  // Outcome 2: unresolved (still pending) server-side upload intents. This is
+  // the AUTHORITATIVE "work outstanding" signal — it survives reloads, other
+  // tabs and other devices, unlike client capture state.
+  const draftPackPendingIntentsQuery = draftPack
+    ? supabase
+        .from('photo_upload_intents')
+        .select('id, created_at')
+        .eq('evidence_pack_id', draftPack.id)
+        .eq('state', 'pending')
+        .order('created_at', { ascending: true })
+        .returns<{ id: string; created_at: string | null }[]>()
+    : null
+
   const submittedPackPhotosQuery =
     submittedPackIds.length > 0
       ? supabase
@@ -310,13 +325,19 @@ export default async function PropertyPage({
           .returns<{ evidence_pack_id: string }[]>()
       : null
 
-  const [marksRes, flagPhotosRes, draftPackPhotosRes, submittedPackPhotosRes] =
-    await Promise.all([
-      marksQuery,
-      flagPhotosQuery,
-      draftPackPhotosQuery,
-      submittedPackPhotosQuery,
-    ])
+  const [
+    marksRes,
+    flagPhotosRes,
+    draftPackPhotosRes,
+    submittedPackPhotosRes,
+    draftPackPendingIntentsRes,
+  ] = await Promise.all([
+    marksQuery,
+    flagPhotosQuery,
+    draftPackPhotosQuery,
+    submittedPackPhotosQuery,
+    draftPackPendingIntentsQuery,
+  ])
   perf.mark('queries')
   perf.done()
 
@@ -334,6 +355,15 @@ export default async function PropertyPage({
   }
 
   const draftPackPhotoCount = draftPackPhotosRes?.count ?? 0
+  const unresolvedIntents = (draftPackPendingIntentsRes?.data ?? []).map((r) => ({
+    id: r.id,
+    createdAt: r.created_at,
+  }))
+  // FAIL CLOSED (Outcome 3, req 13): if the intent table could not be read —
+  // e.g. a preview deployed before the migration — we must NOT report "zero
+  // unresolved". `null` means UNKNOWN and blocks submission.
+  const draftPackPendingIntents: number | null =
+    draftPack && draftPackPendingIntentsRes?.error ? null : unresolvedIntents.length
 
   const packPhotoCountById: Record<string, number> = {}
   for (const row of submittedPackPhotosRes?.data ?? []) {
@@ -503,7 +533,20 @@ export default async function PropertyPage({
                 <PackStatusBanner
                   packId={draftPack.id}
                   linkedPhotoCount={draftPackPhotoCount}
+                  serverUnresolvedCount={draftPackPendingIntents}
                   className="mt-3"
+                />
+
+                {/* Device queue: photos whose bytes are safe on this phone but
+                    not yet attached. This is how a batch interrupted by a call
+                    or reload is found again and finished. */}
+                <PackQueuePanel packId={draftPack.id} />
+
+                {/* Server-truth unresolved uploads: recapture, or exclude with
+                    an audited reason. No silent escape. */}
+                <UnresolvedIntentsPanel
+                  propertyId={property.id}
+                  intents={unresolvedIntents}
                 />
 
                 {/* 2. Add-photos group. */}
@@ -514,6 +557,9 @@ export default async function PropertyPage({
                   <EvidenceCapture
                     propertyId={property.id}
                     evidencePackId={draftPack.id}
+                    // Scope for the durable device queue (Outcome 3).
+                    userId={ctx.user.id}
+                    companyId={ctx.company.id}
                     launchLabel={
                       draftPackPhotoCount > 0 ? 'Continue capturing' : 'Take photos'
                     }
@@ -534,6 +580,9 @@ export default async function PropertyPage({
                   <GalleryUploader
                     propertyId={property.id}
                     evidencePackId={draftPack.id}
+                    // Scope for the durable device queue (Outcome 3).
+                    userId={ctx.user.id}
+                    companyId={ctx.company.id}
                     label="Upload from gallery"
                   />
                 </div>
@@ -562,6 +611,7 @@ export default async function PropertyPage({
                         propertyId={property.id}
                         packId={draftPack.id}
                         linkedPhotoCount={draftPackPhotoCount}
+                        serverUnresolvedCount={draftPackPendingIntents}
                         showStatus={false}
                       />
                     </div>

@@ -45,10 +45,13 @@ import {
   CheckCircle2,
   Image as ImageIcon,
   Loader2,
+  Smartphone,
   XCircle,
 } from 'lucide-react'
 import { compressForEvidence } from '@/lib/photos/compress'
 import { packCapture } from '@/lib/photos/pack-capture-store'
+import { drainQueue, enqueuePhoto } from '@/lib/photos/photo-queue'
+import { packScopeError } from '@/lib/photos/photo-queue-state'
 import {
   attachEvidencePhoto,
   requestPhotoUploadSlot,
@@ -63,6 +66,13 @@ type Props = {
   /** When true, also adds capture="environment" hint to open the
    *  device camera straight from the picker on supporting phones. */
   preferCamera?: boolean
+  /**
+   * Outcome 3: required for PRE-ARRIVAL PACK uploads so each photo is written
+   * to the app-private durable queue, scoped to this user/company. Omitted for
+   * flag capture, which keeps its original in-memory pipeline.
+   */
+  userId?: string
+  companyId?: string
 }
 
 type FileStatus =
@@ -70,6 +80,14 @@ type FileStatus =
   | 'signing'
   | 'uploading'
   | 'attaching'
+  /**
+   * PRE-ARRIVAL ONLY: the compressed blobs are safely in the app-private
+   * device queue, but the server has NOT confirmed attachment. This must
+   * never be presented as "attached" — the sequential worker and
+   * PackQueuePanel own the rest of the journey.
+   */
+  | 'device_saved'
+  /** Server-confirmed attach (flag path only). */
   | 'done'
   | 'error'
 
@@ -93,11 +111,17 @@ type PerFile = {
   thumbDone?: boolean
 }
 
+/**
+ * Client-side LOGICAL PHOTO ID — a real v4 UUID, reused across retries, which
+ * becomes the primary key of the durable server-side upload intent.
+ */
 function clientId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID()
-  }
-  return `c-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  const b = new Uint8Array(16)
+  crypto.getRandomValues(b)
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
 }
 
 function fmtSize(bytes: number): string {
@@ -112,6 +136,8 @@ export function GalleryUploader({
   evidencePackId,
   label,
   preferCamera = false,
+  userId,
+  companyId,
 }: Props) {
   const router = useRouter()
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -167,6 +193,8 @@ export function GalleryUploader({
             propertyId,
             flagId: flagId ?? null,
             evidencePackId: evidencePackId ?? null,
+            // Stable logical id → idempotent intent + slot across retries.
+            photoId: rowId,
           })) as UploadSlot | { ok: false; error: string }
           if (!requested.ok) throw new Error(`Could not get upload slot: ${requested.error}`)
           slot = requested
@@ -268,11 +296,67 @@ export function GalleryUploader({
       setBusy(true)
 
       const processable = rows.filter((r) => r.file)
-      // Commit each logical photo to the pack intent map (pre-arrival only)
-      // so the Submit control blocks until they actually land.
+
+      // PRE-ARRIVAL PACK (Outcome 3): compress, then persist BOTH blobs to the
+      // app-private device queue BEFORE any network work. Selecting from the
+      // gallery is already an explicit "upload these" action, so records are
+      // released immediately and the sequential worker takes over — it
+      // survives reloads, calls and process kills. Flag capture keeps the
+      // original in-memory pipeline below, unchanged.
       if (evidencePackId) {
-        for (const r of processable) packCapture.commit(evidencePackId, r.id)
+        const scopeError = packScopeError({
+          userId,
+          companyId,
+          propertyId,
+          packId: evidencePackId,
+        })
+        if (scopeError) {
+          for (const r of processable) {
+            updateItem(r.id, { status: 'error', error: scopeError })
+          }
+          setBusy(false)
+          return
+        }
+
+        for (const r of processable) {
+          try {
+            updateItem(r.id, { status: 'compressing' })
+            const c = await compressForEvidence(r.file as File)
+            await enqueuePhoto(
+              { userId: userId!, companyId: companyId!, propertyId, packId: evidencePackId },
+              {
+                id: r.id,
+                master: c.master,
+                thumb: c.thumb,
+                width: c.width,
+                height: c.height,
+                sizeBytes: c.sizeBytes,
+                capturedAt: (r.file as File).lastModified
+                  ? new Date((r.file as File).lastModified).toISOString()
+                  : new Date().toISOString(),
+                note: null,
+                release: true,
+              },
+            )
+            // The bytes are now durable ON THIS DEVICE — nothing more. The
+            // server has not seen this photo yet, so it must NOT be shown as
+            // attached. PackQueuePanel is authoritative from here.
+            packCapture.commit(evidencePackId, r.id)
+            updateItem(r.id, { status: 'device_saved' })
+          } catch (err) {
+            const msg =
+              err instanceof Error
+                ? err.message
+                : 'This photo could not be saved on your device.'
+            updateItem(r.id, { status: 'error', error: msg })
+          }
+        }
+        void drainQueue(evidencePackId)
+        setBusy(false)
+        router.refresh()
+        return
       }
+
       await runPool(processable.map((r) => r.id))
 
       setBusy(false)
@@ -280,7 +364,11 @@ export function GalleryUploader({
       // serve a cached GET and hide new photos). Client state is preserved.
       router.refresh()
     },
-    [evidencePackId, runPool, router],
+    // userId/companyId/propertyId are read inside the pre-arrival queue path
+    // and updateItem is called per row — all must be dependencies or a stale
+    // closure could enqueue a photo against the WRONG scope (or write to a
+    // stale row), which is exactly the class of bug this queue exists to stop.
+    [evidencePackId, userId, companyId, propertyId, updateItem, runPool, router],
   )
 
   // Retry only the failed uploads, REUSING each row's stored slot + blobs
@@ -302,7 +390,10 @@ export function GalleryUploader({
   const isMisconfigured = !flagId && !evidencePackId
 
   const buttonLabel = label ?? 'Upload from gallery'
+  // Server-confirmed attaches ONLY (flag path). A pre-arrival photo sitting in
+  // the device queue is deliberately excluded — it is not attached yet.
   const successCount = items.filter((i) => i.status === 'done').length
+  const deviceSavedCount = items.filter((i) => i.status === 'device_saved').length
   const errorCount = items.filter((i) => i.status === 'error').length
 
   // Warn before leaving/reloading while an upload is in flight or a
@@ -383,6 +474,8 @@ export function GalleryUploader({
                       className="text-emerald-600"
                       aria-hidden
                     />
+                  ) : it.status === 'device_saved' ? (
+                    <Smartphone size={13} className="text-amber-600" aria-hidden />
                   ) : it.status === 'error' ? (
                     <XCircle size={13} className="text-red-600" aria-hidden />
                   ) : (
@@ -401,15 +494,17 @@ export function GalleryUploader({
                   <p className="text-[11px] text-slate-500">
                     {it.status === 'done'
                       ? 'Attached to the pack.'
-                      : it.status === 'error'
-                        ? (it.error ?? 'Failed.')
-                        : it.status === 'compressing'
-                          ? 'Compressing on device…'
-                          : it.status === 'signing'
-                            ? 'Asking server for upload slot…'
-                            : it.status === 'uploading'
-                              ? 'Uploading to storage…'
-                              : 'Attaching to pack…'}
+                      : it.status === 'device_saved'
+                        ? 'Saved on this device — uploading…'
+                        : it.status === 'error'
+                          ? (it.error ?? 'Failed.')
+                          : it.status === 'compressing'
+                            ? 'Compressing on device…'
+                            : it.status === 'signing'
+                              ? 'Asking server for upload slot…'
+                              : it.status === 'uploading'
+                                ? 'Uploading to storage…'
+                                : 'Attaching to pack…'}
                   </p>
                 </div>
               </li>
@@ -421,10 +516,15 @@ export function GalleryUploader({
                 className={
                   errorCount > 0
                     ? 'text-red-600 font-medium'
-                    : 'text-emerald-700 font-medium'
+                    : deviceSavedCount > 0
+                      ? 'text-amber-700 font-medium'
+                      : 'text-emerald-700 font-medium'
                 }
               >
-                {successCount} attached · {errorCount} failed
+                {/* Never claim "attached" for device-queued photos. */}
+                {deviceSavedCount > 0
+                  ? `${deviceSavedCount} saved on this device · ${errorCount} failed`
+                  : `${successCount} attached · ${errorCount} failed`}
               </p>
               <div className="flex items-center gap-2">
                 <button

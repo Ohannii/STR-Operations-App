@@ -57,6 +57,9 @@ import {
 } from 'lucide-react'
 import { compressForEvidence } from '@/lib/photos/compress'
 import { packCapture } from '@/lib/photos/pack-capture-store'
+import { PhotoQueueUnavailableError } from '@/lib/photos/photo-queue-db'
+import { drainQueue, enqueuePhoto, releaseQueued } from '@/lib/photos/photo-queue'
+import { packScopeError } from '@/lib/photos/photo-queue-state'
 import {
   attachEvidencePhoto,
   requestPhotoUploadSlot,
@@ -137,14 +140,28 @@ type Props = {
    * blocked (insecure context, denied permission, browser bug).
    */
   startInGalleryMode?: boolean
+  /**
+   * Outcome 3: required for PRE-ARRIVAL PACK capture so each photo can be
+   * written to the app-private durable queue, scoped to this user/company.
+   * Omitted for flag capture, which keeps its original in-memory pipeline.
+   */
+  userId?: string
+  companyId?: string
 }
 
-/** Tiny client-side id generator (don't import randomUUID — that's Node). */
+/**
+ * Client-side LOGICAL PHOTO ID. Must be a real v4 UUID: it is reused across
+ * retries and becomes the primary key of the durable server-side upload
+ * intent (and then of public.photos). getRandomValues works on plain http
+ * too, so LAN testing keeps a valid uuid.
+ */
 function makeClientId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID()
-  }
-  return `c-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  const b = new Uint8Array(16)
+  crypto.getRandomValues(b)
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
 }
 
 export function EvidenceCapture({
@@ -156,6 +173,8 @@ export function EvidenceCapture({
   raiseFlagHref,
   autoOpen = false,
   startInGalleryMode = false,
+  userId,
+  companyId,
 }: Props) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
@@ -310,6 +329,40 @@ export function EvidenceCapture({
 
     try {
       const compressed = await compressForEvidence(rawBlob)
+
+      // DURABILITY GATE (Outcome 3): for a pre-arrival pack, both blobs are
+      // written to app-private IndexedDB BEFORE this photo is shown as
+      // captured and BEFORE any network call. An Android phone call can
+      // evict this page at any moment; if the bytes are not on disk first,
+      // they are gone. If the device cannot store them we must NOT pretend
+      // the photo is safe. (Flag capture is unchanged — no queue.)
+      if (evidencePackId) {
+        // Runtime assertion: pack capture must NEVER fall back to a
+        // memory-only path because a scope value is missing.
+        const scopeError = packScopeError({
+          userId,
+          companyId,
+          propertyId,
+          packId: evidencePackId,
+        })
+        if (scopeError) throw new PhotoQueueUnavailableError(scopeError)
+
+        await enqueuePhoto(
+          { userId: userId!, companyId: companyId!, propertyId, packId: evidencePackId },
+          {
+            id,
+            master: compressed.master,
+            thumb: compressed.thumb,
+            width: compressed.width,
+            height: compressed.height,
+            sizeBytes: compressed.master.size,
+            capturedAt,
+            note: null,
+            release: false, // the inspector may still add a note
+          },
+        )
+      }
+
       // Replace preview with the smaller thumb (lower memory).
       URL.revokeObjectURL(previewUrl)
       const thumbUrl = URL.createObjectURL(compressed.thumb)
@@ -330,13 +383,22 @@ export function EvidenceCapture({
       )
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to process image.'
+      // A storage failure is NOT a "captured" photo. Surface it loudly and
+      // drop the item rather than leaving a false sense of safety.
       setPending((prev) =>
         prev.map((p) =>
           p.id === id ? { ...p, state: 'error', error: msg } : p,
         ),
       )
+      if (err instanceof PhotoQueueUnavailableError) {
+        setBatchError(
+          'This photo could NOT be saved on your device, so it is not safe yet. ' +
+            'Free up space or use a different browser, then take it again. ' +
+            'Do not submit this pack until every photo is saved.',
+        )
+      }
     }
-  }, [])
+  }, [evidencePackId, userId, companyId, propertyId])
 
   const handleShutter = useCallback(async () => {
     if (!videoRef.current || !cameraReady) return
@@ -487,6 +549,8 @@ export function EvidenceCapture({
             propertyId,
             flagId: flagId ?? null,
             evidencePackId: evidencePackId ?? null,
+            // Stable logical id → idempotent intent + slot across retries.
+            photoId: item.id,
           })) as UploadSlot | { ok: false; error: string }
           if (!requested.ok) throw new Error(requested.error)
           slot = requested
@@ -595,14 +659,27 @@ export function EvidenceCapture({
     }
     setStage('uploading')
     setBatchError(null)
-    // Commit each logical photo to the pack's intent map. The gate + server
-    // verify the pack actually reaches this total.
+
+    // PRE-ARRIVAL PACK: the bytes are already durable in IndexedDB, so we do
+    // NOT upload from this component. Release the records to the sequential
+    // worker, which survives this modal closing, a reload, or the browser
+    // being killed, and which resumes automatically. (Flag capture keeps the
+    // original in-memory pipeline below, unchanged.)
     if (evidencePackId) {
       for (const it of readyItems) packCapture.commit(evidencePackId, it.id)
+      const notes: Record<string, string | null> = {}
+      for (const it of readyItems) {
+        notes[it.id] = it.note?.trim() || attachAllNote.trim() || null
+      }
+      await releaseQueued(evidencePackId, notes)
+      void drainQueue(evidencePackId)
+      setStage('done')
+      return
     }
+
     await runUploads(readyItems)
     setStage('done')
-  }, [pending, runUploads, evidencePackId])
+  }, [pending, runUploads, evidencePackId, attachAllNote])
 
   // Retry photos whose upload/attach failed, so a failed save is never a
   // silent loss (the compressed blobs are still held in memory here — they
