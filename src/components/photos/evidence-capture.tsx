@@ -187,9 +187,13 @@ export function EvidenceCapture({
     'shooting',
   )
   const [batchError, setBatchError] = useState<string | null>(null)
+  /** Pack mode: how many photos were handed to the durable background worker. */
+  const [handedOffCount, setHandedOffCount] = useState(0)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  /** Guards the one-shot capture_now auto-open for the life of this mount. */
+  const autoOpenConsumedRef = useRef(false)
   const galleryInputRef = useRef<HTMLInputElement | null>(null)
 
   // --------------------------------------------------------------
@@ -463,6 +467,12 @@ export function EvidenceCapture({
     setBatchError(null)
   }, [])
 
+  // Pre-arrival pack capture sessions require a packId — fail
+  // closed if a caller forgets it. Flag captures don't need a pack.
+  // Declared here (not at the render block) because the auto-open
+  // effect below reads it; both inputs are props, so this is safe.
+  const isMisconfigured = !flagId && !evidencePackId
+
   // Auto-open on mount when the parent passes autoOpen=true. Used
   // by the Action Centre after Start pre-arrival pack — server
   // redirects with capture_now=1, the Action Centre threads that
@@ -471,8 +481,24 @@ export function EvidenceCapture({
   // the disabled launch button check above; we re-check before
   // auto-opening so a stale URL doesn't surface a useless modal.
   useEffect(() => {
-    if (autoOpen && !open && !isMisconfigured) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (autoOpen && !open && !isMisconfigured && !autoOpenConsumedRef.current) {
+      // One-shot per mount. The server-supplied autoOpen prop stays true for
+      // this render, so without this ref the effect could re-open the camera
+      // straight after the inspector closes it. URL cleanup alone is not
+      // enough because the prop was already computed.
+      autoOpenConsumedRef.current = true
+      // capture_now is a ONE-TIME instruction. Strip it from the URL as soon
+      // as we act on it, otherwise every refresh re-opens the camera — which
+      // is disorienting mid-upload and looks like the app is restarting.
+      if (typeof window !== 'undefined') {
+        const url = new URL(window.location.href)
+        if (url.searchParams.has('capture_now')) {
+          url.searchParams.delete('capture_now')
+          // Preserve Next.js's router state — passing {} would discard it and
+          // can break client-side navigation/history.
+          window.history.replaceState(window.history.state, '', url.toString())
+        }
+      }
       openModal()
     }
     // intentionally only react to autoOpen flipping true on mount;
@@ -491,6 +517,7 @@ export function EvidenceCapture({
     setStage('shooting')
     setEditingId(null)
     setBatchError(null)
+    setHandedOffCount(0)
   }, [stopCamera])
 
   // Dismiss guard (req 8): closing a session that still holds unattached,
@@ -671,7 +698,12 @@ export function EvidenceCapture({
       for (const it of readyItems) {
         notes[it.id] = it.note?.trim() || attachAllNote.trim() || null
       }
+      // The modal does NOT upload for packs — it hands the durable records to
+      // the background worker. Only count them AFTER the handoff succeeds, so
+      // a failure can never render as success. Accumulate across repeated
+      // "More photos → Attach" rounds in the same session.
       await releaseQueued(evidencePackId, notes)
+      setHandedOffCount((c) => c + readyItems.length)
       void drainQueue(evidencePackId)
       setStage('done')
       return
@@ -781,10 +813,6 @@ export function EvidenceCapture({
   // Render
   // --------------------------------------------------------------
 
-  // Pre-arrival pack capture sessions require a packId — fail
-  // closed if a caller forgets it. Flag captures don't need a pack.
-  const isMisconfigured = !flagId && !evidencePackId
-
   const launchClass =
     launchVariant === 'primary'
       ? 'inline-flex items-center gap-2 whitespace-nowrap rounded-md bg-slate-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 active:bg-slate-950 disabled:opacity-50 disabled:cursor-not-allowed transition'
@@ -838,7 +866,9 @@ export function EvidenceCapture({
                   ? `Review ${pending.length} photo${pending.length === 1 ? '' : 's'}`
                   : stage === 'uploading'
                     ? `Uploading ${uploadingCount}…  (${uploadedCount}/${pending.length} done)`
-                    : `Attached ${uploadedCount} photo${uploadedCount === 1 ? '' : 's'}`}
+                    : evidencePackId
+                      ? `${handedOffCount} photo${handedOffCount === 1 ? '' : 's'} saved on this device`
+                      : `Attached ${uploadedCount} photo${uploadedCount === 1 ? '' : 's'}`}
             </p>
             <div className="flex items-center gap-2">
               {raiseFlagHref && (stage === 'shooting' || stage === 'reviewing') ? (
@@ -1161,6 +1191,14 @@ export function EvidenceCapture({
                     <p className="text-sm text-red-400 mr-auto">
                       {errorCount} photo{errorCount === 1 ? '' : 's'} failed to save — retry,
                       or discard to submit only what saved.
+                    </p>
+                  ) : evidencePackId ? (
+                    // Pack mode: the modal hands off to the durable background
+                    // worker, so "uploaded" is not what happened here. Be exact,
+                    // and reassure them that leaving is safe.
+                    <p className="text-sm text-emerald-400 mr-auto">
+                      {handedOffCount} photo{handedOffCount === 1 ? '' : 's'} saved on this
+                      device and queued for upload. Safe to close or switch apps.
                     </p>
                   ) : (
                     <p className="text-sm text-emerald-400 mr-auto">

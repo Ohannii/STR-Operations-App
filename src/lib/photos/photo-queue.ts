@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useSyncExternalStore } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   attachEvidencePhoto,
   requestPhotoUploadSlot,
@@ -55,6 +56,15 @@ type PackQueueState = {
   online: boolean
   /** Set when the device cannot store photos at all — submission must block. */
   storageError: string | null
+  /**
+   * Set when at least one photo has been CONFIRMED attached since the last
+   * refresh, meaning the server-rendered linked count is now stale. It is
+   * acknowledged (cleared) BEFORE the refresh fires, so a remount or re-render
+   * cannot retrigger it.
+   */
+  serverRefreshNeeded: boolean
+  /** True while the sequential worker is actively draining this pack. */
+  draining: boolean
 }
 
 const EMPTY_SUMMARY: QueueSummary = {
@@ -72,6 +82,8 @@ const EMPTY: PackQueueState = {
   summary: EMPTY_SUMMARY,
   online: true,
   storageError: null,
+  serverRefreshNeeded: false,
+  draining: false,
 }
 
 const states = new Map<string, PackQueueState>()
@@ -261,6 +273,11 @@ async function uploadOne(record: QueuedPhotoRecord): Promise<void> {
 
   // 6. ONLY now are the device bytes redundant.
   await deleteQueuedPhoto(record.id)
+  // Mark the server-rendered linked count stale. We deliberately do NOT
+  // refresh per photo — 40 photos would mean 40 server round-trips competing
+  // with the uploads. The React binding refreshes ONCE when the drain cycle
+  // goes idle.
+  setState(record.packId, { serverRefreshNeeded: true })
   await refreshQueue(record.packId)
 }
 
@@ -268,6 +285,7 @@ async function uploadOne(record: QueuedPhotoRecord): Promise<void> {
 export async function drainQueue(packId: string): Promise<void> {
   if (running.has(packId)) return
   running.add(packId)
+  setState(packId, { draining: true })
   try {
     for (;;) {
       if (!isOnline()) break
@@ -294,10 +312,24 @@ export async function drainQueue(packId: string): Promise<void> {
   } finally {
     running.delete(packId)
     await refreshQueue(packId)
+    // Cycle is idle — including a cycle that ended with some photos failed.
+    // This is what releases the single server refresh.
+    setState(packId, { draining: false })
   }
 }
 
 export const photoQueue = {
+  /**
+   * Atomically CLAIM the stale-server signal. Returns true only to the first
+   * caller; every later caller gets false. Reading the live store (not a
+   * render snapshot) is what stops two mounted panels for the same pack from
+   * each firing a refresh in the same commit, and stops a remount replaying it.
+   */
+  claimServerRefresh(packId: string): boolean {
+    if (!states.get(packId)?.serverRefreshNeeded) return false
+    setState(packId, { serverRefreshNeeded: false })
+    return true
+  },
   subscribe(cb: () => void): () => void {
     listeners.add(cb)
     return () => {
@@ -316,11 +348,23 @@ export const photoQueue = {
 export function usePackQueue(packId: string): PackQueueState & {
   describe: ReturnType<typeof describeQueue>
 } {
+  const router = useRouter()
   const state = useSyncExternalStore(
     photoQueue.subscribe,
     () => photoQueue.snapshot(packId),
     () => EMPTY,
   )
+
+  // ONE server refresh per completed drain cycle — not one per photo. We wait
+  // until the worker is idle (which includes a cycle that ended with some
+  // failures), acknowledge the signal FIRST so a remount cannot retrigger it,
+  // then pull fresh server data so the linked count updates live.
+  useEffect(() => {
+    if (!state.serverRefreshNeeded || state.draining) return
+    // Claim first — only the winner refreshes.
+    if (!photoQueue.claimServerRefresh(packId)) return
+    router.refresh()
+  }, [state.serverRefreshNeeded, state.draining, packId, router])
 
   useEffect(() => {
     let cancelled = false
