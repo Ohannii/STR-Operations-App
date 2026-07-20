@@ -108,6 +108,41 @@ export function retryDelayMs(attempts: number): number {
 }
 
 /**
+ * Automatic retries stop after this many attempts. The record stays `failed`
+ * and visible, and the inspector's explicit Retry button still works — we just
+ * stop waking the radio on our own. Without a cap, a permanently broken photo
+ * would retry every 60s for the life of the session.
+ */
+export const MAX_AUTO_RETRY_ATTEMPTS = 6
+
+/**
+ * How long until a backed-off record becomes uploadable again, or null if
+ * nothing is waiting.
+ *
+ * WHY THIS EXISTS: `nextUploadable` correctly refuses to return a record that
+ * is inside its backoff window, which makes the worker exit. Without a
+ * scheduled wake-up, that record waits for a mount / pageshow / visibility /
+ * online event that may never fire while the inspector is looking straight at
+ * the page — the queue looks like it is uploading forever. This gives the
+ * worker exactly one timer to come back on, which is not polling.
+ */
+export function msUntilNextRetry(
+  records: QueuedPhotoMeta[],
+  nowMs: number,
+): number | null {
+  let best: number | null = null
+  for (const r of records) {
+    if (r.state !== 'failed') continue
+    if (r.attempts >= MAX_AUTO_RETRY_ATTEMPTS) continue
+    const remaining =
+      r.lastAttemptAt == null ? 0 : retryDelayMs(r.attempts) - (nowMs - r.lastAttemptAt)
+    const ms = Math.max(0, remaining)
+    if (best === null || ms < best) best = ms
+  }
+  return best
+}
+
+/**
  * Sequential pick (concurrency 1): the oldest record that is ready to run.
  * 'saved_local' is intentionally NOT uploadable — the inspector has not
  * released it yet (they may still be adding a note).
