@@ -81,11 +81,16 @@ export async function startPreArrivalPackAction(formData: FormData) {
 
   const { data: pack, error: insertErr } = await supabase
     .from('evidence_packs')
+    // NOTE: `status` is deliberately NOT named here. Migration
+    // 20260718120000 removed the client's column privilege on status /
+    // submitted_at / submitted_by so a pack can never be created or moved
+    // into 'submitted' from the client. Naming a column you cannot write
+    // fails even when the value is the default, so we let the column
+    // default supply 'draft' — identical result, no privilege needed.
     .insert({
       company_id: property.company_id,
       property_id: propertyId,
       pack_type: 'pre_arrival',
-      status: 'draft',
       title,
       notes,
       started_by: ctx.user.id,
@@ -268,42 +273,18 @@ export async function submitEvidencePackAction(formData: FormData) {
     redirect(`/properties/${propertyId}?pack_submitted=1`)
   }
 
-  const now = new Date().toISOString()
-  // Non-pre-arrival packs keep the previous direct transition.
-  const { error: updateErr } = await supabase
-    .from('evidence_packs')
-    .update({
-      status: 'submitted',
-      submitted_at: now,
-      submitted_by: ctx.user.id,
-    })
-    .eq('id', packId)
-    .eq('status', 'draft')
-
-  if (updateErr) {
-    console.error('[packs/submit] update error:', updateErr)
-    const url = returnTo ?? `/properties/${propertyId}`
-    redirect(`${url}?error=${encodeURIComponent(updateErr.message)}`)
-  }
-
-  const { error: auditErr } = await supabase.from('audit_events').insert({
-    company_id: pack.company_id,
-    actor_id: ctx.user.id,
-    event_kind: 'evidence_pack_submit',
-    entity_type: 'evidence_pack',
-    entity_id: packId,
-    before: { status: 'draft' },
-    after: { status: 'submitted', submitted_at: now },
-  })
-  if (auditErr) {
-    console.error('[packs/submit] audit write failed:', auditErr)
-  }
-
-  revalidatePath(`/properties/${propertyId}`)
-  revalidatePath(`/properties/${propertyId}/packs/${packId}/report`)
-
-  if (returnTo) redirect(returnTo)
-  redirect(`/properties/${propertyId}?pack_submitted=1`)
+  // Any OTHER pack type. Since migration 20260718120000 the client no longer
+  // holds the column privilege to write `status`, so a direct transition is
+  // impossible by design — only a SECURITY DEFINER finalise RPC can do it, and
+  // only pre-arrival has one today. Fail with a clear message rather than a
+  // confusing "permission denied for table evidence_packs".
+  console.error('[packs/submit] unsupported pack_type:', pack.pack_type)
+  const url = returnTo ?? `/properties/${propertyId}`
+  redirect(
+    `${url}?error=${encodeURIComponent(
+      `Submitting a "${pack.pack_type}" pack is not supported yet.`,
+    )}`,
+  )
 }
 
 
