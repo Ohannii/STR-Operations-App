@@ -107,11 +107,38 @@ describe('durable device queue blocks submission (Outcome 3, req 10)', () => {
     expect(canSubmitPack(s({ linked: 25, intended: 25, queuedLocal: 40 }))).toBe(false)
   })
 
-  it('explains that the bytes are safe but not yet attached', () => {
+  it('says the bytes are safe and queued, and that upload resumes on return', () => {
     const d = describePackStatus(s({ linked: 25, intended: 25, queuedLocal: 40 }))
     expect(d.tone).toBe('uploading')
     expect(d.text).toContain('40 photos saved on this device')
-    expect(d.text).toContain('not yet attached')
+    expect(d.text).toContain('queued for upload')
+    expect(d.text).toContain('resumes automatically when you return')
+  })
+
+  it('NEVER tells the inspector to keep the page open (there is no service worker)', () => {
+    // Upload does not progress while the page is closed; it resumes on return.
+    // Promising otherwise would be a lie, and telling them to stay put defeats
+    // the entire point of the durable queue.
+    const cases: PackStatusInput[] = [
+      s({ linked: 25, intended: 25, queuedLocal: 40 }),
+      s({ linked: 3, intended: 5, pending: 2 }),
+      s({ linked: 3, intended: 5, pending: 2, failed: 1 }),
+      s({ linked: 13, intended: 15 }),
+      s({ linked: 4, intended: 4, serverUnresolved: 2 }),
+      s({ linked: 4, intended: 4, serverUnresolved: null }),
+      s(),
+      s({ linked: 4, intended: 4 }),
+    ]
+    for (const c of cases) {
+      expect(describePackStatus(c).text.toLowerCase()).not.toContain('keep this page open')
+    }
+  })
+
+  it('in-flight wording promises resume, not vigilance', () => {
+    const d = describePackStatus(s({ linked: 3, intended: 5, pending: 2 }))
+    expect(d.text).toContain('Uploading 2 of 5 photos')
+    expect(d.text).toContain('safe to leave')
+    expect(d.text).toContain('resumes automatically when you return')
   })
 
   it('unblocks once the queue drains and the server agrees', () => {
@@ -205,7 +232,10 @@ describe('describePackStatus', () => {
     const d = describePackStatus(s({ linked: 3, intended: 5, pending: 2, failed: 0 }))
     expect(d.tone).toBe('uploading')
     expect(d.text).toContain('Uploading 2 of 5 photos')
-    expect(d.text).toContain('keep this page open')
+    // Wording deliberately changed: there is no service worker, so the honest
+    // promise is resume-on-return, not vigilance. Asserted fully above in
+    // "in-flight wording promises resume, not vigilance".
+    expect(d.text).toContain('resumes automatically when you return')
   })
 
   it('reports missing photos when the session is idle but short', () => {

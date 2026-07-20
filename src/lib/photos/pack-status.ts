@@ -54,7 +54,9 @@ export function describePackStatus(
   if (queuedLocal > 0) {
     return {
       tone: 'uploading',
-      text: `${queuedLocal} photo${queuedLocal === 1 ? '' : 's'} saved on this device, not yet attached — keep this page open`,
+      // No service worker: upload does NOT progress while the page is closed.
+      // It resumes when the inspector returns. Say exactly that.
+      text: `${queuedLocal} photo${queuedLocal === 1 ? '' : 's'} saved on this device, queued for upload — resumes automatically when you return`,
     }
   }
 
@@ -74,7 +76,7 @@ export function describePackStatus(
   if (inFlight > 0) {
     return {
       tone: 'uploading',
-      text: `Uploading ${inFlight} of ${intended} photo${intended === 1 ? '' : 's'} — keep this page open`,
+      text: `Uploading ${inFlight} of ${intended} photo${intended === 1 ? '' : 's'} — safe to leave, resumes automatically when you return`,
     }
   }
   const missing = Math.max(0, intended - linked)

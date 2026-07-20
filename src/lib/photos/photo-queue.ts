@@ -1,11 +1,13 @@
 'use client'
 
 import { useEffect, useSyncExternalStore } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   attachEvidencePhoto,
   requestPhotoUploadSlot,
   type UploadSlot,
 } from '@/app/properties/[id]/photos/actions'
+import { packCapture } from '@/lib/photos/pack-capture-store'
 import {
   deleteQueuedPhoto,
   listQueuedForPack,
@@ -16,6 +18,7 @@ import {
 } from '@/lib/photos/photo-queue-db'
 import {
   describeQueue,
+  msUntilNextRetry,
   nextUploadable,
   summarizeQueue,
   type QueueSummary,
@@ -55,6 +58,15 @@ type PackQueueState = {
   online: boolean
   /** Set when the device cannot store photos at all — submission must block. */
   storageError: string | null
+  /**
+   * Set when at least one photo has been CONFIRMED attached since the last
+   * refresh, meaning the server-rendered linked count is now stale. It is
+   * acknowledged (cleared) BEFORE the refresh fires, so a remount or re-render
+   * cannot retrigger it.
+   */
+  serverRefreshNeeded: boolean
+  /** True while the sequential worker is actively draining this pack. */
+  draining: boolean
 }
 
 const EMPTY_SUMMARY: QueueSummary = {
@@ -72,6 +84,8 @@ const EMPTY: PackQueueState = {
   summary: EMPTY_SUMMARY,
   online: true,
   storageError: null,
+  serverRefreshNeeded: false,
+  draining: false,
 }
 
 const states = new Map<string, PackQueueState>()
@@ -211,30 +225,92 @@ export async function retryFailed(packId: string): Promise<void> {
   void drainQueue(packId)
 }
 
+/**
+ * A bare `fetch` / server action waits FOREVER. On a phone that hands off from
+ * WiFi to LTE mid-request the socket simply never answers, and before these
+ * bounds the worker sat inside uploadOne indefinitely: `running` never cleared,
+ * so every later resume trigger hit the `running.has(packId)` guard and did
+ * nothing. Switching apps and back could not recover it. Bounding every network
+ * call converts that permanent freeze into an ordinary retryable failure.
+ */
+const PUT_TIMEOUT_MS = 45_000
+const ACTION_TIMEOUT_MS = 30_000
+
+/**
+ * Bound a promise that cannot be aborted (server actions). The underlying call
+ * may still complete on the server — that is safe here because every step is
+ * keyed by the same logical photo uuid and is idempotent on replay (slot reuse,
+ * relationship verification, PK 23505 handling).
+ */
+async function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} timed out — will retry automatically`)),
+          ms,
+        )
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 async function uploadOne(record: QueuedPhotoRecord): Promise<void> {
   await patchQueuedPhoto(record.id, { state: 'uploading' })
+  // REPORT BACK to the in-memory session store. evidence-capture commits every
+  // released photo there as 'pending', and that store drives both the status
+  // banner and the submit gate. When pack uploads moved out of the modal into
+  // this worker, nothing marked those photos saved any more — so a pack the
+  // server had stored completely still read "Uploading 3 of 13" and stayed
+  // unsubmittable until a page reload. The logical id is the same one
+  // ingestBlob minted, so these address the exact same photo. mark() no-ops
+  // safely for records this session never committed (e.g. resumed after a
+  // reload), which is correct: there is nothing local to unblock.
+  packCapture.mark(record.packId, record.id, 'uploading')
   await refreshQueue(record.packId)
 
   // 1+2. Intent + slot. The SAME uuid always returns the same relationship and
   // paths, so a lost response never creates a second photo.
-  const slot = (await requestPhotoUploadSlot({
-    propertyId: record.propertyId,
-    flagId: null,
-    evidencePackId: record.packId,
-    photoId: record.id,
-  })) as UploadSlot | { ok: false; error: string }
+  const slot = (await withTimeout(
+    requestPhotoUploadSlot({
+      propertyId: record.propertyId,
+      flagId: null,
+      evidencePackId: record.packId,
+      photoId: record.id,
+    }),
+    ACTION_TIMEOUT_MS,
+    'Preparing upload',
+  )) as UploadSlot | { ok: false; error: string }
   if (!slot.ok) throw new Error(slot.error)
 
   // 3+4. Sequential PUTs. Create-only storage: 409 means the object already
   // landed from a previous attempt, which is success for our purposes.
   const put = async (signedUrl: string, blob: Blob, label: string) => {
-    const res = await fetch(signedUrl, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'image/jpeg' },
-      body: blob,
-    })
-    if (!res.ok && res.status !== 409) {
-      throw new Error(`${label} upload failed (${res.status})`)
+    // AbortController (not just a race) so the dead socket is actually released
+    // rather than left pinned while the retry opens another one.
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), PUT_TIMEOUT_MS)
+    try {
+      const res = await fetch(signedUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'image/jpeg' },
+        body: blob,
+        signal: controller.signal,
+      })
+      if (!res.ok && res.status !== 409) {
+        throw new Error(`${label} upload failed (${res.status})`)
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        throw new Error(`${label} upload timed out — will retry automatically`)
+      }
+      throw err
+    } finally {
+      clearTimeout(timer)
     }
   }
   await put(slot.masterUpload.signedUrl, record.master, 'Photo')
@@ -242,32 +318,80 @@ async function uploadOne(record: QueuedPhotoRecord): Promise<void> {
 
   // 5. Atomic attach.
   await patchQueuedPhoto(record.id, { state: 'attaching' })
+  packCapture.mark(record.packId, record.id, 'attaching')
   await refreshQueue(record.packId)
-  const attached = await attachEvidencePhoto({
-    photoId: slot.photoId,
-    propertyId: record.propertyId,
-    flagId: null,
-    evidencePackId: slot.evidencePackId,
-    masterPath: slot.masterPath,
-    thumbPath: slot.thumbPath,
-    width: record.width,
-    height: record.height,
-    sizeBytes: record.sizeBytes,
-    capturedAt: record.capturedAt,
-    note: record.note,
-    retentionClass: slot.retentionClass,
-  })
+  const attached = await withTimeout(
+    attachEvidencePhoto({
+      photoId: slot.photoId,
+      propertyId: record.propertyId,
+      flagId: null,
+      evidencePackId: slot.evidencePackId,
+      masterPath: slot.masterPath,
+      thumbPath: slot.thumbPath,
+      width: record.width,
+      height: record.height,
+      sizeBytes: record.sizeBytes,
+      capturedAt: record.capturedAt,
+      note: record.note,
+      retentionClass: slot.retentionClass,
+    }),
+    ACTION_TIMEOUT_MS,
+    'Saving photo',
+  )
   if (!attached.ok) throw new Error(attached.error)
 
   // 6. ONLY now are the device bytes redundant.
   await deleteQueuedPhoto(record.id)
+  // The server has confirmed. This is the call whose absence stuck the banner
+  // and the Submit button.
+  packCapture.mark(record.packId, record.id, 'saved')
+  // Mark the server-rendered linked count stale. We deliberately do NOT
+  // refresh per photo — 40 photos would mean 40 server round-trips competing
+  // with the uploads. The React binding refreshes ONCE when the drain cycle
+  // goes idle.
+  setState(record.packId, { serverRefreshNeeded: true })
   await refreshQueue(record.packId)
+}
+
+/** One pending wake-up per pack. Replaced, never stacked. */
+const wakeTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function clearRetryWake(packId: string): void {
+  const existing = wakeTimers.get(packId)
+  if (existing) {
+    clearTimeout(existing)
+    wakeTimers.delete(packId)
+  }
+}
+
+/**
+ * Book the single timer that brings the worker back for a backed-off record.
+ * This is not polling: at most one timer exists per pack, it is only set when
+ * a record is genuinely waiting, and it stops entirely at the auto-retry cap.
+ */
+function scheduleRetryWake(packId: string): void {
+  clearRetryWake(packId)
+  // Offline: the `online` listener is the correct trigger. Scheduling here
+  // would spin, because drainQueue exits immediately while offline.
+  if (!isOnline()) return
+  const due = msUntilNextRetry(states.get(packId)?.records ?? [], Date.now())
+  if (due === null) return
+  // Floor the delay so a zero can never become a tight loop.
+  const timer = setTimeout(() => {
+    wakeTimers.delete(packId)
+    void drainQueue(packId)
+  }, Math.max(due, 250))
+  wakeTimers.set(packId, timer)
 }
 
 /** Drain the pack's queue sequentially. Safe to call repeatedly. */
 export async function drainQueue(packId: string): Promise<void> {
   if (running.has(packId)) return
   running.add(packId)
+  // We are running now; any pending wake-up is redundant and is re-booked in
+  // the finally below if it is still needed.
+  clearRetryWake(packId)
+  setState(packId, { draining: true })
   try {
     for (;;) {
       if (!isOnline()) break
@@ -286,6 +410,7 @@ export async function drainQueue(packId: string): Promise<void> {
           attempts: record.attempts + 1,
           lastAttemptAt: Date.now(),
         })
+        packCapture.mark(packId, record.id, 'failed')
         await refreshQueue(packId)
         // Stop this pass; a resume trigger or Retry will pick it up again.
         break
@@ -294,10 +419,29 @@ export async function drainQueue(packId: string): Promise<void> {
   } finally {
     running.delete(packId)
     await refreshQueue(packId)
+    // Cycle is idle — including a cycle that ended with some photos failed.
+    // This is what releases the single server refresh.
+    setState(packId, { draining: false })
+    // A record inside its backoff window makes the loop above exit. Book the
+    // one timer that brings the worker back, otherwise it waits for a mount /
+    // pageshow / visibility / online event that may never come while the
+    // inspector is looking straight at the page.
+    scheduleRetryWake(packId)
   }
 }
 
 export const photoQueue = {
+  /**
+   * Atomically CLAIM the stale-server signal. Returns true only to the first
+   * caller; every later caller gets false. Reading the live store (not a
+   * render snapshot) is what stops two mounted panels for the same pack from
+   * each firing a refresh in the same commit, and stops a remount replaying it.
+   */
+  claimServerRefresh(packId: string): boolean {
+    if (!states.get(packId)?.serverRefreshNeeded) return false
+    setState(packId, { serverRefreshNeeded: false })
+    return true
+  },
   subscribe(cb: () => void): () => void {
     listeners.add(cb)
     return () => {
@@ -316,11 +460,23 @@ export const photoQueue = {
 export function usePackQueue(packId: string): PackQueueState & {
   describe: ReturnType<typeof describeQueue>
 } {
+  const router = useRouter()
   const state = useSyncExternalStore(
     photoQueue.subscribe,
     () => photoQueue.snapshot(packId),
     () => EMPTY,
   )
+
+  // ONE server refresh per completed drain cycle — not one per photo. We wait
+  // until the worker is idle (which includes a cycle that ended with some
+  // failures), acknowledge the signal FIRST so a remount cannot retrigger it,
+  // then pull fresh server data so the linked count updates live.
+  useEffect(() => {
+    if (!state.serverRefreshNeeded || state.draining) return
+    // Claim first — only the winner refreshes.
+    if (!photoQueue.claimServerRefresh(packId)) return
+    router.refresh()
+  }, [state.serverRefreshNeeded, state.draining, packId, router])
 
   useEffect(() => {
     let cancelled = false

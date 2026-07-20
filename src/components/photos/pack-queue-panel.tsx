@@ -91,7 +91,8 @@ export function PackQueuePanel({ packId }: { packId: string }) {
 
       {inFlight > 0 ? (
         <p className="mt-1 text-xs leading-relaxed">
-          Keep this page open until uploading finishes.
+          These photos are stored on this device. Safe to close the page, take a
+          call or switch apps — upload resumes automatically when you return.
         </p>
       ) : null}
 

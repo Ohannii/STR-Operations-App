@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   describeQueue,
+  MAX_AUTO_RETRY_ATTEMPTS,
   missingScopeFields,
+  msUntilNextRetry,
   nextUploadable,
   packScopeError,
   recordMatchesScope,
@@ -34,6 +36,60 @@ function rec(state: QueuedPhotoState, o: Partial<QueuedPhotoMeta> = {}): QueuedP
     ...o,
   }
 }
+
+describe('msUntilNextRetry — the worker must always book its own wake-up', () => {
+  const NOW = 1_000_000
+
+  it('returns null when nothing is waiting to retry', () => {
+    expect(msUntilNextRetry([], NOW)).toBeNull()
+    expect(msUntilNextRetry([rec('queued'), rec('uploading'), rec('saved_local')], NOW)).toBeNull()
+  })
+
+  it('THE STALL BUG: a backed-off record always yields a finite wake-up', () => {
+    // nextUploadable refuses this record (still inside backoff), which makes
+    // the drain loop exit. Before this helper nothing rebooked the worker and
+    // the banner said "Uploading" forever.
+    const r = rec('failed', { attempts: 1, lastAttemptAt: NOW })
+    expect(nextUploadable([r], NOW)).toBeNull()
+    expect(msUntilNextRetry([r], NOW)).toBe(retryDelayMs(1))
+  })
+
+  it('counts down as time passes and never goes negative', () => {
+    const r = rec('failed', { attempts: 1, lastAttemptAt: NOW })
+    const delay = retryDelayMs(1)
+    expect(msUntilNextRetry([r], NOW + delay / 2)).toBe(delay / 2)
+    expect(msUntilNextRetry([r], NOW + delay)).toBe(0)
+    expect(msUntilNextRetry([r], NOW + delay * 10)).toBe(0)
+  })
+
+  it('wakes for the SOONEST record, not the first one seen', () => {
+    const soon = rec('failed', { attempts: 1, lastAttemptAt: NOW })
+    const later = rec('failed', { attempts: 5, lastAttemptAt: NOW })
+    expect(msUntilNextRetry([later, soon], NOW)).toBe(retryDelayMs(1))
+  })
+
+  it('a failed record that never ran is due immediately', () => {
+    expect(msUntilNextRetry([rec('failed', { attempts: 0, lastAttemptAt: null })], NOW)).toBe(0)
+  })
+
+  it('stops waking the radio after the auto-retry cap', () => {
+    const spent = rec('failed', { attempts: MAX_AUTO_RETRY_ATTEMPTS, lastAttemptAt: NOW })
+    expect(msUntilNextRetry([spent], NOW + 10_000_000)).toBeNull()
+  })
+
+  it('the cap never blocks the inspector’s explicit Retry', () => {
+    // retryFailed() puts the record back to 'queued', which is always uploadable
+    // regardless of how many attempts it has already burned.
+    const revived = rec('queued', { attempts: MAX_AUTO_RETRY_ATTEMPTS + 3, lastAttemptAt: NOW })
+    expect(nextUploadable([revived], NOW)).not.toBeNull()
+  })
+
+  it('an exhausted record does not mask a still-retryable one', () => {
+    const spent = rec('failed', { attempts: MAX_AUTO_RETRY_ATTEMPTS, lastAttemptAt: NOW })
+    const live = rec('failed', { attempts: 2, lastAttemptAt: NOW })
+    expect(msUntilNextRetry([spent, live], NOW)).toBe(retryDelayMs(2))
+  })
+})
 
 describe('summarizeQueue', () => {
   it('an empty queue blocks nothing', () => {
