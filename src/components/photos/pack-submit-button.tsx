@@ -11,6 +11,7 @@ import { usePackQueue } from '@/lib/photos/photo-queue'
 import {
   canSubmitPack,
   describePackStatus,
+  shouldSuppressPackStatusBanner,
   type PackStatusTone,
 } from '@/lib/photos/pack-status'
 
@@ -81,11 +82,21 @@ export function PackStatusBanner({
   serverUnresolvedCount?: number | null
   className?: string
 }) {
-  const { intended, pending, failed, queuedLocal, queueDescribe, storageError } =
-    useIntended(packId, linkedPhotoCount, serverUnresolvedCount)
-  // The device queue is the most urgent thing an inspector needs to know, so
-  // it (and any storage failure) takes over the banner text when present.
-  const base = describePackStatus({
+  const { intended, pending, failed, queuedLocal, storageError } = useIntended(
+    packId,
+    linkedPhotoCount,
+    serverUnresolvedCount,
+  )
+
+  // PackQueuePanel owns the message whenever the device queue has records or
+  // storage is unusable — it is the surface with Retry / Attach. Rendering
+  // here too showed the same failure twice. Submission stays blocked either
+  // way: canSubmitPack is untouched by this purely visual suppression.
+  if (shouldSuppressPackStatusBanner({ queuedLocal, hasStorageError: !!storageError })) {
+    return null
+  }
+
+  const status = describePackStatus({
     linked: linkedPhotoCount,
     intended,
     pending,
@@ -93,14 +104,6 @@ export function PackStatusBanner({
     serverUnresolved: serverUnresolvedCount,
     queuedLocal,
   })
-  const status = storageError
-    ? {
-        tone: 'failed' as PackStatusTone,
-        text: `Photos could NOT be saved on this device — ${storageError}`,
-      }
-    : queuedLocal > 0
-      ? { tone: 'uploading' as PackStatusTone, text: queueDescribe.text }
-      : base
 
   const Icon =
     status.tone === 'ready'

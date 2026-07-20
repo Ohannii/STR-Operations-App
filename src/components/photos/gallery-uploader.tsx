@@ -45,6 +45,7 @@ import {
   CheckCircle2,
   Image as ImageIcon,
   Loader2,
+  Smartphone,
   XCircle,
 } from 'lucide-react'
 import { compressForEvidence } from '@/lib/photos/compress'
@@ -79,6 +80,14 @@ type FileStatus =
   | 'signing'
   | 'uploading'
   | 'attaching'
+  /**
+   * PRE-ARRIVAL ONLY: the compressed blobs are safely in the app-private
+   * device queue, but the server has NOT confirmed attachment. This must
+   * never be presented as "attached" — the sequential worker and
+   * PackQueuePanel own the rest of the journey.
+   */
+  | 'device_saved'
+  /** Server-confirmed attach (flag path only). */
   | 'done'
   | 'error'
 
@@ -329,9 +338,11 @@ export function GalleryUploader({
                 release: true,
               },
             )
-            // Only NOW is it safe to call this photo saved.
+            // The bytes are now durable ON THIS DEVICE — nothing more. The
+            // server has not seen this photo yet, so it must NOT be shown as
+            // attached. PackQueuePanel is authoritative from here.
             packCapture.commit(evidencePackId, r.id)
-            updateItem(r.id, { status: 'done' })
+            updateItem(r.id, { status: 'device_saved' })
           } catch (err) {
             const msg =
               err instanceof Error
@@ -379,7 +390,10 @@ export function GalleryUploader({
   const isMisconfigured = !flagId && !evidencePackId
 
   const buttonLabel = label ?? 'Upload from gallery'
+  // Server-confirmed attaches ONLY (flag path). A pre-arrival photo sitting in
+  // the device queue is deliberately excluded — it is not attached yet.
   const successCount = items.filter((i) => i.status === 'done').length
+  const deviceSavedCount = items.filter((i) => i.status === 'device_saved').length
   const errorCount = items.filter((i) => i.status === 'error').length
 
   // Warn before leaving/reloading while an upload is in flight or a
@@ -460,6 +474,8 @@ export function GalleryUploader({
                       className="text-emerald-600"
                       aria-hidden
                     />
+                  ) : it.status === 'device_saved' ? (
+                    <Smartphone size={13} className="text-amber-600" aria-hidden />
                   ) : it.status === 'error' ? (
                     <XCircle size={13} className="text-red-600" aria-hidden />
                   ) : (
@@ -478,15 +494,17 @@ export function GalleryUploader({
                   <p className="text-[11px] text-slate-500">
                     {it.status === 'done'
                       ? 'Attached to the pack.'
-                      : it.status === 'error'
-                        ? (it.error ?? 'Failed.')
-                        : it.status === 'compressing'
-                          ? 'Compressing on device…'
-                          : it.status === 'signing'
-                            ? 'Asking server for upload slot…'
-                            : it.status === 'uploading'
-                              ? 'Uploading to storage…'
-                              : 'Attaching to pack…'}
+                      : it.status === 'device_saved'
+                        ? 'Saved on this device — uploading…'
+                        : it.status === 'error'
+                          ? (it.error ?? 'Failed.')
+                          : it.status === 'compressing'
+                            ? 'Compressing on device…'
+                            : it.status === 'signing'
+                              ? 'Asking server for upload slot…'
+                              : it.status === 'uploading'
+                                ? 'Uploading to storage…'
+                                : 'Attaching to pack…'}
                   </p>
                 </div>
               </li>
@@ -498,10 +516,15 @@ export function GalleryUploader({
                 className={
                   errorCount > 0
                     ? 'text-red-600 font-medium'
-                    : 'text-emerald-700 font-medium'
+                    : deviceSavedCount > 0
+                      ? 'text-amber-700 font-medium'
+                      : 'text-emerald-700 font-medium'
                 }
               >
-                {successCount} attached · {errorCount} failed
+                {/* Never claim "attached" for device-queued photos. */}
+                {deviceSavedCount > 0
+                  ? `${deviceSavedCount} saved on this device · ${errorCount} failed`
+                  : `${successCount} attached · ${errorCount} failed`}
               </p>
               <div className="flex items-center gap-2">
                 <button

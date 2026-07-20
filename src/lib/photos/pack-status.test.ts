@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   canSubmitPack,
   describePackStatus,
+  shouldSuppressPackStatusBanner,
   type PackStatusInput,
 } from '@/lib/photos/pack-status'
 
@@ -32,6 +33,38 @@ describe('fail-closed on unknown server state (Outcome 3, req 13)', () => {
     // Same inputs, only the knowledge differs.
     expect(canSubmitPack(s({ linked: 4, intended: 4, serverUnresolved: 0 }))).toBe(true)
     expect(canSubmitPack(s({ linked: 4, intended: 4, serverUnresolved: null }))).toBe(false)
+  })
+})
+
+describe('banner suppression (PackQueuePanel is authoritative)', () => {
+  it('hides the banner while the device queue has records', () => {
+    expect(shouldSuppressPackStatusBanner({ queuedLocal: 1 })).toBe(true)
+    expect(shouldSuppressPackStatusBanner({ queuedLocal: 40 })).toBe(true)
+  })
+
+  it('hides the banner when device storage is unusable', () => {
+    expect(shouldSuppressPackStatusBanner({ hasStorageError: true })).toBe(true)
+  })
+
+  it('shows the banner when there is no local queue to cover it', () => {
+    expect(shouldSuppressPackStatusBanner({ queuedLocal: 0 })).toBe(false)
+    expect(shouldSuppressPackStatusBanner({})).toBe(false)
+  })
+
+  it('server-unknown / unresolved still surfaces when no queue panel is shown', () => {
+    expect(shouldSuppressPackStatusBanner({ queuedLocal: 0 })).toBe(false)
+    expect(describePackStatus(s({ linked: 4, intended: 4, serverUnresolved: null })).tone).toBe(
+      'unknown',
+    )
+    expect(
+      describePackStatus(s({ linked: 4, intended: 4, serverUnresolved: 2 })).tone,
+    ).toBe('failed')
+  })
+
+  it('SUPPRESSION IS VISUAL ONLY — submission stays blocked', () => {
+    const queued = s({ linked: 25, intended: 25, queuedLocal: 1 })
+    expect(shouldSuppressPackStatusBanner({ queuedLocal: 1 })).toBe(true)
+    expect(canSubmitPack(queued)).toBe(false)
   })
 })
 

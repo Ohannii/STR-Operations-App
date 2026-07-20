@@ -99,6 +99,23 @@ export function describePackStatus(
  * unresolved server intent, any live in-flight/failed work, an empty pack, or
  * linked falling short of intent.
  */
+/**
+ * Should the high-level PackStatusBanner stay hidden?
+ *
+ * PackQueuePanel is AUTHORITATIVE whenever the device queue has records or
+ * storage is unusable, because it is the surface that carries Retry / Attach.
+ * Rendering the banner as well produced the same failure message twice.
+ *
+ * This is presentation only — it must never affect `canSubmitPack`, which
+ * keeps blocking on exactly the same conditions.
+ */
+export function shouldSuppressPackStatusBanner(input: {
+  queuedLocal?: number
+  hasStorageError?: boolean
+}): boolean {
+  return (input.queuedLocal ?? 0) > 0 || input.hasStorageError === true
+}
+
 export function canSubmitPack(input: PackStatusInput): boolean {
   const { linked, intended, pending, failed, serverUnresolved } = input
   const queuedLocal = input.queuedLocal ?? 0
