@@ -1,12 +1,17 @@
 -- ============================================================
--- Cancellation-tombstone + lock-order tests (chat directives A–H + I–L)
+-- Cancellation-tombstone + lock-order tests (orderings A–L)
+-- POST-DEPLOYMENT INTEGRATION TEST — exercises the DEPLOYED RPCs
 -- ============================================================
--- Plain SQL for:  pnpm.cmd exec supabase db query --linked -f supabase/tests/prearrival_cancellation_test.sql
+-- Run:  pnpm.cmd exec supabase db query --linked -f supabase/tests/prearrival_cancellation_test.sql
 --
--- SELF-CONTAINED and SIDE-EFFECT-FREE: applies migration
--- 20260721090000_prearrival_photo_cancellation.sql INSIDE this transaction,
--- runs every ordering, prints a verdict, then ROLLS BACK. The database is
--- unchanged afterwards whether it passes or fails.
+-- Migration 20260721090000_prearrival_photo_cancellation.sql is APPLIED on
+-- the linked database. This file therefore contains NO persistent DDL: no
+-- CREATE/DROP/ALTER/GRANT/REVOKE on any public object. It calls the deployed
+-- functions as-is. Only pg_temp helpers and a temporary results table are
+-- created (session-local, gone at rollback/disconnect).
+--
+-- SIDE-EFFECT-FREE: exactly one BEGIN below and one final ROLLBACK; every
+-- inserted fixture row (packs, intents, photos) is rolled back.
 --
 -- These are the actual network orderings, expressed as commit orderings — in
 -- one session, "the discard commits before the delayed slot request arrives"
@@ -15,187 +20,7 @@
 -- these orderings, which is the invariant's whole design.
 begin;
 
--- ---- apply the migration under test (rolled back at the end) ----
--- Keep in sync with supabase/migrations/20260721090000_prearrival_photo_cancellation.sql
-
-create or replace function public.create_prearrival_photo_intent(
-  p_pack_id  uuid,
-  p_photo_id uuid
-)
-returns table (photo_id uuid, company_id uuid, master_path text, thumb_path text, state text)
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_company   uuid;
-  v_property  uuid;
-  v_master    text;
-  v_thumb     text;
-  v_existing  public.photo_upload_intents%rowtype;
-  v_photo_id  uuid;
-begin
-  if p_photo_id is null then
-    raise exception 'photo id is required' using errcode = '22023';
-  end if;
-
-  perform 1 from public.evidence_packs where id = p_pack_id for share;
-
-  select a.company_id, a.property_id into v_company, v_property
-  from public.assert_draft_prearrival_pack(p_pack_id) a;
-
-  v_master := format('companies/%s/property/%s/%s.jpg', v_company, v_property, p_photo_id);
-  v_thumb  := format('companies/%s/property/%s/%s_thumb.jpg', v_company, v_property, p_photo_id);
-
-  select * into v_existing from public.photo_upload_intents where id = p_photo_id;
-  if found then
-    if v_existing.company_id        is distinct from v_company
-       or v_existing.property_id      is distinct from v_property
-       or v_existing.evidence_pack_id is distinct from p_pack_id
-       or v_existing.master_path      is distinct from v_master
-       or v_existing.thumb_path       is distinct from v_thumb then
-      raise exception 'photo intent % already exists with different identity', p_photo_id
-        using errcode = '23505';
-    end if;
-    if v_existing.state = 'discarded' then
-      raise exception 'photo intent % was discarded; capture a new photo', p_photo_id
-        using errcode = '22023';
-    end if;
-    photo_id := p_photo_id; company_id := v_company;
-    master_path := v_master; thumb_path := v_thumb; state := v_existing.state;
-    return next;
-    return;
-  end if;
-
-  select ph.id into v_photo_id from public.photos ph where ph.id = p_photo_id;
-  if v_photo_id is not null then
-    raise exception 'photo id % is already in use', p_photo_id using errcode = '23505';
-  end if;
-
-  insert into public.photo_upload_intents (
-    id, company_id, property_id, evidence_pack_id,
-    master_path, thumb_path, state, created_by
-  ) values (
-    p_photo_id, v_company, v_property, p_pack_id,
-    v_master, v_thumb, 'pending', auth.uid()
-  );
-
-  photo_id := p_photo_id; company_id := v_company;
-  master_path := v_master; thumb_path := v_thumb; state := 'pending';
-  return next;
-end;
-$$;
-
-drop function if exists public.discard_prearrival_photo_intent(uuid, text);
-
-create function public.discard_prearrival_photo_intent(
-  p_photo_id uuid,
-  p_reason   text,
-  p_pack_id  uuid default null
-)
-returns text
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_pack     uuid;
-  v_company  uuid;
-  v_property uuid;
-  v_intent   public.photo_upload_intents%rowtype;
-  v_reason   text;
-begin
-  if auth.uid() is null then
-    raise exception 'authentication required' using errcode = '42501';
-  end if;
-  if p_photo_id is null then
-    raise exception 'photo id is required' using errcode = '22023';
-  end if;
-  v_reason := left(nullif(btrim(coalesce(p_reason, '')), ''), 500);
-  if v_reason is null then
-    raise exception 'a discard reason is required' using errcode = '22023';
-  end if;
-
-  select evidence_pack_id into v_pack
-  from public.photo_upload_intents where id = p_photo_id;
-
-  if v_pack is not null and p_pack_id is not null
-     and v_pack is distinct from p_pack_id then
-    raise exception 'photo % belongs to a different pack', p_photo_id
-      using errcode = '23505';
-  end if;
-
-  if v_pack is null then
-    if p_pack_id is null then
-      raise exception 'no upload intent for photo %', p_photo_id using errcode = 'P0002';
-    end if;
-
-    perform 1 from public.evidence_packs where id = p_pack_id for share;
-    select a.company_id, a.property_id into v_company, v_property
-    from public.assert_draft_prearrival_pack(p_pack_id) a;
-
-    insert into public.photo_upload_intents (
-      id, company_id, property_id, evidence_pack_id,
-      master_path, thumb_path, state, created_by,
-      discarded_at, discarded_by, discard_reason
-    ) values (
-      p_photo_id, v_company, v_property, p_pack_id,
-      format('companies/%s/property/%s/%s.jpg', v_company, v_property, p_photo_id),
-      format('companies/%s/property/%s/%s_thumb.jpg', v_company, v_property, p_photo_id),
-      'discarded', auth.uid(),
-      now(), auth.uid(), v_reason
-    )
-    on conflict (id) do nothing;
-
-    select * into v_intent from public.photo_upload_intents where id = p_photo_id;
-    if not found then
-      raise exception 'could not record cancellation for photo %', p_photo_id
-        using errcode = 'P0001';
-    end if;
-    if v_intent.company_id        is distinct from v_company
-       or v_intent.property_id      is distinct from v_property
-       or v_intent.evidence_pack_id is distinct from p_pack_id then
-      raise exception 'photo % belongs to a different pack', p_photo_id
-        using errcode = '23505';
-    end if;
-    v_pack := v_intent.evidence_pack_id;
-  end if;
-
-  perform 1 from public.evidence_packs where id = v_pack for share;
-  perform 1 from public.assert_draft_prearrival_pack(v_pack);
-
-  select * into v_intent from public.photo_upload_intents
-  where id = p_photo_id
-  for update;
-  if not found then
-    raise exception 'no upload intent for photo %', p_photo_id using errcode = 'P0002';
-  end if;
-
-  if v_intent.state = 'discarded' then
-    return 'already_discarded';
-  end if;
-  if v_intent.state = 'completed' then
-    raise exception 'photo % is already saved and cannot be discarded here', p_photo_id
-      using errcode = '22023';
-  end if;
-
-  update public.photo_upload_intents
-     set state = 'discarded',
-         discarded_at = now(),
-         discarded_by = auth.uid(),
-         discard_reason = v_reason
-   where id = p_photo_id;
-
-  return 'discarded';
-end;
-$$;
-
-revoke all on function public.discard_prearrival_photo_intent(uuid, text, uuid)
-  from public;
-grant execute on function public.discard_prearrival_photo_intent(uuid, text, uuid)
-  to authenticated;
-
--- ---- test harness ----
+-- ---- test harness (temporary objects only) ----
 
 create temporary table _chk (n serial, label text, pass boolean) on commit drop;
 
@@ -211,6 +36,18 @@ begin
   exception when others then
     perform pg_temp.chk(p_label || '  [' || sqlstate || ']', true);
   end;
+end $$;
+
+-- ---- prerequisites: the deployed contract this test assumes ----
+
+do $$
+begin
+  perform pg_temp.chk(
+    'P1: deployed discard fn is the 3-arg cancellation shape',
+    to_regprocedure('public.discard_prearrival_photo_intent(uuid,text,uuid)') is not null);
+  perform pg_temp.chk(
+    'P2: superseded 2-arg discard fn is gone (no ambiguous overload)',
+    to_regprocedure('public.discard_prearrival_photo_intent(uuid,text)') is null);
 end $$;
 
 do $$
@@ -300,15 +137,14 @@ begin
   perform pg_temp.chk('G2: no photos row exists for any cancelled id', v_n = 0);
 
   -- ---------- I: delayed slot request vs pack finalisation ----------
-  -- The lock fix makes the interleaving serialise; the committed-state
-  -- outcome we can assert single-session is: once the pack is submitted, a
-  -- late slot request and a late tombstone are both rejected.
+  -- The FOR SHARE lock serialises the interleaving; the committed-state
+  -- outcome assertable in one session is: once the pack is submitted, a late
+  -- slot request and a late tombstone are both rejected.
   insert into public.evidence_packs
     (company_id, property_id, pack_type, status, title, started_by)
   values (v_company, v_property2, 'pre_arrival', 'draft', 'CANCEL-TEST-I-ROLLBACK', v_user)
   returning id into v_pack2;
-  -- (superuser session may bypass client grant revocations; this models the
-  -- pack having been finalised)
+  -- (superuser session models the pack having been finalised; rolled back)
   update public.evidence_packs
      set status = 'submitted', submitted_at = now(), submitted_by = v_user
    where id = v_pack2;
@@ -322,8 +158,8 @@ begin
 
   -- ---------- J: ATTACH-FIRST vs discard (the other legal ordering) ----------
   perform public.create_prearrival_photo_intent(v_pack, pid_j);
-  -- Model a completed attach (storage-verified path already covered by the
-  -- 20260718 suite): completed intent + matching photos row.
+  -- Model a completed attach (storage-verified path covered by the 20260718
+  -- suite): completed intent + matching photos row. Rolled back.
   update public.photo_upload_intents
      set state = 'completed', completed_at = now()
    where id = pid_j;
@@ -366,7 +202,7 @@ begin
   perform pg_temp.chk('H2: bystander slot replay still succeeds', true);
 end $$;
 
--- ---------- L: PUBLIC / anon cannot execute the new discard function ----------
+-- ---------- L: PUBLIC / anon cannot execute the deployed discard function ----------
 do $$
 begin
   begin
