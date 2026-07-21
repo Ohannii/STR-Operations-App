@@ -1,10 +1,13 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import { AlertTriangle, RotateCcw } from 'lucide-react'
 import {
   discardPrearrivalPhotoIntentAction,
   recoverPrearrivalPhotoIntentAction,
 } from '@/app/properties/[id]/packs/actions'
+import { usePackQueue } from '@/lib/photos/photo-queue'
+import { filterTrueOrphans, ORPHAN_GRACE_MS } from '@/lib/photos/photo-queue-state'
 
 export type UnresolvedIntent = {
   id: string
@@ -12,19 +15,77 @@ export type UnresolvedIntent = {
 }
 
 /**
- * Unresolved pre-arrival upload intents — photos the server was PROMISED but
- * never received. This is server truth, so it survives reloads, other tabs and
- * other devices.
+ * TRUE-ORPHAN reconciliation. A pending server intent is only shown as
+ * "never finished saving" when this device can positively say nobody owns it:
+ *   * the local queue is HYDRATED (an unhydrated, empty-by-default snapshot
+ *     proves nothing and must not accuse anyone);
+ *   * no live local queue record carries the same stable photo uuid (a live
+ *     record means the worker owns it: it is staging, uploading, retrying or
+ *     being cleaned up — normal life, not abandonment);
+ *   * the intent is older than a short grace period (cross-device case).
  *
- * The pack cannot be submitted while any of these exist. The inspector has
- * exactly two honest routes:
- *   1. Recapture the photo (preferred) — the pack then completes normally.
- *   2. Deliberately exclude it, with a REQUIRED written reason, recorded
- *      against their user id and timestamp by the RPC.
- * There is no silent "submit what saved" escape, and nothing here deletes
- * evidence — a completed photo can never be discarded through this path.
+ * WHY THIS EXISTS (live incident, 21 Jul 2026): upload-early staging creates
+ * intents at CAPTURE, so every actively-uploading photo is briefly a pending
+ * intent. The previous version showed every pending intent as an abandoned
+ * photo with recover/exclude cards — 22 alarming cards on a 46-second-old
+ * pack whose uploads were fine. This panel is CRASH RECOVERY, a last resort —
+ * not the normal workflow's dominant surface.
  */
 export function UnresolvedIntentsPanel({
+  propertyId,
+  packId,
+  intents,
+}: {
+  propertyId: string
+  packId: string
+  intents: UnresolvedIntent[]
+}) {
+  const queue = usePackQueue(packId)
+
+  // TIMER-DRIVEN timestamp: render stays pure (no Date.now() during render).
+  // `now` is null until established, and while it is null — or before the
+  // queue hydrates — NO orphan warning renders (accuse no one on missing
+  // information). Timers re-establish it whenever inputs change and again at
+  // the earliest moment a hidden-young intent crosses the grace threshold,
+  // so a true orphan appears on time without any polling loop.
+  const [now, setNow] = useState<number | null>(null)
+
+  useEffect(() => {
+    const t = setTimeout(() => setNow(Date.now()), 0)
+    return () => clearTimeout(t)
+  }, [intents, queue.hydrated, queue.records])
+
+  useEffect(() => {
+    if (now === null || !queue.hydrated) return
+    const localIds = new Set(queue.records.map((r) => r.id))
+    let nextCrossing: number | null = null
+    for (const intent of intents) {
+      if (localIds.has(intent.id) || !intent.createdAt) continue
+      const crossesAt = new Date(intent.createdAt).getTime() + ORPHAN_GRACE_MS
+      if (crossesAt > now && (nextCrossing === null || crossesAt < nextCrossing)) {
+        nextCrossing = crossesAt
+      }
+    }
+    if (nextCrossing === null) return
+    const t = setTimeout(() => setNow(Date.now()), Math.max(250, nextCrossing - now + 50))
+    return () => clearTimeout(t)
+  }, [now, intents, queue.hydrated, queue.records])
+
+  if (!queue.hydrated || now === null) return null
+
+  // Reconciliation logic is PURE (filterTrueOrphans, unit-tested): requires
+  // hydration, excludes worker-owned ids, applies the cross-device grace.
+  const orphans = filterTrueOrphans(
+    intents,
+    new Set(queue.records.map((r) => r.id)),
+    true,
+    now,
+  )
+
+  return <OrphanCards propertyId={propertyId} intents={orphans} />
+}
+
+function OrphanCards({
   propertyId,
   intents,
 }: {

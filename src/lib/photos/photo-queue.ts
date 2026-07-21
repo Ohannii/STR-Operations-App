@@ -9,12 +9,14 @@ import {
   type UploadSlot,
 } from '@/app/properties/[id]/photos/actions'
 import { packCapture } from '@/lib/photos/pack-capture-store'
+import { dbg, timed } from '@/lib/photos/photo-queue-debug'
 import {
   isRetentionClass,
   PRE_ARRIVAL_RETENTION,
   type RetentionClass,
 } from '@/lib/photos/retention'
 import {
+  claimQueuedPhoto,
   deleteQueuedPhoto,
   getQueuedPhoto,
   listQueuedForPack,
@@ -24,11 +26,19 @@ import {
   type QueuedPhotoRecord,
 } from '@/lib/photos/photo-queue-db'
 import {
+  buildAttachInput,
+  provenAttachPaths,
+  claimForAttachDecision,
+  claimForStagingDecision,
+  claimForUploadDecision,
   describeQueue,
+  MAX_AUTO_RETRY_ATTEMPTS,
   msUntilNextRetry,
   nextDiscardable,
   nextStageable,
   nextUploadable,
+  reclaimDecision,
+  reclaimableRecords,
   summarizeQueue,
   type QueueSummary,
   type QueuedPhotoMeta,
@@ -76,6 +86,19 @@ type PackQueueState = {
   serverRefreshNeeded: boolean
   /** True while the sequential worker is actively draining this pack. */
   draining: boolean
+  /**
+   * True once IndexedDB has been read at least once for this pack. Consumers
+   * that CORRELATE against the local queue (the orphan panel) must not draw
+   * conclusions from an unhydrated, empty-by-default snapshot.
+   */
+  hydrated: boolean
+  /**
+   * Ids whose local record was deleted by the DISCARD path (confirmed server
+   * cancellation), this session. The Done gate consumes this so a deletion
+   * can never impersonate an attachment: record-gone counts as attached ONLY
+   * when the id is not listed here.
+   */
+  discardedIds: string[]
 }
 
 const EMPTY_SUMMARY: QueueSummary = {
@@ -85,6 +108,7 @@ const EMPTY_SUMMARY: QueueSummary = {
   uploading: 0,
   attaching: 0,
   failed: 0,
+  retrying: 0,
   discarding: 0,
   blocking: false,
 }
@@ -96,6 +120,8 @@ const EMPTY: PackQueueState = {
   storageError: null,
   serverRefreshNeeded: false,
   draining: false,
+  hydrated: false,
+  discardedIds: [],
 }
 
 const states = new Map<string, PackQueueState>()
@@ -107,6 +133,21 @@ const emit = () => {
 
 function isOnline(): boolean {
   return typeof navigator === 'undefined' ? true : navigator.onLine !== false
+}
+
+/** Session ledger of ids deleted via the DISCARD path (per pack). Feeds
+ *  PackQueueState.discardedIds so record-gone can never read as attached for
+ *  a photo that was actually cancelled. */
+const discardedLedger = new Map<string, Set<string>>()
+
+function recordDiscarded(packId: string, photoId: string): void {
+  let set = discardedLedger.get(packId)
+  if (!set) {
+    set = new Set()
+    discardedLedger.set(packId, set)
+  }
+  set.add(photoId)
+  setState(packId, { discardedIds: Array.from(set) })
 }
 
 function setState(packId: string, next: Partial<PackQueueState>): void {
@@ -135,6 +176,20 @@ function toMeta(r: QueuedPhotoRecord): QueuedPhotoMeta {
     height: r.height,
     sizeBytes: r.sizeBytes,
     state: r.state,
+    // REGRESSION LESSON (21 Jul): these optional fields were silently dropped
+    // here, so the UI snapshot NEVER saw bytesStaged/discardRequested — the
+    // "Uploaded" checkmark could not appear and every badge stuck on
+    // "Uploading". Optional fields hide from the field-by-field type check;
+    // every QueuedPhotoMeta field must be copied EXPLICITLY, including
+    // optional ones.
+    bytesStaged: r.bytesStaged,
+    masterPath: r.masterPath,
+    thumbPath: r.thumbPath,
+    retentionClass: r.retentionClass,
+    intentRequested: r.intentRequested,
+    discardRequested: r.discardRequested,
+    discardReason: r.discardReason,
+    leaseUntil: r.leaseUntil,
     lastError: r.lastError,
     attempts: r.attempts,
     lastAttemptAt: r.lastAttemptAt,
@@ -152,6 +207,7 @@ export async function refreshQueue(packId: string): Promise<void> {
       records: records.map(toMeta),
       online: isOnline(),
       storageError: null,
+      hydrated: true,
     })
   } catch (err) {
     setState(packId, {
@@ -225,12 +281,20 @@ export async function releaseQueued(
   void drainQueue(packId)
 }
 
-/** Reset failed records so the worker picks them up immediately. */
+/** Explicit "Try again": reset failed records so the worker picks them up
+ *  immediately. The attempts counter RESETS here — a human deliberately
+ *  retrying deserves a fresh quiet-retry budget, not an instant re-exhaust. */
 export async function retryFailed(packId: string): Promise<void> {
   const records = await listQueuedForPack(packId)
   for (const r of records) {
     if (r.state === 'failed') {
-      await patchQueuedPhoto(r.id, { state: 'queued', lastError: null, lastAttemptAt: null })
+      await patchQueuedPhoto(r.id, {
+        state: 'queued',
+        lastError: null,
+        lastAttemptAt: null,
+        attempts: 0,
+        leaseUntil: null,
+      })
     }
   }
   await refreshQueue(packId)
@@ -384,6 +448,9 @@ async function discardOne(record: QueuedPhotoRecord): Promise<void> {
     }
     throw new Error(res.error)
   }
+  // Confirmed CANCELLATION — ledger it BEFORE deleting so the Done gate can
+  // never mistake this deletion for an attachment.
+  recordDiscarded(record.packId, record.id)
   await deleteQueuedPhoto(record.id)
   await refreshQueue(record.packId)
 }
@@ -440,14 +507,19 @@ async function putBothSettled(
  * 20260721090000) makes slot creation and attach reject a removed photo
  * atomically, whatever this client believed.
  */
-async function stageOne(record: QueuedPhotoRecord): Promise<void> {
-  if (record.discardRequested) return
+async function stageOne(picked: QueuedPhotoRecord): Promise<void> {
+  // ATOMIC staging claim: lease only, state stays `saved_local` so the photo
+  // remains discardable. Two tabs staging the same capture: one wins.
+  const record = await claimQueuedPhoto(picked.id, (r) =>
+    claimForStagingDecision(r, Date.now()),
+  )
+  if (!record) return
   // From here an intent MAY exist even if the slot response is lost.
   await patchQueuedPhoto(record.id, { intentRequested: true })
-  const slot = await requestSlot(record)
+  const slot = await timed('stage:slot', record.id, () => requestSlot(record))
 
   if (!(await freshOrAbort(record.id))) return
-  await putBothSettled(slot, record)
+  await timed('stage:put', record.id, () => putBothSettled(slot, record))
 
   if (!(await freshOrAbort(record.id))) return
   await patchQueuedPhoto(record.id, {
@@ -458,13 +530,23 @@ async function stageOne(record: QueuedPhotoRecord): Promise<void> {
     lastError: null,
     attempts: 0,
     lastAttemptAt: null,
+    leaseUntil: null, // staging done; release ownership
   })
   await refreshQueue(record.packId)
 }
 
-async function uploadOne(record: QueuedPhotoRecord): Promise<void> {
-  if (record.discardRequested) return
-  await patchQueuedPhoto(record.id, { state: 'uploading' })
+async function uploadOne(picked: QueuedPhotoRecord): Promise<void> {
+  // ATOMIC CLAIM (single IndexedDB readwrite transaction, serialized across
+  // tabs). Picking and claiming are different things: another tab may have
+  // claimed this record between our list() and now. Exactly one claimer wins
+  // the state change + WORKER LEASE; every other caller gets null and walks
+  // away. Every network call below is timeout-bounded, so a live owner always
+  // resolves the record before the lease expires — an expired lease is proof
+  // of stranding.
+  const record = await claimQueuedPhoto(picked.id, (r) =>
+    claimForUploadDecision(r, Date.now()),
+  )
+  if (!record) return
   // REPORT BACK to the in-memory session store. evidence-capture commits every
   // released photo there as 'pending', and that store drives both the status
   // banner and the submit gate. When pack uploads moved out of the modal into
@@ -497,9 +579,9 @@ async function uploadOne(record: QueuedPhotoRecord): Promise<void> {
     : PRE_ARRIVAL_RETENTION
   if (!masterPath || !thumbPath) {
     await patchQueuedPhoto(record.id, { intentRequested: true })
-    const slot = await requestSlot(record)
+    const slot = await timed('upload:slot', record.id, () => requestSlot(record))
     if (!(await freshOrAbort(record.id))) return
-    await putBothSettled(slot, record)
+    await timed('upload:put', record.id, () => putBothSettled(slot, record))
     masterPath = slot.masterPath
     thumbPath = slot.thumbPath
     retentionClass = slot.retentionClass
@@ -510,27 +592,35 @@ async function uploadOne(record: QueuedPhotoRecord): Promise<void> {
   // attach_prearrival_photo rejecting state='discarded' under FOR UPDATE.
   if (!(await freshOrAbort(record.id))) return
 
-  // Atomic attach.
-  await patchQueuedPhoto(record.id, { state: 'attaching' })
+  // Atomic phase advance: refuses if ownership was lost (e.g. a discard was
+  // requested since the upload claim). The lease renews with the phase.
+  const owned = await claimQueuedPhoto(record.id, (r) =>
+    claimForAttachDecision(r, Date.now()),
+  )
+  if (!owned) return
   packCapture.mark(record.packId, record.id, 'attaching')
   await refreshQueue(record.packId)
-  const attached = await withTimeout(
-    attachEvidencePhoto({
-      photoId: record.id,
-      propertyId: record.propertyId,
-      flagId: null,
-      evidencePackId: record.packId,
-      masterPath,
-      thumbPath,
-      width: record.width,
-      height: record.height,
-      sizeBytes: record.sizeBytes,
-      capturedAt: record.capturedAt,
-      note: record.note,
-      retentionClass,
-    }),
-    ACTION_TIMEOUT_MS,
-    'Saving photo',
+  // BOUNDARY PROOF: both storage paths must be non-null strings before the
+  // attach RPC may run. If either is missing (corrupt/legacy record whose
+  // staged paths vanished and whose slot path was skipped), we must NOT
+  // attach, NOT delete the record and NOT mark it successful — throwing
+  // routes it through the ordinary failed/backoff/quiet-retry handling, and
+  // the retry takes the slow path, which re-requests a slot and repopulates
+  // the paths. No cast, no non-null assertion.
+  const paths = provenAttachPaths(masterPath, thumbPath)
+  if (!paths) {
+    throw new Error('Photo storage paths missing — retrying with a fresh upload slot')
+  }
+  // The caption (note) travels INSIDE this attach call; the record is deleted
+  // only after the server confirms it. Record-gone ⇒ caption saved.
+  const attached = await timed('upload:attach', record.id, () =>
+    withTimeout(
+      attachEvidencePhoto(
+        buildAttachInput(owned, paths.masterPath, paths.thumbPath, retentionClass),
+      ),
+      ACTION_TIMEOUT_MS,
+      'Saving photo',
+    ),
   )
   if (!attached.ok) throw new Error(attached.error)
 
@@ -587,6 +677,32 @@ export async function drainQueue(packId: string): Promise<void> {
   clearRetryWake(packId)
   setState(packId, { draining: true })
   try {
+    // RECLAIM STRANDED WORK FIRST. Records left in `uploading`/`attaching`
+    // by a killed page were previously invisible to every picker and stalled
+    // forever while the UI said "Uploading N photos…". Reclaim ONLY records
+    // whose worker lease has expired — a fresh lease means a live worker
+    // (possibly another tab) owns the record and must not be disturbed. Safe
+    // because the whole pipeline is idempotent by the stable photo uuid: a
+    // late response from the dead attempt can only 409/replay-verify.
+    {
+      const stranded = reclaimableRecords(
+        (await listQueuedForPack(packId)).map((r) => r),
+        Date.now(),
+      )
+      let reclaimed = 0
+      for (const r of stranded) {
+        // Atomic: re-checks staleness inside the transaction, so a worker
+        // that re-leased the record between our list and now is respected.
+        const got = await claimQueuedPhoto(r.id, (cur) =>
+          reclaimDecision(cur, Date.now()),
+        )
+        if (got) {
+          reclaimed += 1
+          dbg('reclaimed-stranded', { photoId: r.id, detail: r.state })
+        }
+      }
+      if (reclaimed > 0) await refreshQueue(packId)
+    }
     for (;;) {
       if (!isOnline()) break
       const all = await listQueuedForPack(packId)
@@ -636,13 +752,22 @@ export async function drainQueue(packId: string): Promise<void> {
             await refreshQueue(packId)
             continue
           }
+          const attempts = record.attempts + 1
           await patchQueuedPhoto(record.id, {
             state: 'failed',
             lastError: message,
-            attempts: record.attempts + 1,
+            attempts,
             lastAttemptAt: Date.now(),
+            leaseUntil: null,
           })
-          packCapture.mark(packId, record.id, 'failed')
+          // QUIET RETRIES: only an EXHAUSTED failure surfaces to the person.
+          // Inside the retry budget the photo is still honestly "uploading" —
+          // the retry happens on its own.
+          packCapture.mark(
+            packId,
+            record.id,
+            attempts >= MAX_AUTO_RETRY_ATTEMPTS ? 'failed' : 'uploading',
+          )
           await refreshQueue(packId)
           // CONTINUE, do not stop the pass. The old `break` here meant one
           // flaky photo froze the other 38 until the next resume event —
@@ -683,6 +808,7 @@ export async function drainQueue(packId: string): Promise<void> {
           lastError: message,
           attempts: record.attempts + 1,
           lastAttemptAt: Date.now(),
+          leaseUntil: null, // staging attempt over; release ownership
         })
         await refreshQueue(packId)
       }
