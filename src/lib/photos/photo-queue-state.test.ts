@@ -13,6 +13,10 @@ import {
   ORPHAN_GRACE_MS,
   provenAttachPaths,
   reclaimDecision,
+  releaseDecision,
+  reviewReadiness,
+  stageFailureDecision,
+  stageFinalizeDecision,
   missingScopeFields,
   msUntilNextRetry,
   nextDiscardable,
@@ -52,6 +56,235 @@ function rec(state: QueuedPhotoState, o: Partial<QueuedPhotoMeta> = {}): QueuedP
     ...o,
   }
 }
+
+describe('P0 fresh-upload regression: release vs staging lease', () => {
+  const NOW = 7_000_000
+  const LIVE = NOW + 100_000
+
+  it('FRESH 8-PHOTO FLOW: release clears the staging lease and upload claims IMMEDIATELY', () => {
+    // The phone regression: Attach during staging left live staging leases,
+    // upload claims refused for up to 3 minutes per photo. Release now
+    // revokes the lease atomically; the upload claim must win at once.
+    for (let i = 0; i < 8; i++) {
+      const staging = rec('saved_local', { leaseUntil: LIVE, bytesStaged: i % 2 === 0 })
+      const patch = releaseDecision(staging, null)
+      expect(patch).toMatchObject({ state: 'queued', leaseUntil: null })
+      const released = { ...staging, ...patch }
+      expect(claimForUploadDecision(released, NOW)).toMatchObject({ state: 'uploading' })
+    }
+  })
+
+  it('release patches ONLY state/lease/caption — completed stages are untouchable', () => {
+    const staged = rec('saved_local', {
+      leaseUntil: LIVE,
+      bytesStaged: true,
+      masterPath: 'm.jpg',
+      thumbPath: 't.jpg',
+      note: 'old caption',
+    })
+    const patch = releaseDecision(staged, 'new caption')!
+    expect(Object.keys(patch).sort()).toEqual(['leaseUntil', 'note', 'state'])
+    // Applied to the LATEST row, bytesStaged/paths survive by construction.
+    expect({ ...staged, ...patch }).toMatchObject({
+      bytesStaged: true,
+      masterPath: 'm.jpg',
+      note: 'new caption',
+    })
+  })
+
+  it('release never moves released/in-flight/failed/removed photos backwards', () => {
+    for (const st of ['queued', 'uploading', 'attaching', 'failed'] as const) {
+      expect(releaseDecision(rec(st), null)).toBeNull()
+    }
+    expect(releaseDecision(rec('saved_local', { discardRequested: true }), null)).toBeNull()
+  })
+
+  it('NO-SPIN REGRESSION: pickers never offer a record the claim would refuse', () => {
+    // Before: nextUploadable returned the live-leased record, uploadOne's
+    // claim refused it, the loop picked it again — spinning for minutes.
+    const blocked = rec('queued', { leaseUntil: LIVE })
+    expect(nextUploadable([blocked], NOW)).toBeNull()
+    expect(nextStageable([rec('saved_local', { leaseUntil: LIVE })], NOW)).toBeNull()
+    // And instead of spinning, a wake is booked for the lease expiry:
+    expect(msUntilNextRetry([blocked], NOW)).toBe(LIVE - NOW)
+    // Once the lease expires the same record is pickable and claimable.
+    expect(nextUploadable([blocked], LIVE)?.id).toBe(blocked.id)
+    expect(claimForUploadDecision(blocked, LIVE)).not.toBeNull()
+  })
+
+  const PATHS = {
+    masterPath: 'companies/co1/property/prop1/p1.jpg',
+    thumbPath: 'companies/co1/property/prop1/p1_thumb.jpg',
+    retentionClass: 'routine_pre_arrival',
+  }
+
+  it('LEASE IDENTITY: an expired old stager cannot clear or replace a NEW stager\'s lease', () => {
+    // Chat's scenario 1: tab frozen mid-staging resumes AFTER its lease
+    // expired and a new stager claimed the same saved_local record. The row
+    // is still saved_local — state alone would lie. The exact-identity
+    // comparison (row lease === MY claim's lease) is what refuses it.
+    const OLD_LEASE = NOW - 10_000 // the old stager's expired claim value
+    const NEW_LEASE = LIVE // the new owner's live claim value
+    const row = rec('saved_local', { leaseUntil: NEW_LEASE })
+    const staleFinalize = stageFinalizeDecision(row, PATHS, OLD_LEASE)!
+    expect(staleFinalize).not.toHaveProperty('leaseUntil') // facts only
+    expect(staleFinalize).not.toHaveProperty('state')
+    expect(staleFinalize).not.toHaveProperty('note')
+    expect({ ...row, ...staleFinalize }.leaseUntil).toBe(NEW_LEASE) // owner intact
+    // The stale FAILURE writes nothing at all under a foreign lease:
+    expect(stageFailureDecision(row, 'timeout', NOW, OLD_LEASE)).toBeNull()
+    // The true owner (matching identity) does release its own lease:
+    const owned = stageFinalizeDecision(row, PATHS, NEW_LEASE)!
+    expect(owned.leaseUntil).toBeNull()
+  })
+
+  it('RELEASE WON, UPLOAD OWNS IT: stale finalize = staged facts only, no state/lease/note', () => {
+    // Chat's scenario 2.
+    const uploadOwned = rec('queued', { leaseUntil: LIVE })
+    const patch = stageFinalizeDecision(uploadOwned, PATHS, LIVE - 5)! // any stale identity
+    expect(patch.bytesStaged).toBe(true)
+    expect(Object.keys(patch).sort()).toEqual([
+      'attempts',
+      'bytesStaged',
+      'lastAttemptAt',
+      'lastError',
+      'masterPath',
+      'retentionClass',
+      'thumbPath',
+    ])
+    expect({ ...uploadOwned, ...patch }).toMatchObject({
+      state: 'queued',
+      leaseUntil: LIVE, // upload worker's ownership untouched
+    })
+    // Removed record: nothing at all.
+    expect(
+      stageFinalizeDecision(rec('saved_local', { discardRequested: true }), PATHS, LIVE),
+    ).toBeNull()
+  })
+
+  it('STALE FAILURE writes nothing once the record moved on (any non-owner situation)', () => {
+    expect(stageFailureDecision(rec('queued'), 'timeout', NOW, LIVE)).toBeNull()
+    expect(stageFailureDecision(rec('uploading'), 'timeout', NOW, LIVE)).toBeNull()
+    expect(stageFailureDecision(rec('saved_local', { leaseUntil: LIVE }), 't', NOW, null)).toBeNull()
+    const ours = stageFailureDecision(
+      rec('saved_local', { leaseUntil: LIVE }),
+      'timeout',
+      NOW,
+      LIVE,
+    )
+    expect(ours).toMatchObject({ attempts: 1, leaseUntil: null })
+  })
+
+  it('STAGED PATHS ARE DETERMINISTIC per photo id — a stale finaliser cannot introduce different ones', () => {
+    // Chat's scenario 3. Paths are a pure server-side derivation of
+    // company/property/photo ids (create_prearrival_photo_intent), and the
+    // intent row's relationship check rejects any mismatch — so two valid
+    // stagings of the same photo id can only ever carry IDENTICAL paths.
+    const derive = (company: string, property: string, id: string) => ({
+      masterPath: `companies/${company}/property/${property}/${id}.jpg`,
+      thumbPath: `companies/${company}/property/${property}/${id}_thumb.jpg`,
+    })
+    const first = derive('co1', 'prop1', 'p1')
+    const second = derive('co1', 'prop1', 'p1') // replayed slot, any tab, any time
+    expect(second).toEqual(first)
+    // Applying the "stale" values over already-staged values changes nothing.
+    const alreadyStaged = rec('saved_local', {
+      bytesStaged: true,
+      masterPath: first.masterPath,
+      thumbPath: first.thumbPath,
+    })
+    const stale = stageFinalizeDecision(
+      alreadyStaged,
+      { ...second, retentionClass: 'routine_pre_arrival' },
+      NOW - 999,
+    )!
+    expect({ ...alreadyStaged, ...stale }).toMatchObject({
+      masterPath: first.masterPath,
+      thumbPath: first.thumbPath,
+      bytesStaged: true,
+    })
+  })
+
+  it('ATTACH GATING: disabled until every retained photo is staged or already attached', () => {
+    const ids = ['a', 'b', 'c']
+    // b still staging, c unstarted: not ready.
+    const partial = reviewReadiness(
+      ids,
+      [
+        rec('saved_local', { id: 'a', bytesStaged: true }),
+        rec('saved_local', { id: 'b' }),
+        rec('saved_local', { id: 'c' }),
+      ],
+      true,
+    )
+    expect(partial).toEqual({ ready: false, prepared: 1, total: 3 })
+    // All staged (or record gone = already attached): ready.
+    const done = reviewReadiness(
+      ids,
+      [
+        rec('saved_local', { id: 'a', bytesStaged: true }),
+        rec('saved_local', { id: 'b', bytesStaged: true }),
+      ],
+      true,
+    )
+    expect(done).toEqual({ ready: true, prepared: 3, total: 3 })
+    // Unhydrated or empty batch: never ready (fail closed).
+    expect(reviewReadiness(ids, [], false).ready).toBe(false)
+    expect(reviewReadiness([], [], true).ready).toBe(false)
+    // A removed photo is never "prepared".
+    expect(
+      reviewReadiness(
+        ['x'],
+        [rec('saved_local', { id: 'x', bytesStaged: true, discardRequested: true })],
+        true,
+      ).ready,
+    ).toBe(false)
+  })
+
+  it('STABLE COUNTER: "left to attach" counts unique persisted ids and never rises with state churn', () => {
+    const ids = new Set(['a', 'b', 'c', 'd'])
+    const asStates = (s1: QueuedPhotoState, s2: QueuedPhotoState) =>
+      evaluateBatch(
+        ids,
+        [rec(s1, { id: 'c' }), rec(s2, { id: 'd', attempts: 2 })],
+        true,
+        new Set(),
+      ).outstanding
+    // Same two records reclassified through every transient combination:
+    // the count is identical — claims/retries/refreshes cannot move it.
+    const combos: Array<[QueuedPhotoState, QueuedPhotoState]> = [
+      ['queued', 'queued'],
+      ['uploading', 'queued'],
+      ['uploading', 'failed'],
+      ['attaching', 'failed'],
+      ['queued', 'uploading'],
+    ]
+    const counts = combos.map(([a, b]) => asStates(a, b))
+    expect(new Set(counts).size).toBe(1)
+    expect(counts[0]).toBe(2)
+    // It falls ONLY when a record is truly gone (attached).
+    expect(
+      evaluateBatch(ids, [rec('uploading', { id: 'd' })], true, new Set()).outstanding,
+    ).toBe(1)
+  })
+
+  it('COMPLETED STAGES SURVIVE REFRESH: reclaim and release cannot reset bytesStaged', () => {
+    // Reclaim patch touches only state/lease; release patch only
+    // state/lease/note. A staged, stranded record keeps its staged facts.
+    const stranded = rec('uploading', {
+      leaseUntil: NOW - 1,
+      bytesStaged: true,
+      masterPath: 'm.jpg',
+    })
+    const patch = reclaimDecision(stranded, NOW)!
+    expect(Object.keys(patch).sort()).toEqual(['leaseUntil', 'state'])
+    expect({ ...stranded, ...patch }).toMatchObject({
+      state: 'queued',
+      bytesStaged: true,
+      masterPath: 'm.jpg',
+    })
+  })
+})
 
 describe('atomic worker claims (decisions run inside ONE serialized IDB transaction)', () => {
   const NOW = 5_000_000

@@ -72,6 +72,7 @@ import {
   evaluateBatch,
   isExhausted,
   packScopeError,
+  reviewReadiness,
   thumbBadge,
   type QueuedPhotoMeta,
 } from '@/lib/photos/photo-queue-state'
@@ -238,6 +239,22 @@ export function EvidenceCapture({
   const batch = useMemo(
     () => evaluateBatch(batchIds, queueRecords, packQueue.hydrated, discardedIdSet),
     [batchIds, queueRecords, packQueue.hydrated, discardedIdSet],
+  )
+
+  // ATTACH GATE (P0): Attach stays disabled until every retained review photo
+  // has its bytes CONFIRMED on the server (or already attached). Releasing
+  // mid-staging is what collided with the staging lease and stalled fresh
+  // uploads for minutes; now Attach unlocks exactly when it can be fast.
+  const readyIds = useMemo(
+    () => pending.filter((p) => p.state === 'ready' && p.master && p.thumb).map((p) => p.id),
+    [pending],
+  )
+  const readiness = useMemo(
+    () =>
+      evidencePackId
+        ? reviewReadiness(readyIds, queueRecords, packQueue.hydrated)
+        : { ready: readyIds.length > 0, prepared: readyIds.length, total: readyIds.length },
+    [evidencePackId, readyIds, queueRecords, packQueue.hydrated],
   )
 
   // --------------------------------------------------------------
@@ -846,7 +863,6 @@ export function EvidenceCapture({
   // Derived UI state
   // --------------------------------------------------------------
 
-  const readyCount = pending.filter((p) => p.state === 'ready').length
   const uploadingCount = pending.filter((p) => p.state === 'uploading').length
   const uploadedCount = pending.filter((p) => p.state === 'uploaded').length
   const errorCount = pending.filter((p) => p.state === 'error').length
@@ -930,7 +946,7 @@ export function EvidenceCapture({
                     : evidencePackId
                       ? batch.complete
                         ? `${batch.total} photo${batch.total === 1 ? '' : 's'} attached`
-                        : `Attached ${batch.attached} of ${batch.total} photo${batch.total === 1 ? '' : 's'}…`
+                        : `${batch.outstanding} photo${batch.outstanding === 1 ? '' : 's'} left to attach…`
                       : `Attached ${uploadedCount} photo${uploadedCount === 1 ? '' : 's'}`}
             </p>
             <div className="flex items-center gap-2">
@@ -1278,10 +1294,12 @@ export function EvidenceCapture({
                 <button
                   type="button"
                   onClick={handleAttach}
-                  disabled={readyCount === 0}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40 active:bg-emerald-600 transition"
+                  disabled={!readiness.ready}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40 disabled:cursor-not-allowed active:bg-emerald-600 transition"
                 >
-                  Attach {readyCount} photo{readyCount === 1 ? '' : 's'}
+                  {readiness.ready
+                    ? `Attach ${readiness.total} photo${readiness.total === 1 ? '' : 's'}`
+                    : `Preparing photos… ${readiness.prepared} of ${readiness.total}`}
                 </button>
               </div>
             </div>
@@ -1375,12 +1393,12 @@ export function EvidenceCapture({
                       {batch.total} photo{batch.total === 1 ? '' : 's'} attached
                     </p>
                   ) : (
-                    // NUMERATOR = successfully ATTACHED photos (server-
-                    // confirmed), never active workers or remaining records.
+                    // Unique persisted photo ids — this number can only fall.
+                    // Claims, retries, refreshes and reclassification never
+                    // change how many RECORDS remain.
                     <p className="text-sm text-white/70 mr-auto">
-                      Attached {batch.attached} of {batch.total} photo
-                      {batch.total === 1 ? '' : 's'}… Safe to switch apps — upload resumes
-                      when you return.
+                      {batch.outstanding} photo{batch.outstanding === 1 ? '' : 's'} left to
+                      attach… Safe to switch apps — upload resumes when you return.
                     </p>
                   )}
                   {batch.exhausted > 0 ? (

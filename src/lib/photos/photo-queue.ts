@@ -39,6 +39,9 @@ import {
   nextUploadable,
   reclaimDecision,
   reclaimableRecords,
+  releaseDecision,
+  stageFailureDecision,
+  stageFinalizeDecision,
   summarizeQueue,
   type QueueSummary,
   type QueuedPhotoMeta,
@@ -268,14 +271,14 @@ export async function releaseQueued(
 ): Promise<void> {
   const records = await listQueuedForPack(packId)
   for (const r of records) {
-    // Removed photos are cleanup work — releasing must never resurrect them.
-    if (r.discardRequested) continue
-    if (r.state === 'saved_local') {
-      await patchQueuedPhoto(r.id, {
-        state: 'queued',
-        note: notesById?.[r.id] ?? r.note,
-      })
-    }
+    // ATOMIC per-record release (P0 fix): the decision runs against the
+    // LATEST row inside one transaction and touches only state/lease/note —
+    // it can never rewind bytesStaged/paths from a stale snapshot, and
+    // clearing the lease revokes any in-flight stager so the upload claim
+    // succeeds IMMEDIATELY instead of waiting out a 3-minute lease.
+    await claimQueuedPhoto(r.id, (cur) =>
+      releaseDecision(cur, notesById ? notesById[r.id] : undefined),
+    )
   }
   await refreshQueue(packId)
   void drainQueue(packId)
@@ -514,24 +517,42 @@ async function stageOne(picked: QueuedPhotoRecord): Promise<void> {
     claimForStagingDecision(r, Date.now()),
   )
   if (!record) return
-  // From here an intent MAY exist even if the slot response is lost.
-  await patchQueuedPhoto(record.id, { intentRequested: true })
-  const slot = await timed('stage:slot', record.id, () => requestSlot(record))
+  // OUR exact lease identity — the only proof of ownership at finalisation.
+  const myLease = record.leaseUntil ?? null
+  let slot: UploadSlot
+  try {
+    // From here an intent MAY exist even if the slot response is lost.
+    await patchQueuedPhoto(record.id, { intentRequested: true })
+    slot = await timed('stage:slot', record.id, () => requestSlot(record))
 
-  if (!(await freshOrAbort(record.id))) return
-  await timed('stage:put', record.id, () => putBothSettled(slot, record))
+    if (!(await freshOrAbort(record.id))) return
+    await timed('stage:put', record.id, () => putBothSettled(slot, record))
+  } catch (err) {
+    // Failure bookkeeping REQUIRES ownership: identity-checked inside the
+    // claim, so a stale attempt whose record moved on writes nothing.
+    const message = err instanceof Error ? err.message : 'Upload failed.'
+    await claimQueuedPhoto(record.id, (cur) =>
+      stageFailureDecision(cur, message, Date.now(), myLease),
+    )
+    throw err
+  }
 
-  if (!(await freshOrAbort(record.id))) return
-  await patchQueuedPhoto(record.id, {
-    bytesStaged: true,
-    masterPath: slot.masterPath,
-    thumbPath: slot.thumbPath,
-    retentionClass: slot.retentionClass,
-    lastError: null,
-    attempts: 0,
-    lastAttemptAt: null,
-    leaseUntil: null, // staging done; release ownership
-  })
+  // STALE-SAFE finalisation: release may have revoked our ownership while
+  // the PUTs ran. The staged facts (bytes on server + paths) are recorded
+  // whatever the current state — they are true and only help the fast path —
+  // but the lease is cleared ONLY if the record is still saved_local; in any
+  // other state it belongs to a new owner. Removed records get nothing.
+  await claimQueuedPhoto(record.id, (cur) =>
+    stageFinalizeDecision(
+      cur,
+      {
+        masterPath: slot.masterPath,
+        thumbPath: slot.thumbPath,
+        retentionClass: slot.retentionClass,
+      },
+      myLease,
+    ),
+  )
   await refreshQueue(record.packId)
 }
 
@@ -800,16 +821,10 @@ export async function drainQueue(packId: string): Promise<void> {
           await refreshQueue(packId)
           continue
         }
-        // Staging is an accelerator, never a gate: note the failure with
-        // backoff and move on. If it keeps failing, the release path simply
-        // uploads this photo the old way — nothing is ever lost by a staging
-        // failure, the Attach just isn't instant for that photo.
-        await patchQueuedPhoto(record.id, {
-          lastError: message,
-          attempts: record.attempts + 1,
-          lastAttemptAt: Date.now(),
-          leaseUntil: null, // staging attempt over; release ownership
-        })
+        // Failure bookkeeping already happened inside stageOne under its own
+        // lease identity (a stale attempt writes nothing). Staging remains an
+        // accelerator, never a gate: if it keeps failing while unreleased,
+        // the release path uploads the old way — nothing is ever lost.
         await refreshQueue(packId)
       }
     }

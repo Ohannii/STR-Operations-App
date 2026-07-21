@@ -257,6 +257,125 @@ export function claimForStagingDecision(
   return { leaseUntil: nowMs + WORKER_LEASE_MS }
 }
 
+/**
+ * ATOMIC RELEASE (P0 fix, 21 Jul evening). Runs inside claimQueuedPhoto's
+ * transaction against the LATEST row. Patches ONLY state, lease and caption:
+ * bytesStaged, storage paths and every completed-stage field are simply not
+ * in the patch, so no earlier snapshot can rewind them. Clearing the lease
+ * REVOKES an in-flight stager's ownership — releasing is what previously
+ * left the staging lease live and locked the upload claim out for 3 minutes
+ * per photo. Only `saved_local` records release; anything already released,
+ * in flight, failed or removed is left exactly as it is.
+ */
+export function releaseDecision(
+  r: QueuedPhotoMeta,
+  note: string | null | undefined,
+): Partial<QueuedPhotoMeta> | null {
+  if (r.discardRequested) return null
+  if (r.state !== 'saved_local') return null
+  return {
+    state: 'queued',
+    leaseUntil: null,
+    note: note !== undefined ? note : r.note,
+  }
+}
+
+/**
+ * Stale-safe staging finalisation. The stager that started may no longer own
+ * the record (release revoked it; an upload claim may hold a NEW lease). Its
+ * late write must be conditional and harmless: the staged facts (bytes are
+ * on the server + their paths) are recorded whatever the state — they are
+ * true and only ever help the fast path — but the lease is cleared ONLY when
+ * the record is still `saved_local`, because in any other state the lease
+ * belongs to a different owner. Removed records get nothing.
+ */
+export function stageFinalizeDecision(
+  r: QueuedPhotoMeta,
+  staged: { masterPath: string; thumbPath: string; retentionClass: string | null },
+  /**
+   * EXACT lease identity from THIS staging attempt's claim (the leaseUntil
+   * value the claim wrote). `state === 'saved_local'` alone does NOT prove
+   * ownership: a background-frozen tab can resume after its lease expired
+   * and a NEW stager claimed the same record — clearing that owner's lease
+   * would hand the record to two workers. The lease is released ONLY when
+   * the row still carries precisely our value.
+   */
+  myLease: number | null,
+): Partial<QueuedPhotoMeta> | null {
+  if (r.discardRequested) return null
+  // Staged FACTS only: deterministic for this photo id (paths are a pure
+  // server-side derivation of company/property/photo ids via the same
+  // relationship-verified intent row, so any two valid stagings of this id
+  // produce identical values). Never state, never note, never someone
+  // else's lease.
+  const base: Partial<QueuedPhotoMeta> = {
+    bytesStaged: true,
+    masterPath: staged.masterPath,
+    thumbPath: staged.thumbPath,
+    retentionClass: staged.retentionClass,
+    lastError: null,
+    attempts: 0,
+    lastAttemptAt: null,
+  }
+  const stillOurs =
+    r.state === 'saved_local' && myLease !== null && r.leaseUntil === myLease
+  return stillOurs ? { ...base, leaseUntil: null } : base
+}
+
+/**
+ * Stale-safe staging failure. If the record is no longer `saved_local`, a
+ * different owner has taken over (release → upload path) and the stale
+ * stager records NOTHING — its failure is obsolete, and bumping attempts or
+ * touching the lease would sabotage the new owner.
+ */
+export function stageFailureDecision(
+  r: QueuedPhotoMeta,
+  message: string,
+  nowMs: number,
+  /** Exact lease identity from this attempt's claim — same rule as
+   *  stageFinalizeDecision: no identity match, no write at all. */
+  myLease: number | null,
+): Partial<QueuedPhotoMeta> | null {
+  if (r.discardRequested) return null
+  if (r.state !== 'saved_local') return null
+  if (myLease === null || r.leaseUntil !== myLease) return null
+  return {
+    lastError: message,
+    attempts: r.attempts + 1,
+    lastAttemptAt: nowMs,
+    leaseUntil: null,
+  }
+}
+
+/**
+ * ATTACH GATE for the review screen. Attach stays disabled until every
+ * retained review photo is genuinely prepared: its bytes confirmed on the
+ * server (bytesStaged — a create-only PUT acknowledged remotely) or the
+ * record already gone because it attached. Unhydrated fails closed.
+ */
+export function reviewReadiness(
+  retainedIds: readonly string[],
+  records: Pick<QueuedPhotoMeta, 'id' | 'bytesStaged' | 'discardRequested'>[],
+  hydrated: boolean,
+): { ready: boolean; prepared: number; total: number } {
+  const byId = new Map(records.map((r) => [r.id, r]))
+  let prepared = 0
+  for (const id of retainedIds) {
+    if (!hydrated) continue
+    const rec = byId.get(id)
+    if (!rec) {
+      prepared += 1 // already attached (record deleted post-confirm)
+      continue
+    }
+    if (!rec.discardRequested && rec.bytesStaged) prepared += 1
+  }
+  return {
+    ready: hydrated && retainedIds.length > 0 && prepared === retainedIds.length,
+    prepared,
+    total: retainedIds.length,
+  }
+}
+
 /** Reclaim a stranded in-flight record back to `queued`. Refuses fresh
  *  leases (live owner) and removed records (cleanup path owns those). */
 export function reclaimDecision(
@@ -465,6 +584,22 @@ export function msUntilNextRetry(
     const ms = Math.max(0, remaining)
     if (best === null || ms < best) best = ms
   }
+  // LEASE-EXPIRY WAKES: a record the pickers skip because of a live lease
+  // (queued behind a stale staging lease, or an unstaged capture another
+  // owner is holding) must get exactly one wake at the moment that lease
+  // expires — otherwise it waits for an unrelated event while the inspector
+  // watches nothing happen.
+  for (const r of records) {
+    if (r.discardRequested) continue
+    const lease = r.leaseUntil ?? 0
+    if (lease <= nowMs) continue
+    const waiting =
+      r.state === 'queued' ||
+      (r.state === 'saved_local' && !r.bytesStaged && r.attempts < MAX_AUTO_RETRY_ATTEMPTS)
+    if (!waiting) continue // in-flight states are the owner's business
+    const ms = lease - nowMs
+    if (best === null || ms < best) best = ms
+  }
   return best
 }
 
@@ -482,6 +617,12 @@ export function nextUploadable(
       // A removed photo must NEVER be uploaded or attached, whatever its
       // pipeline state — its only remaining work is the discard path.
       if (r.discardRequested) return false
+      // NO-SPIN INVARIANT (P0 regression, 21 Jul evening): a record with a
+      // LIVE lease cannot be claimed, so the picker must not offer it. When
+      // release didn't clear a staging lease, the drain loop picked the same
+      // record, failed the claim, and spun — zero progress until the lease
+      // expired, ~3 minutes per photo. Pickers and claims must always agree.
+      if ((r.leaseUntil ?? 0) > nowMs) return false
       if (r.state === 'queued') return true
       if (r.state !== 'failed') return false
       const since = r.lastAttemptAt == null ? Infinity : nowMs - r.lastAttemptAt
@@ -528,6 +669,9 @@ export function nextStageable(
     .filter((r) => {
       // No new intent may EVER be created for a removed photo.
       if (r.discardRequested) return false
+      // Same no-spin invariant as nextUploadable: never offer what the
+      // claim will refuse.
+      if ((r.leaseUntil ?? 0) > nowMs) return false
       if (r.state !== 'saved_local' || r.bytesStaged) return false
       if (r.attempts >= MAX_AUTO_RETRY_ATTEMPTS) return false
       const since = r.lastAttemptAt == null ? Infinity : nowMs - r.lastAttemptAt
@@ -640,20 +784,23 @@ export function describeQueue(
       text: `${failed} photo${failed === 1 ? '' : 's'} could not upload — saved on this device, tap Try again`,
     }
   }
-  const inFlight = uploading + attaching + retrying
-  if (inFlight > 0) {
-    return { tone: 'busy', text: `Uploading ${inFlight} photo${inFlight === 1 ? '' : 's'}…` }
-  }
-  if (!online && queued > 0) {
+  // MONOTONIC COUNT: unique persisted photos still to attach — never a census
+  // of transient states. The old `uploading + attaching` count bounced
+  // 5→4→7 across refreshes as claims/reclaims reclassified records while
+  // every photo sat safely on the device. Records only disappear on
+  // confirmed attach (or deliberate removal), so this number only falls.
+  const leftToAttach = queued + uploading + attaching + retrying
+  // Offline first: nothing is moving, and saying "Uploading" would be a lie.
+  if (!online && leftToAttach > 0) {
     return {
       tone: 'waiting',
-      text: `${queued} photo${queued === 1 ? '' : 's'} waiting for connection — safe on this device`,
+      text: `${leftToAttach} photo${leftToAttach === 1 ? '' : 's'} waiting for connection — safe on this device`,
     }
   }
-  if (queued > 0) {
+  if (leftToAttach > 0) {
     return {
       tone: 'busy',
-      text: `${queued} photo${queued === 1 ? '' : 's'} queued to upload — safe on this device`,
+      text: `Uploading — ${leftToAttach} photo${leftToAttach === 1 ? '' : 's'} left to attach`,
     }
   }
   return {
