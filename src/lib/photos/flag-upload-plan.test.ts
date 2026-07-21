@@ -100,7 +100,9 @@ describe('buildFlagPhotoSlot', () => {
   })
 
   it('returns already_uploaded with NO overwrite URLs when both exist', async () => {
-    const sign = vi.fn(async (_path: string) => ({ signedUrl: 'x', token: 'y' }))
+    // No parameter: TypeScript allows a narrower callback, and this test
+    // asserts the signer is never called anyway.
+    const sign = vi.fn(async () => ({ signedUrl: 'x', token: 'y' }))
     const res = await buildFlagPhotoSlot(
       { ...BASE, masterExists: true, thumbExists: true },
       sign,

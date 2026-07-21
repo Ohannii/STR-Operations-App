@@ -43,11 +43,12 @@
  *     path (close button, gallery fallback, modal close).
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useRouter } from 'next/navigation'
 import {
   Camera,
+  Check,
   Flag,
   Image as ImageIcon,
   Loader2,
@@ -58,8 +59,18 @@ import {
 import { compressForEvidence } from '@/lib/photos/compress'
 import { packCapture } from '@/lib/photos/pack-capture-store'
 import { PhotoQueueUnavailableError } from '@/lib/photos/photo-queue-db'
-import { drainQueue, enqueuePhoto, releaseQueued } from '@/lib/photos/photo-queue'
-import { packScopeError } from '@/lib/photos/photo-queue-state'
+import {
+  drainQueue,
+  enqueuePhoto,
+  releaseQueued,
+  requestDiscard,
+  usePackQueue,
+} from '@/lib/photos/photo-queue'
+import {
+  packScopeError,
+  thumbBadge,
+  type QueuedPhotoMeta,
+} from '@/lib/photos/photo-queue-state'
 import {
   attachEvidencePhoto,
   requestPhotoUploadSlot,
@@ -194,6 +205,22 @@ export function EvidenceCapture({
   const streamRef = useRef<MediaStream | null>(null)
   /** Guards the one-shot capture_now auto-open for the life of this mount. */
   const autoOpenConsumedRef = useRef(false)
+
+  // Live device-queue state for THIS pack. Staging runs from the moment of
+  // capture, and these records carry bytesStaged — that is what draws the
+  // per-photo "uploaded" checkmarks on the strip and review list. Safe with ''
+  // (flag capture): snapshot is empty and the worker no-ops.
+  const packQueue = usePackQueue(evidencePackId ?? '')
+  // Depend on the records ARRAY itself (a stable snapshot that gets a new
+  // identity on every queue change), not on the wrapper object. The memo
+  // recomputes exactly when the queue changes and sets no state, so badge
+  // updates stay live with no render loop.
+  const queueRecords = packQueue.records
+  const queueRecordById = useMemo(() => {
+    const m = new Map<string, QueuedPhotoMeta>()
+    for (const r of queueRecords) m.set(r.id, r)
+    return m
+  }, [queueRecords])
   const galleryInputRef = useRef<HTMLInputElement | null>(null)
 
   // --------------------------------------------------------------
@@ -365,6 +392,12 @@ export function EvidenceCapture({
             release: false, // the inspector may still add a note
           },
         )
+        // UPLOAD EARLY: kick the worker so this photo's bytes start moving
+        // to the server WHILE the inspector keeps shooting. The photo is not
+        // attached yet — it stays discardable and its note still rides the
+        // attach — but by the time they tap Attach most bytes are already
+        // up, which is what made the old flow feel fast.
+        void drainQueue(evidencePackId)
       }
 
       // Replace preview with the smaller thumb (lower memory).
@@ -453,6 +486,21 @@ export function EvidenceCapture({
         }
         return next
       })
+      // Pack capture: the photo also lives in the durable device queue and —
+      // because staging starts at capture — a server intent MAY exist or be
+      // mid-creation right now. The UI therefore NEVER deletes the record or
+      // calls the server itself: it persists a durable discard request and
+      // the queue worker owns the cleanup (abort in-flight work at the next
+      // boundary → server discard → local delete only after confirmation).
+      // If it fails or we're offline it stays visible as "Removing…" and
+      // retries — nothing is hidden, nothing is left for manual cleanup.
+      if (evidencePackId) {
+        void requestDiscard(
+          evidencePackId,
+          id,
+          'Removed by inspector on the capture review screen',
+        )
+      }
     },
     [evidencePackId],
   )
@@ -528,12 +576,23 @@ export function EvidenceCapture({
   const dismiss = useCallback(() => {
     const unresolved = pending.filter((p) => p.state !== 'uploaded')
     if (unresolved.length > 0) {
+      // Chosen durable outcome for close/reload with unreleased photos
+      // (pack mode): records STAY in the device queue as saved_local and the
+      // pack page's queue panel restores them visibly with "Attach N saved
+      // photos". Nothing is discarded and no hidden state is left — so say
+      // exactly that. Flag capture has no durable queue, so there the photos
+      // really are discarded and the warning stays sharp.
       const ok =
         typeof window === 'undefined' ||
         window.confirm(
-          `${unresolved.length} photo${unresolved.length === 1 ? '' : 's'} ` +
-            `${unresolved.length === 1 ? 'has' : 'have'} NOT been saved to the pack and ` +
-            `will be discarded. Close anyway?`,
+          evidencePackId
+            ? `${unresolved.length} photo${unresolved.length === 1 ? '' : 's'} ` +
+                `${unresolved.length === 1 ? 'is' : 'are'} NOT attached to the pack yet. ` +
+                `They stay saved on this device — attach them from the pack page ` +
+                `("Attach saved photos"). Close?`
+            : `${unresolved.length} photo${unresolved.length === 1 ? '' : 's'} ` +
+                `${unresolved.length === 1 ? 'has' : 'have'} NOT been saved and ` +
+                `will be discarded. Close anyway?`,
         )
       if (!ok) return
       if (evidencePackId) {
@@ -973,6 +1032,44 @@ export function EvidenceCapture({
                             <Loader2 size={14} className="animate-spin" aria-hidden />
                           </div>
                         ) : null}
+                        {/* Truthful badge from the DURABLE QUEUE RECORD, never
+                            from "the device is online". */}
+                        {evidencePackId && p.state === 'ready'
+                          ? (() => {
+                              const badge = thumbBadge(
+                                queueRecordById.get(p.id),
+                                packQueue.online,
+                              )
+                              if (badge === 'uploaded')
+                                return (
+                                  <span
+                                    className="absolute -bottom-1 -right-1 rounded-full bg-emerald-500 text-white p-0.5 border border-slate-950"
+                                    aria-label="Uploaded"
+                                  >
+                                    <Check size={9} aria-hidden />
+                                  </span>
+                                )
+                              if (badge === 'uploading')
+                                return (
+                                  <span
+                                    className="absolute -bottom-1 -right-1 rounded-full bg-slate-800/90 text-white/80 p-0.5 border border-white/30"
+                                    aria-label="Uploading"
+                                  >
+                                    <Loader2 size={9} className="animate-spin" aria-hidden />
+                                  </span>
+                                )
+                              if (badge === 'failed')
+                                return (
+                                  <span
+                                    className="absolute -bottom-1 -right-1 rounded-full bg-red-600 text-white p-0.5 border border-slate-950 text-[8px] leading-none font-bold w-3.5 h-3.5 flex items-center justify-center"
+                                    aria-label="Upload failed"
+                                  >
+                                    !
+                                  </span>
+                                )
+                              return null // saved_device / removing: no strip badge
+                            })()
+                          : null}
                         <button
                           type="button"
                           onClick={() => removePending(p.id)}
@@ -1062,12 +1159,54 @@ export function EvidenceCapture({
                     className="rounded-lg border border-white/10 bg-slate-900/60 p-3"
                   >
                     <div className="flex gap-3">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={p.previewUrl}
-                        alt=""
-                        className="h-20 w-20 rounded object-cover border border-white/20 shrink-0"
-                      />
+                      <div className="relative shrink-0">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={p.previewUrl}
+                          alt=""
+                          className="h-20 w-20 rounded object-cover border border-white/20"
+                        />
+                        {evidencePackId && p.state === 'ready'
+                          ? (() => {
+                              const badge = thumbBadge(
+                                queueRecordById.get(p.id),
+                                packQueue.online,
+                              )
+                              if (badge === 'uploaded')
+                                return (
+                                  <span className="absolute bottom-1 right-1 inline-flex items-center gap-1 rounded bg-emerald-500/95 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                                    <Check size={9} aria-hidden /> Uploaded
+                                  </span>
+                                )
+                              if (badge === 'uploading')
+                                return (
+                                  <span className="absolute bottom-1 right-1 inline-flex items-center gap-1 rounded bg-slate-800/95 px-1.5 py-0.5 text-[10px] font-medium text-white/80">
+                                    <Loader2 size={9} className="animate-spin" aria-hidden />
+                                    Uploading
+                                  </span>
+                                )
+                              if (badge === 'failed')
+                                return (
+                                  <span className="absolute bottom-1 right-1 inline-flex items-center rounded bg-red-600/95 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                                    Failed — will retry
+                                  </span>
+                                )
+                              if (badge === 'removing')
+                                return (
+                                  <span className="absolute bottom-1 right-1 inline-flex items-center rounded bg-slate-800/95 px-1.5 py-0.5 text-[10px] font-medium text-white/80">
+                                    Removing…
+                                  </span>
+                                )
+                              if (badge === 'saved_device')
+                                return (
+                                  <span className="absolute bottom-1 right-1 inline-flex items-center rounded bg-slate-800/95 px-1.5 py-0.5 text-[10px] font-medium text-white/80">
+                                    Saved on device
+                                  </span>
+                                )
+                              return null
+                            })()
+                          : null}
+                      </div>
                       <div className="flex-1 min-w-0">
                         {editingId === p.id ? (
                           <textarea

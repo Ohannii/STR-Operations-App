@@ -4,7 +4,10 @@ import {
   MAX_AUTO_RETRY_ATTEMPTS,
   missingScopeFields,
   msUntilNextRetry,
+  nextDiscardable,
+  nextStageable,
   nextUploadable,
+  thumbBadge,
   packScopeError,
   recordMatchesScope,
   retryDelayMs,
@@ -36,6 +39,164 @@ function rec(state: QueuedPhotoState, o: Partial<QueuedPhotoMeta> = {}): QueuedP
     ...o,
   }
 }
+
+describe('durable discard lifecycle (remove-vs-staging races)', () => {
+  const NOW = 1_000_000
+
+  it('NO INTENT AFTER DISCARD: a removed photo is invisible to every work picker', () => {
+    // Covers: remove before intent creation / during slot request / during
+    // object upload / after bytes staged. Whatever pipeline stage the record
+    // is in, once discardRequested is persisted no picker may hand it to the
+    // upload or staging path again — only the discard path may touch it.
+    const stages: Partial<QueuedPhotoMeta>[] = [
+      { state: 'saved_local' }, // before intent creation
+      { state: 'saved_local', intentRequested: true }, // during slot request
+      { state: 'saved_local', intentRequested: true, attempts: 1, lastAttemptAt: null }, // mid-upload retry
+      { state: 'saved_local', intentRequested: true, bytesStaged: true }, // bytes staged
+      { state: 'queued' }, // even released
+      { state: 'failed', attempts: 1, lastAttemptAt: null }, // even failed
+    ]
+    for (const s of stages) {
+      const r = rec(s.state as QueuedPhotoState, { ...s, discardRequested: true })
+      expect(nextStageable([r], NOW)).toBeNull()
+      expect(nextUploadable([r], NOW)).toBeNull()
+      expect(nextDiscardable([r], NOW)?.id).toBe(r.id)
+    }
+  })
+
+  it('discard outranks uploads: it is picked even when released work waits', () => {
+    // The drain loop asks nextDiscardable FIRST; assert both have work so the
+    // ordering in the loop is what resolves the removal before new uploads.
+    const removed = rec('saved_local', { discardRequested: true })
+    const released = rec('queued')
+    expect(nextDiscardable([released, removed], NOW)?.id).toBe(removed.id)
+  })
+
+  it('failed/offline discard stays retryable and books a wake-up — never hidden', () => {
+    const failing = rec('saved_local', {
+      discardRequested: true,
+      attempts: 3,
+      lastAttemptAt: NOW,
+      lastError: 'Removing photo timed out — will retry automatically',
+    })
+    // Inside backoff: not picked yet…
+    expect(nextDiscardable([failing], NOW)).toBeNull()
+    // …but a wake-up IS booked, and after backoff it is picked again.
+    expect(msUntilNextRetry([failing], NOW)).toBe(retryDelayMs(3))
+    expect(nextDiscardable([failing], NOW + retryDelayMs(3))?.id).toBe(failing.id)
+  })
+
+  it('discard retries have NO attempts cap — cleanup may never be abandoned', () => {
+    const stubborn = rec('saved_local', {
+      discardRequested: true,
+      attempts: MAX_AUTO_RETRY_ATTEMPTS + 5,
+      lastAttemptAt: NOW,
+    })
+    const delay = retryDelayMs(MAX_AUTO_RETRY_ATTEMPTS + 5)
+    expect(nextDiscardable([stubborn], NOW + delay)?.id).toBe(stubborn.id)
+    expect(msUntilNextRetry([stubborn], NOW)).toBe(delay)
+  })
+
+  it('summary: removed photos count as cleanup, not attachable photos, and still block', () => {
+    const s = summarizeQueue([
+      rec('saved_local'),
+      rec('saved_local', { discardRequested: true }),
+      rec('failed', { discardRequested: true }),
+    ])
+    expect(s).toMatchObject({ total: 3, savedLocal: 1, failed: 0, discarding: 2, blocking: true })
+  })
+
+  it('cleanup-only queue reads "Removing…", not "saved on device"', () => {
+    const s = summarizeQueue([rec('saved_local', { discardRequested: true })])
+    const d = describeQueue(s, true)
+    expect(d.text).toContain('Removing 1 photo')
+  })
+
+  it('reload/close with unreleased staged photos: records still surface for recovery', () => {
+    // The chosen durable outcome: saved_local records survive close/reload and
+    // the queue panel offers them for attach. Nothing about a staged-but-
+    // unreleased photo may look "done" or disappear.
+    const s = summarizeQueue([
+      rec('saved_local', { intentRequested: true, bytesStaged: true }),
+      rec('saved_local'),
+    ])
+    expect(s).toMatchObject({ total: 2, savedLocal: 2, blocking: true })
+    expect(describeQueue(s, true).text).toContain('2 photos saved on this device')
+  })
+})
+
+describe('thumbBadge — status must come from the record, never from "online"', () => {
+  it('missing record: no badge at all', () => {
+    expect(thumbBadge(undefined, true)).toBeNull()
+    expect(thumbBadge(null, false)).toBeNull()
+  })
+
+  it('THE LIE THAT SHIPPED: a failing photo is FAILED even while online', () => {
+    const failedStaging = rec('saved_local', {
+      attempts: 2,
+      lastError: 'Photo upload timed out — will retry automatically',
+    })
+    expect(thumbBadge(failedStaging, true)).toBe('failed')
+    const failedReleased = rec('failed', { lastError: 'Photo upload failed (500)' })
+    expect(thumbBadge(failedReleased, true)).toBe('failed')
+  })
+
+  it('maps every state truthfully', () => {
+    expect(thumbBadge(rec('saved_local', { bytesStaged: true }), true)).toBe('uploaded')
+    expect(thumbBadge(rec('saved_local'), true)).toBe('uploading')
+    expect(thumbBadge(rec('saved_local'), false)).toBe('saved_device')
+    expect(thumbBadge(rec('saved_local', { discardRequested: true }), true)).toBe('removing')
+  })
+
+  it('removing wins over everything else, uploaded over failure history', () => {
+    expect(
+      thumbBadge(rec('saved_local', { discardRequested: true, bytesStaged: true }), true),
+    ).toBe('removing')
+    // A staged photo that once failed is still safely on the server.
+    expect(thumbBadge(rec('saved_local', { bytesStaged: true, lastError: 'old' }), true)).toBe(
+      'uploaded',
+    )
+  })
+})
+
+describe('nextStageable — upload early, attach late', () => {
+  const NOW = 1_000_000
+
+  it('picks the oldest unreleased, unstaged capture', () => {
+    const a = rec('saved_local', { createdAt: '2026-07-20T10:00:01.000Z' })
+    const b = rec('saved_local', { createdAt: '2026-07-20T10:00:00.000Z' })
+    expect(nextStageable([a, b], NOW)?.id).toBe(b.id)
+  })
+
+  it('never re-stages and never touches released/terminal work', () => {
+    expect(nextStageable([rec('saved_local', { bytesStaged: true })], NOW)).toBeNull()
+    for (const st of ['queued', 'uploading', 'attaching', 'failed'] as const) {
+      expect(nextStageable([rec(st)], NOW)).toBeNull()
+    }
+  })
+
+  it('released work outranks staging by construction', () => {
+    // The worker only asks for staging work when nextUploadable returned null.
+    const released = rec('queued')
+    const unstaged = rec('saved_local')
+    expect(nextUploadable([released, unstaged], NOW)?.id).toBe(released.id)
+    expect(nextStageable([unstaged], NOW)?.id).toBe(unstaged.id)
+  })
+
+  it('a failed staging attempt backs off instead of hammering the radio', () => {
+    const r = rec('saved_local', { attempts: 1, lastAttemptAt: NOW })
+    expect(nextStageable([r], NOW)).toBeNull()
+    expect(nextStageable([r], NOW + retryDelayMs(1))?.id).toBe(r.id)
+  })
+
+  it('gives up auto-staging at the cap — release still uploads it the old way', () => {
+    const spent = rec('saved_local', { attempts: MAX_AUTO_RETRY_ATTEMPTS, lastAttemptAt: NOW })
+    expect(nextStageable([spent], NOW + 10_000_000)).toBeNull()
+    // The safety valve: once RELEASED, attempts are irrelevant — the full
+    // upload pipeline runs at attach. Staging can only ever speed things up.
+    expect(nextUploadable([{ ...spent, state: 'queued' }], NOW)).not.toBeNull()
+  })
+})
 
 describe('msUntilNextRetry — the worker must always book its own wake-up', () => {
   const NOW = 1_000_000
