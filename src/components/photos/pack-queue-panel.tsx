@@ -22,8 +22,17 @@ import { drainQueue, releaseQueued, retryFailed, usePackQueue } from '@/lib/phot
  *   * Nothing here deletes a record; only an authoritative server attach does.
  */
 export function PackQueuePanel({ packId }: { packId: string }) {
-  const { summary, online, storageError, describe } = usePackQueue(packId)
+  const { summary, online, storageError, describe, records } = usePackQueue(packId)
   const [busy, setBusy] = useState<null | 'attach' | 'retry'>(null)
+
+  // Diagnosis over mystery: when a photo fails, show WHY. "Retry" without a
+  // reason teaches people to hammer the button; the actual error message
+  // ("timed out", "413", "not authenticated") tells us — and support — what
+  // is really wrong in the field. Failed DISCARDS surface here too — a
+  // removal that cannot reach the server must stay visible, not vanish.
+  const firstFailure = records.find(
+    (r) => r.lastError && (r.state === 'failed' || r.discardRequested),
+  )
 
   // Storage unreadable/unusable => fail closed, loudly.
   if (storageError) {
@@ -89,10 +98,24 @@ export function PackQueuePanel({ packId }: { packId: string }) {
         </p>
       ) : null}
 
+      {summary.discarding > 0 ? (
+        <p className="mt-1 text-xs leading-relaxed">
+          {summary.discarding} removed photo{summary.discarding === 1 ? ' is' : 's are'} being
+          cleaned up — this finishes automatically
+          {online ? '' : ' when the connection returns'}.
+        </p>
+      ) : null}
+
       {inFlight > 0 ? (
         <p className="mt-1 text-xs leading-relaxed">
           These photos are stored on this device. Safe to close the page, take a
           call or switch apps — upload resumes automatically when you return.
+        </p>
+      ) : null}
+
+      {firstFailure ? (
+        <p className="mt-1 text-xs leading-relaxed font-mono opacity-80">
+          Last error: {firstFailure.lastError}
         </p>
       ) : null}
 

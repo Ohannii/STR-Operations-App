@@ -18,18 +18,32 @@
 
 import type { FlagCategoryKey } from '@/lib/ui/flag-category'
 
-export type RetentionClass =
-  | 'routine_pre_arrival'
-  | 'routine_post_stay'
-  | 'dispute_evidence'
-  | 'owner_chargeable_evidence'
-  | 'annual_audit_evidence'
-  | 'maintenance_before_after'
-  | 'inventory_evidence'
+const RETENTION_CLASSES = [
+  'routine_pre_arrival',
+  'routine_post_stay',
+  'dispute_evidence',
+  'owner_chargeable_evidence',
+  'annual_audit_evidence',
+  'maintenance_before_after',
+  'inventory_evidence',
   // Session 9A Slice 1: security/access events (key handovers, lock
   // changes) are never routine. New class; photos.retention_class is
   // unconstrained text, so this is a code-only addition.
-  | 'security_access_evidence'
+  'security_access_evidence',
+] as const
+
+export type RetentionClass = (typeof RETENTION_CLASSES)[number]
+
+/**
+ * Canonical runtime guard. Persisted values (e.g. IndexedDB queue records
+ * written by an older app version) are untyped text and must be validated
+ * before crossing into a parameter typed RetentionClass.
+ */
+export function isRetentionClass(value: unknown): value is RetentionClass {
+  return (
+    typeof value === 'string' && (RETENTION_CLASSES as readonly string[]).includes(value)
+  )
+}
 
 /**
  * Session 9A Slice 1: retention is derived from category + accountability

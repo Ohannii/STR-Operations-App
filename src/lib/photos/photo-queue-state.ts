@@ -43,6 +43,36 @@ export type QueuedPhotoMeta = {
   height: number
   sizeBytes: number
   state: QueuedPhotoState
+  /**
+   * UPLOAD EARLY, ATTACH LATE. True once BOTH storage objects (master+thumb)
+   * are on the server, even though the photo is not yet attached to the pack.
+   * Staging runs in the background from the moment of capture so the explicit
+   * Attach step only has the fast attach RPC left — this is what makes 40
+   * photos feel like the old flow instead of one long upload at the end.
+   * Absent on records written before this field existed => not staged.
+   */
+  bytesStaged?: boolean
+  /** Slot paths captured at staging time so attach needs no second slot RPC. */
+  masterPath?: string | null
+  thumbPath?: string | null
+  retentionClass?: string | null
+  /**
+   * Set to true IMMEDIATELY BEFORE the slot RPC is first called for this
+   * photo. From that moment a durable server intent MAY exist (the response
+   * can be lost), so any discard must go through the server. Never cleared.
+   */
+  intentRequested?: boolean
+  /**
+   * DURABLE DISCARD REQUEST — the inspector removed this photo. The UI never
+   * deletes a queue record itself: it persists this flag and the worker owns
+   * the cleanup (server discard if an intent may exist, then local delete).
+   * This closes the race where a removal raced an in-flight staging call and
+   * left an orphaned "never finished saving" intent. Workers must re-check
+   * this flag after EVERY awaited boundary and abort the photo's work.
+   */
+  discardRequested?: boolean
+  /** Audit reason persisted with the discard request. */
+  discardReason?: string | null
   lastError: string | null
   attempts: number
   /** Epoch ms of the last attempt, for backoff. */
@@ -58,17 +88,30 @@ export type QueueSummary = {
   uploading: number
   attaching: number
   failed: number
+  /** Records the inspector removed that the worker is still cleaning up. */
+  discarding: number
   /** Any record at all means unresolved local evidence. */
   blocking: boolean
 }
 
-export function summarizeQueue(records: { state: QueuedPhotoState }[]): QueueSummary {
+export function summarizeQueue(
+  records: { state: QueuedPhotoState; discardRequested?: boolean }[],
+): QueueSummary {
   let savedLocal = 0
   let queued = 0
   let uploading = 0
   let attaching = 0
   let failed = 0
+  let discarding = 0
   for (const r of records) {
+    // A discard-requested record is CLEANUP work, whatever its pipeline state.
+    // It must not count as an attachable/uploading photo (the inspector
+    // removed it) but it still exists, so it still blocks submission until
+    // the worker confirms the server holds no intent for it. Fail closed.
+    if (r.discardRequested) {
+      discarding += 1
+      continue
+    }
     switch (r.state) {
       case 'saved_local':
         savedLocal += 1
@@ -92,6 +135,7 @@ export function summarizeQueue(records: { state: QueuedPhotoState }[]): QueueSum
     savedLocal,
     queued,
     uploading,
+    discarding,
     attaching,
     failed,
     // Records only disappear once the SERVER confirms the attach, so the mere
@@ -132,8 +176,22 @@ export function msUntilNextRetry(
 ): number | null {
   let best: number | null = null
   for (const r of records) {
-    if (r.state !== 'failed') continue
-    if (r.attempts >= MAX_AUTO_RETRY_ATTEMPTS) continue
+    // Retryable work: failed released uploads, pending discards (no cap —
+    // see nextDiscardable), and failed background staging (saved_local with
+    // attempts burned). Every one of these must eventually get a wake-up, or
+    // the queue stalls in front of a watching inspector.
+    let capped: boolean
+    if (r.discardRequested) {
+      if (r.attempts === 0) continue // brand new request; drain is already due
+      capped = false
+    } else if (r.state === 'failed') {
+      capped = true
+    } else if (r.state === 'saved_local' && !r.bytesStaged && r.attempts > 0) {
+      capped = true
+    } else {
+      continue
+    }
+    if (capped && r.attempts >= MAX_AUTO_RETRY_ATTEMPTS) continue
     const remaining =
       r.lastAttemptAt == null ? 0 : retryDelayMs(r.attempts) - (nowMs - r.lastAttemptAt)
     const ms = Math.max(0, remaining)
@@ -153,8 +211,57 @@ export function nextUploadable(
 ): QueuedPhotoMeta | null {
   const ready = records
     .filter((r) => {
+      // A removed photo must NEVER be uploaded or attached, whatever its
+      // pipeline state — its only remaining work is the discard path.
+      if (r.discardRequested) return false
       if (r.state === 'queued') return true
       if (r.state !== 'failed') return false
+      const since = r.lastAttemptAt == null ? Infinity : nowMs - r.lastAttemptAt
+      return since >= retryDelayMs(r.attempts)
+    })
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+  return ready[0] ?? null
+}
+
+/**
+ * Cleanup pick: records the inspector removed. HIGHEST priority — an orphaned
+ * intent blocks the whole pack, so resolving removals beats new uploads.
+ * Backoff applies between attempts, but there is deliberately NO attempts cap:
+ * the discard RPC is tiny, and abandoning cleanup would strand a hidden
+ * server intent. Resume triggers keep retrying until the server answers.
+ */
+export function nextDiscardable(
+  records: QueuedPhotoMeta[],
+  nowMs: number,
+): QueuedPhotoMeta | null {
+  const ready = records
+    .filter((r) => {
+      if (!r.discardRequested) return false
+      const since = r.lastAttemptAt == null ? Infinity : nowMs - r.lastAttemptAt
+      return since >= retryDelayMs(r.attempts)
+    })
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+  return ready[0] ?? null
+}
+
+/**
+ * Background staging pick: an UNRELEASED record whose bytes are not yet on the
+ * server. Runs only when no released work is waiting (released work is the
+ * inspector actively finishing — it wins). Staging failures back off with the
+ * same attempts/lastAttemptAt ladder; a record that exhausts auto-staging is
+ * simply uploaded the old way when the inspector releases it, so staging can
+ * never lose a photo — it is purely an accelerator.
+ */
+export function nextStageable(
+  records: QueuedPhotoMeta[],
+  nowMs: number,
+): QueuedPhotoMeta | null {
+  const ready = records
+    .filter((r) => {
+      // No new intent may EVER be created for a removed photo.
+      if (r.discardRequested) return false
+      if (r.state !== 'saved_local' || r.bytesStaged) return false
+      if (r.attempts >= MAX_AUTO_RETRY_ATTEMPTS) return false
       const since = r.lastAttemptAt == null ? Infinity : nowMs - r.lastAttemptAt
       return since >= retryDelayMs(r.attempts)
     })
@@ -206,6 +313,31 @@ export function packScopeError(scope: PackScope): string | null {
   )
 }
 
+export type ThumbBadge = 'uploaded' | 'uploading' | 'saved_device' | 'failed' | 'removing' | null
+
+/**
+ * Truthful per-photo badge for the capture strip / review list, derived ONLY
+ * from the durable queue record. Never derived from "the device is online" —
+ * that is how a repeatedly-failing photo lied with an "Uploading" spinner.
+ */
+export function thumbBadge(
+  rec:
+    | Pick<
+        QueuedPhotoMeta,
+        'state' | 'bytesStaged' | 'discardRequested' | 'lastError' | 'attempts'
+      >
+    | undefined
+    | null,
+  online: boolean,
+): ThumbBadge {
+  if (!rec) return null // not a queued photo (e.g. flag capture) — no badge
+  if (rec.discardRequested) return 'removing'
+  if (rec.bytesStaged) return 'uploaded'
+  if (rec.state === 'failed' || rec.lastError != null) return 'failed'
+  if (!online) return 'saved_device'
+  return 'uploading'
+}
+
 export type QueueTone = 'ok' | 'busy' | 'waiting' | 'error'
 
 /** Plain-language status for the queue panel. */
@@ -213,9 +345,16 @@ export function describeQueue(
   summary: QueueSummary,
   online: boolean,
 ): { tone: QueueTone; text: string } {
-  const { total, savedLocal, queued, uploading, attaching, failed } = summary
+  const { total, savedLocal, queued, uploading, attaching, failed, discarding } = summary
   if (total === 0) {
     return { tone: 'ok', text: 'All photos attached safely' }
+  }
+  // Cleanup-only state: everything left is photos the inspector removed.
+  if (discarding === total) {
+    return {
+      tone: 'busy',
+      text: `Removing ${discarding} photo${discarding === 1 ? '' : 's'}…`,
+    }
   }
   if (failed > 0) {
     return {

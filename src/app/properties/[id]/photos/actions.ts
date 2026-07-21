@@ -297,6 +297,55 @@ export async function requestPhotoUploadSlot(input: {
 // ----------------------------------------------------------------
 // requestFlagPhotoUploadSlot — new-flag capture (Slice 11B-1)
 // ----------------------------------------------------------------
+// ----------------------------------------------------------------
+// discardStagedPhotoIntent — programmatic audited discard
+// ----------------------------------------------------------------
+//
+// UPLOAD EARLY, ATTACH LATE: byte staging creates the durable server intent
+// at capture time. If the inspector then deletes the photo on the review
+// screen (blurred shot, retake), that intent must be discarded or it blocks
+// submission forever as "never finished saving". The existing
+// discardPrearrivalPhotoIntentAction is a <form> action that redirects, so
+// this is the same audited RPC in a return-a-result shape for the capture UI.
+// Authorization lives inside the SECURITY DEFINER RPC (company membership +
+// draft state); we only require a session and a reason here.
+export async function discardStagedPhotoIntent(input: {
+  propertyId: string
+  photoId: string
+  evidencePackId: string
+  reason: string
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const ctx = await getUserContext()
+  if (!ctx || !ctx.company) return { ok: false, error: 'Not authenticated.' }
+
+  const photoId = String(input.photoId ?? '').trim()
+  const evidencePackId = String(input.evidencePackId ?? '').trim()
+  const reason = String(input.reason ?? '').trim()
+  const propertyId = String(input.propertyId ?? '').trim()
+  if (!isUuid(photoId)) return { ok: false, error: 'Invalid photo reference.' }
+  if (!isUuid(evidencePackId)) return { ok: false, error: 'Invalid pack reference.' }
+  if (!reason) return { ok: false, error: 'A reason is required to discard a photo.' }
+
+  const supabase = await createClient()
+  // With p_pack_id the RPC is SERVER-AUTHORITATIVE cancellation (migration
+  // 20260721090000): if no intent exists yet it writes a durable tombstone in
+  // state 'discarded', so a delayed or replayed slot request from any tab
+  // fails closed instead of resurrecting the removed photo. A missing intent
+  // is deliberately NOT success here any more — success is only ever a
+  // durable 'discarded' row ('discarded' or 'already_discarded' return).
+  const { error } = await supabase.rpc('discard_prearrival_photo_intent', {
+    p_photo_id: photoId,
+    p_reason: reason,
+    p_pack_id: evidencePackId,
+  })
+  if (error) {
+    console.error('[photos/discard-staged-intent] rpc error:', error)
+    return { ok: false, error: error.message }
+  }
+  if (propertyId) revalidatePath(`/properties/${propertyId}`)
+  return { ok: true }
+}
+
 //
 // Dedicated signing endpoint for the field-team new-flag flow, where the
 // flag does NOT exist yet and the client generates the flag + photo ids.
