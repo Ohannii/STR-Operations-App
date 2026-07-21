@@ -173,3 +173,67 @@ export async function patchQueuedPhoto(
 export async function deleteQueuedPhoto(id: string): Promise<void> {
   await tx('readwrite', (s) => s.delete(id) as IDBRequest<undefined>)
 }
+
+/**
+ * ATOMIC claim (compare-and-swap). The read, the decision and the write all
+ * happen inside ONE readwrite IndexedDB transaction on the store — and
+ * readwrite transactions on the same store are serialized by the browser,
+ * across tabs of the same origin. Two simultaneous claims therefore cannot
+ * both win: the loser's transaction runs after the winner's commit, sees the
+ * updated record, and its `decide` returns null.
+ *
+ * `decide` is a PURE function (unit-tested separately): given the current
+ * record it returns either the patch to apply (claim succeeds) or null
+ * (claim refused). Returns the updated record on success, null otherwise.
+ */
+export async function claimQueuedPhoto(
+  id: string,
+  decide: (current: QueuedPhotoRecord) => Partial<QueuedPhotoRecord> | null,
+): Promise<QueuedPhotoRecord | null> {
+  const db = await openDb()
+  return new Promise<QueuedPhotoRecord | null>((resolve, reject) => {
+    let result: QueuedPhotoRecord | null = null
+    let t: IDBTransaction
+    try {
+      t = db.transaction(STORE, 'readwrite')
+    } catch (err) {
+      db.close()
+      reject(
+        new PhotoQueueUnavailableError(
+          err instanceof Error ? err.message : 'Device storage error.',
+        ),
+      )
+      return
+    }
+    const store = t.objectStore(STORE)
+    const getReq = store.get(id) as IDBRequest<QueuedPhotoRecord | undefined>
+    getReq.onsuccess = () => {
+      const current = getReq.result
+      if (!current) return // absent -> claim refused; txn completes empty
+      const patch = decide(current)
+      if (!patch) return
+      const next: QueuedPhotoRecord = {
+        ...current,
+        ...patch,
+        updatedAt: new Date().toISOString(),
+      }
+      store.put(next)
+      result = next
+    }
+    t.oncomplete = () => {
+      db.close()
+      resolve(result)
+    }
+    t.onabort = () => {
+      db.close()
+      reject(
+        new PhotoQueueUnavailableError(
+          t.error?.message ?? 'Device storage transaction aborted.',
+        ),
+      )
+    }
+    t.onerror = () => {
+      // handled by onabort
+    }
+  })
+}

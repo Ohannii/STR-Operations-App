@@ -7,6 +7,7 @@ import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
 import { formatDateTimeSAST } from '@/lib/ui/datetime'
 import { evaluatePackSubmit, parseExpectedCount } from '@/lib/packs/submit-guard'
+import { buildPackStartRedirect } from '@/lib/packs/start-redirect'
 
 /**
  * Evidence-pack lifecycle server actions.
@@ -124,13 +125,9 @@ export async function startPreArrivalPackAction(formData: FormData) {
 
   revalidatePath(`/properties/${propertyId}`)
 
-  // Land on the Action Centre with capture_now=1 so the
-  // EvidenceCapture modal auto-opens — Start pack flows straight
-  // into the camera surface without a second tap.
-  if (returnTo) {
-    redirect(`${returnTo}${returnTo.includes('?') ? '&' : '?'}capture_now=1`)
-  }
-  redirect(`/properties/${propertyId}?pack_started=1&capture_now=1`)
+  // NO capture_now: camera auto-open is removed entirely (P0, 21 Jul 2026).
+  // See buildPackStartRedirect for the invariant and its regression test.
+  redirect(buildPackStartRedirect(propertyId, returnTo))
 }
 
 

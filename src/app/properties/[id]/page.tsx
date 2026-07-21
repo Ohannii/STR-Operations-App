@@ -115,7 +115,6 @@ export default async function PropertyPage({
     pack_started?: string
     pack_submitted?: string
     pack_discarded?: string
-    capture_now?: string
   }>
 }) {
   const perf = startPerf('/properties/[id]')
@@ -132,7 +131,6 @@ export default async function PropertyPage({
     pack_started,
     pack_submitted,
     pack_discarded,
-    capture_now,
   } = await searchParams
 
   // Session 7: which flag cards are expanded inline. URL is the
@@ -546,6 +544,7 @@ export default async function PropertyPage({
                     an audited reason. No silent escape. */}
                 <UnresolvedIntentsPanel
                   propertyId={property.id}
+                  packId={draftPack.id}
                   intents={unresolvedIntents}
                 />
 
@@ -567,7 +566,6 @@ export default async function PropertyPage({
                     // are photos, Submit becomes the dominant action.
                     launchVariant={draftPackPhotoCount === 0 ? 'primary' : 'subtle'}
                     raiseFlagHref={`/properties/${property.id}/flags/new`}
-                    autoOpen={capture_now === '1'}
                   />
                   {/* Bulletproof gallery path — no modal, no
                       getUserMedia. Just a styled <label> wrapping
