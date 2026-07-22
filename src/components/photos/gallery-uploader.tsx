@@ -203,18 +203,25 @@ export function GalleryUploader({
 
         updateItem(rowId, { status: 'uploading' })
         if (evidencePackId) packCapture.mark(evidencePackId, rowId, 'uploading')
-        const putOnce = async (signedUrl: string, blob: Blob, already: boolean) => {
-          if (already) return
-          const res = await fetch(signedUrl, {
+        // Create-only duplicates CONVERGE (P0, 22 Jul night): 409, a 400
+        // whose body says already-exists, or a NULL upload (server verified
+        // the object exists) all mean the bytes are safe — done, not fatal.
+        const putOnce = async (
+          upload: { signedUrl: string } | null,
+          blob: Blob,
+          already: boolean,
+        ) => {
+          if (already || !upload) return
+          const res = await fetch(upload.signedUrl, {
             method: 'PUT',
             headers: { 'Content-Type': 'image/jpeg' },
             body: blob,
           })
-          // 409 = object already landed from a prior attempt (create-only).
           if (!res.ok && res.status !== 409) {
             let detail = ''
             try {
               const body = await res.text()
+              if (/already exists|duplicate/i.test(body)) return
               detail = body ? `: ${body.slice(0, 200)}` : ''
             } catch {
               /* ignore */
@@ -222,9 +229,9 @@ export function GalleryUploader({
             throw new Error(`Storage PUT failed (${res.status})${detail}`)
           }
         }
-        await putOnce(slot.masterUpload.signedUrl, master as Blob, !!current()?.masterDone)
+        await putOnce(slot.masterUpload, master as Blob, !!current()?.masterDone)
         updateItem(rowId, { masterDone: true })
-        await putOnce(slot.thumbUpload.signedUrl, thumb as Blob, !!current()?.thumbDone)
+        await putOnce(slot.thumbUpload, thumb as Blob, !!current()?.thumbDone)
         updateItem(rowId, { thumbDone: true })
 
         updateItem(rowId, { status: 'attaching' })

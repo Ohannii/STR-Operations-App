@@ -40,8 +40,22 @@ const claimCalls: string[] = []
 const claimStartTimes: number[] = []
 
 vi.mock('@/app/properties/[id]/photos/actions', () => ({
-  requestPhotoUploadSlot: vi.fn(async () => ({ ok: false, error: 'not used here' })),
-  attachEvidencePhoto: vi.fn(async () => ({ ok: false, error: 'not used here' })),
+  requestPhotoUploadSlot: vi.fn(async (input: { photoId?: string | null }) => ({
+    ok: true,
+    photoId: input.photoId ?? 'unknown',
+    masterPath: `companies/co1/property/prop1/${input.photoId}.jpg`,
+    thumbPath: `companies/co1/property/prop1/${input.photoId}_thumb.jpg`,
+    // The duplicate-convergence test overrides these per call.
+    masterUpload: { signedUrl: `https://storage.test/${input.photoId}/m`, token: 't' },
+    thumbUpload: { signedUrl: `https://storage.test/${input.photoId}/t`, token: 't' },
+    retentionClass: 'routine_pre_arrival',
+    companyId: 'co1',
+    evidencePackId: 'pack-integration',
+  })),
+  attachEvidencePhoto: vi.fn(async (input: { photoId: string }) => ({
+    ok: true,
+    photoId: input.photoId,
+  })),
   discardStagedPhotoIntent: vi.fn(async () => ({ ok: true })),
   attachEvidencePhotosBatch: vi.fn(async (inputs: Array<{ photoId: string }>) => ({
     ok: true,
@@ -114,7 +128,10 @@ vi.mock('@/lib/photos/photo-queue-db', () => {
 })
 
 import { drainQueue, photoQueue, releaseQueued } from '@/lib/photos/photo-queue'
-import { attachEvidencePhotosBatch } from '@/app/properties/[id]/photos/actions'
+import {
+  attachEvidencePhotosBatch,
+  requestPhotoUploadSlot,
+} from '@/app/properties/[id]/photos/actions'
 
 const PACK = 'pack-integration'
 
@@ -252,6 +269,73 @@ describe('releaseQueued: COUNT-INDEPENDENT ceiling (25 never-settling releases)'
     await sleep(400)
     expect(store.size).toBe(0)
   }, 30_000)
+})
+
+describe('FIELD REGRESSION 22 Jul: 24 staged + 1 ambiguous converge to exactly 25 attached', () => {
+  it('duplicate storage responses converge; master-exists/thumb-missing signs only the thumb; no dupes; no dead state', async () => {
+    // 24 photos fully staged (bytes verifiably on the server), 1 photo whose
+    // staging was interrupted: masterPath bytes landed but the record never
+    // learned it (bytesStaged false) — the exact ambiguous state behind
+    // "The resource already exists".
+    const stagedIds = Array.from({ length: 24 }, (_, i) => `s${String(i).padStart(2, '0')}`)
+    for (const id of stagedIds) seedSavedLocalRecord(id)
+    seedSavedLocalRecord('ambiguous')
+    const amb = store.get('ambiguous')
+    if (amb) store.set('ambiguous', { ...amb, bytesStaged: false })
+
+    // The slot for the ambiguous photo reports the SERVER truth: master
+    // already exists (upload: null — nothing to sign for it), thumb still
+    // needs bytes (signed URL provided).
+    vi.mocked(requestPhotoUploadSlot).mockImplementationOnce(async (input) => ({
+      ok: true as const,
+      photoId: (input as { photoId?: string }).photoId ?? 'ambiguous',
+      masterPath: 'companies/co1/property/prop1/ambiguous.jpg',
+      thumbPath: 'companies/co1/property/prop1/ambiguous_thumb.jpg',
+      masterUpload: null, // already exists — converge, do not fail
+      thumbUpload: { signedUrl: 'https://storage.test/ambiguous/t', token: 't' },
+      retentionClass: 'routine_pre_arrival',
+      companyId: 'co1',
+      evidencePackId: PACK,
+    }))
+    // And even the thumb PUT answers with Supabase's duplicate shape
+    // (HTTP 400 + "already exists" body) — it must converge too.
+    const fetchMock = vi.fn(async () =>
+      new Response('{"message":"The resource already exists"}', { status: 400 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    try {
+      const { failedIds } = await releaseQueued(PACK)
+      expect(failedIds).toEqual([])
+      // Let the drain finish: 24 via the batch fast path, the ambiguous one
+      // via the slow path (slot -> thumb-only PUT -> attach).
+      await sleep(600)
+
+      // EXACTLY 25 attached, each id exactly once, across both attach paths.
+      const batchedIds = vi
+        .mocked(attachEvidencePhotosBatch)
+        .mock.calls.flatMap((c) => c[0].map((i: { photoId: string }) => i.photoId))
+      const singleIds = vi
+        .mocked(
+          (await import('@/app/properties/[id]/photos/actions')).attachEvidencePhoto,
+        )
+        .mock.calls.map((c) => (c[0] as { photoId: string }).photoId)
+      const allAttached = [...batchedIds, ...singleIds]
+      expect(allAttached).toHaveLength(25)
+      expect(new Set(allAttached).size).toBe(25)
+
+      // Only the thumb was ever PUT — the existing master was never
+      // re-uploaded or overwritten.
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const putUrl = String(fetchMock.mock.calls[0][0])
+      expect(putUrl).toContain('/ambiguous/t')
+
+      // Every record deleted only after ITS confirmed attach: store empty.
+      expect(store.size).toBe(0)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  }, 15_000)
 })
 
 describe('release budget GATE: no new claims may start after the ceiling closes', () => {

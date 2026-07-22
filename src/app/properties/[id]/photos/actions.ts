@@ -23,6 +23,8 @@ import {
   buildFlagPhotoSlot,
   type FlagPhotoSlotResult,
 } from '@/lib/photos/flag-upload-plan'
+import { isReportConflict } from '@/lib/reports/ensure-report-artifact-core'
+import { verifiedObjectExists } from '@/lib/photos/storage-exists'
 import { mapBounded } from '@/lib/util/bounded-map'
 import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
@@ -59,8 +61,16 @@ export type UploadSlot = {
   photoId: string
   masterPath: string
   thumbPath: string
-  masterUpload: { signedUrl: string; token: string }
-  thumbUpload: { signedUrl: string; token: string }
+  /**
+   * NULL means the object ALREADY EXISTS at its deterministic path (verified
+   * server-side) — nothing to upload for it; skip straight to attach.
+   * P0 lesson (22 Jul, "The resource already exists"): create-only Storage
+   * REFUSES to sign an upload URL for an existing object, so re-requesting a
+   * slot for an already-staged photo used to fail fatally. A safe duplicate
+   * must converge, never error. Master and thumb are handled independently.
+   */
+  masterUpload: { signedUrl: string; token: string } | null
+  thumbUpload: { signedUrl: string; token: string } | null
   /** Server-derived class so the client cannot lie about retention. */
   retentionClass: RetentionClass
   /** Echoed back so the attach call carries the same context. */
@@ -261,34 +271,55 @@ export async function requestPhotoUploadSlot(input: {
   // 2 hours by default. Even if the URL leaks, it cannot be used
   // to read anything (write-only) and the underlying RLS still
   // requires the request session to belong to a company member.
-  const [{ data: masterUpload, error: masterErr }, { data: thumbUpload, error: thumbErr }] =
-    await Promise.all([
-      supabase.storage.from(EVIDENCE_BUCKET).createSignedUploadUrl(masterPath),
-      supabase.storage.from(EVIDENCE_BUCKET).createSignedUploadUrl(thumbPath),
-    ])
+  //
+  // IDEMPOTENT SIGNING (P0, 22 Jul night): create-only Storage refuses to
+  // sign an upload URL for an EXISTING object ("The resource already
+  // exists"). For a deterministic per-photo path that is a SAFE state — the
+  // bytes already landed from a prior attempt — so it converges to
+  // upload: null (verified existing, nothing to upload) instead of failing
+  // the whole slot. Never an overwrite; per-object, so master-exists /
+  // thumb-missing signs only the thumb.
+  const signOrAlreadyUploaded = async (
+    path: string,
+    label: string,
+  ): Promise<
+    | { upload: { signedUrl: string; token: string } | null }
+    | { failed: string }
+  > => {
+    const { data, error } = await supabase.storage
+      .from(EVIDENCE_BUCKET)
+      .createSignedUploadUrl(path)
+    if (!error && data) {
+      return { upload: { signedUrl: data.signedUrl, token: data.token } }
+    }
+    if (error && isReportConflict(error)) {
+      // Duplicate response is a HINT only. POSITIVE existence proof comes
+      // from the storage API itself (official exists() when available,
+      // signed-download probe otherwise) — never from the error text alone.
+      const exists = await verifiedObjectExists(
+        supabase.storage.from(EVIDENCE_BUCKET),
+        path,
+      )
+      if (exists) return { upload: null }
+    }
+    console.error(`[photos/sign] ${label} signed url error:`, error)
+    return { failed: error?.message ?? `Could not get upload slot (${label}).` }
+  }
 
-  if (masterErr || !masterUpload) {
-    console.error('[photos/sign] master signed url error:', masterErr)
-    return {
-      ok: false,
-      error: masterErr?.message ?? 'Could not get upload slot (master).',
-    }
-  }
-  if (thumbErr || !thumbUpload) {
-    console.error('[photos/sign] thumb signed url error:', thumbErr)
-    return {
-      ok: false,
-      error: thumbErr?.message ?? 'Could not get upload slot (thumb).',
-    }
-  }
+  const [masterSigned, thumbSigned] = await Promise.all([
+    signOrAlreadyUploaded(masterPath, 'master'),
+    signOrAlreadyUploaded(thumbPath, 'thumb'),
+  ])
+  if ('failed' in masterSigned) return { ok: false, error: masterSigned.failed }
+  if ('failed' in thumbSigned) return { ok: false, error: thumbSigned.failed }
 
   return {
     ok: true,
     photoId,
     masterPath,
     thumbPath,
-    masterUpload: { signedUrl: masterUpload.signedUrl, token: masterUpload.token },
-    thumbUpload: { signedUrl: thumbUpload.signedUrl, token: thumbUpload.token },
+    masterUpload: masterSigned.upload,
+    thumbUpload: thumbSigned.upload,
     retentionClass,
     companyId: property.company_id,
     evidencePackId: flagId ? null : evidencePackId,

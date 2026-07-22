@@ -406,7 +406,9 @@ async function withTimeout<T>(work: Promise<T>, ms: number, label: string): Prom
   }
 }
 
-/** PUT one storage object, bounded. Create-only: 409 = already landed = done. */
+/** PUT one storage object, bounded. Create-only duplicates CONVERGE:
+ *  409, or Supabase's 400 with a "resource already exists"/"Duplicate" body,
+ *  both mean the bytes already landed from a prior attempt — success. */
 async function putObject(signedUrl: string, blob: Blob, label: string): Promise<void> {
   // AbortController (not just a race) so the dead socket is actually released
   // rather than left pinned while the retry opens another one.
@@ -420,6 +422,10 @@ async function putObject(signedUrl: string, blob: Blob, label: string): Promise<
       signal: controller.signal,
     })
     if (!res.ok && res.status !== 409) {
+      // Supabase signed-upload duplicates answer 400, not 409 (P0, 22 Jul
+      // night: "The resource already exists" treated as fatal in the field).
+      const body = await res.text().catch(() => '')
+      if (/already exists|duplicate/i.test(body)) return
       throw new Error(`${label} upload failed (${res.status})`)
     }
   } catch (err) {
@@ -551,9 +557,16 @@ async function putBothSettled(
   slot: UploadSlot,
   record: QueuedPhotoRecord,
 ): Promise<void> {
+  // A null upload = the server VERIFIED the object already exists at its
+  // deterministic path — nothing to send for it (per-object: master may be
+  // present while the thumb still needs its bytes).
   const results = await Promise.allSettled([
-    putObject(slot.masterUpload.signedUrl, record.master, 'Photo'),
-    putObject(slot.thumbUpload.signedUrl, record.thumb, 'Thumbnail'),
+    slot.masterUpload
+      ? putObject(slot.masterUpload.signedUrl, record.master, 'Photo')
+      : Promise.resolve(),
+    slot.thumbUpload
+      ? putObject(slot.thumbUpload.signedUrl, record.thumb, 'Thumbnail')
+      : Promise.resolve(),
   ])
   const firstRejected = results.find(
     (r): r is PromiseRejectedResult => r.status === 'rejected',

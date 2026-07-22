@@ -661,24 +661,32 @@ export function EvidenceCapture({
           )
         }
 
-        // Create-only Storage: a 409 means the object already landed from a
-        // prior attempt — idempotent, treat as done. Skip anything already PUT.
-        const putOnce = async (signedUrl: string, blob: Blob, already: boolean) => {
-          if (already) return
-          const res = await fetch(signedUrl, {
+        // Create-only Storage duplicates CONVERGE (P0, 22 Jul night): a 409,
+        // a 400 whose body says "already exists"/"Duplicate", or a NULL
+        // upload slot (server verified the object exists) all mean the bytes
+        // already landed — done, never fatal. Skip anything already PUT.
+        const putOnce = async (
+          upload: { signedUrl: string } | null,
+          blob: Blob,
+          already: boolean,
+        ) => {
+          if (already || !upload) return
+          const res = await fetch(upload.signedUrl, {
             method: 'PUT',
             headers: { 'Content-Type': 'image/jpeg' },
             body: blob,
           })
           if (!res.ok && res.status !== 409) {
+            const body = await res.text().catch(() => '')
+            if (/already exists|duplicate/i.test(body)) return
             throw new Error(`Upload failed (${res.status}).`)
           }
         }
-        await putOnce(slot.masterUpload.signedUrl, item.master as Blob, !!item.masterDone)
+        await putOnce(slot.masterUpload, item.master as Blob, !!item.masterDone)
         setPending((prev) =>
           prev.map((p) => (p.id === item.id ? { ...p, masterDone: true } : p)),
         )
-        await putOnce(slot.thumbUpload.signedUrl, item.thumb as Blob, !!item.thumbDone)
+        await putOnce(slot.thumbUpload, item.thumb as Blob, !!item.thumbDone)
         setPending((prev) =>
           prev.map((p) => (p.id === item.id ? { ...p, thumbDone: true } : p)),
         )
@@ -844,14 +852,30 @@ export function EvidenceCapture({
   // photo loss.
   const handleRaiseFlag = useCallback(async () => {
     const readyItems = pending.filter((p) => p.state === 'ready' && p.master && p.thumb)
-    if (readyItems.length > 0) {
+    if (readyItems.length > 0 && evidencePackId) {
+      // PACK MODE = ONE PIPELINE (P0, 22 Jul night). This shortcut used to
+      // run the LEGACY in-modal uploader, which re-requested slots for
+      // already-staged photos — create-only Storage answered "The resource
+      // already exists" and 25 safely-uploaded photos were declared failed.
+      // Packs now release to the durable queue exactly like Attach; the
+      // worker finishes (idempotently) in the background while we navigate,
+      // and the pack page's panel shows live progress.
+      setBatchError(null)
+      for (const it of readyItems) packCapture.commit(evidencePackId, it.id)
+      const notes: Record<string, string | null> = {}
+      for (const it of readyItems) {
+        notes[it.id] = it.note?.trim() || attachAllNote.trim() || null
+      }
+      try {
+        await releaseQueued(evidencePackId, notes)
+      } catch {
+        // Records stay durable; the pack page offers "Attach saved photos".
+      }
+      void drainQueue(evidencePackId)
+    } else if (readyItems.length > 0) {
+      // FLAG capture keeps its original in-memory pipeline.
       setStage('uploading')
       setBatchError(null)
-      // Same intent accounting as handleAttach so the shared store stays
-      // balanced when photos are attached via the Report-issue shortcut.
-      if (evidencePackId) {
-        for (const it of readyItems) packCapture.commit(evidencePackId, it.id)
-      }
       const allOk = await runUploads(readyItems)
       if (!allOk) {
         setBatchError(
@@ -872,7 +896,7 @@ export function EvidenceCapture({
       console.info('[EvidenceCapture] navigating to raise-flag:', target)
       window.location.href = target
     }
-  }, [pending, runUploads, propertyId, stopCamera, evidencePackId])
+  }, [pending, runUploads, propertyId, stopCamera, evidencePackId, attachAllNote])
 
   const finishAndReload = useCallback(() => {
     closeModal()
@@ -1324,7 +1348,12 @@ export function EvidenceCapture({
                 >
                   {readiness.ready
                     ? `Attach ${readiness.total} photo${readiness.total === 1 ? '' : 's'}`
-                    : `Preparing photos… ${readiness.prepared} of ${readiness.total}`}
+                    : readiness.total === 0
+                      ? // Never the dead "Preparing photos… 0 of 0" (P0, 22
+                        // Jul night): with nothing ready there is nothing to
+                        // prepare — plain disabled label.
+                        'Attach photos'
+                      : `Preparing photos… ${readiness.prepared} of ${readiness.total}`}
                 </button>
               </div>
             </div>
