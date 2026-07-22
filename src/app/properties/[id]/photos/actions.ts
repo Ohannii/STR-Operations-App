@@ -688,26 +688,20 @@ export async function attachEvidencePhotosBatch(
     }
   })
 
-  // Deduplicated cache invalidation, SUCCESSFUL items only: both the property
-  // page and the pack report page (the single-photo action does both — a
-  // freshly generated report/PDF must never render stale). Two Set-deduped
-  // calls for a whole batch, not fifty.
-  const touchedProperties = new Set<string>()
-  const touchedPackReports = new Set<string>()
-  for (const r of results) {
-    if (r.ok && r.propertyId && r.evidencePackId) {
-      touchedProperties.add(r.propertyId)
-      touchedPackReports.add(
-        `/properties/${r.propertyId}/packs/${r.evidencePackId}/report`,
-      )
-    }
-  }
-  for (const propertyId of touchedProperties) {
-    revalidatePath(`/properties/${propertyId}`)
-  }
-  for (const reportPath of touchedPackReports) {
-    revalidatePath(reportPath)
-  }
+  // ACKNOWLEDGEMENT IS DECOUPLED FROM CACHE WORK (P0, 22 Jul evening).
+  // revalidatePath inside a Server Action makes Next.js render the updated
+  // page INTO THIS RESPONSE (documented behaviour) — the heavy property page
+  // was riding on every batch acknowledgement, delaying the client's
+  // per-photo confirmations behind page-regeneration work. It is deliberately
+  // NOT called here. Freshness is preserved by officially supported means:
+  //   * both /properties/[id] and the pack report page are DYNAMIC routes
+  //     (server-rendered on demand — no Full Route Cache to invalidate);
+  //   * the client already calls router.refresh() once per completed drain
+  //     cycle (serverRefreshNeeded), which refetches the current route and
+  //     updates the router cache with fresh linked counts;
+  //   * the report page re-renders on navigation.
+  // The single-photo attachEvidencePhoto keeps its revalidatePath calls for
+  // its other callers; results here return as soon as the RPCs settle.
   return {
     ok: true,
     results: results.map(({ photoId, ok, error }) => ({ photoId, ok, error })),

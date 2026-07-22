@@ -62,6 +62,31 @@ function rec(state: QueuedPhotoState, o: Partial<QueuedPhotoMeta> = {}): QueuedP
   }
 }
 
+describe('lost/timed-out batch response: automatic same-id recovery, no refresh', () => {
+  const NOW = 13_000_000
+
+  it('a timed-out wave retries with the SAME photo ids via backoff + wake — no page refresh needed', () => {
+    // The client marks a lost batch failed (attempts+1, lease cleared).
+    const afterTimeout = ['a', 'b', 'c'].map((id) =>
+      rec('failed', { id, attempts: 1, lastAttemptAt: NOW, leaseUntil: null }),
+    )
+    // Inside backoff: not pickable yet, but a wake IS booked automatically…
+    expect(uploadableRecords(afterTimeout, NOW)).toEqual([])
+    expect(msUntilNextRetry(afterTimeout, NOW)).toBe(retryDelayMs(1))
+    // …and at the wake, the SAME ids are pickable and claimable again. The
+    // server replays idempotently by these very ids (already_completed), so
+    // photos the lost response actually attached resolve on the first retry.
+    const due = NOW + retryDelayMs(1)
+    const retryable = uploadableRecords(afterTimeout, due)
+    expect(retryable.map((r) => r.id)).toEqual(['a', 'b', 'c'])
+    for (const r of retryable) {
+      expect(claimForUploadDecision(r, due)).toMatchObject({ state: 'uploading' })
+    }
+    // Records were never deleted (no per-photo confirmation arrived) — the
+    // exact-success deletion rule held through the whole outage.
+  })
+})
+
 describe('batch attach + bounded parallelism acceptance (chat proofs 1–12)', () => {
   const NOW = 11_000_000
   const forty = () =>

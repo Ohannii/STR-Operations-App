@@ -776,7 +776,32 @@ export function EvidenceCapture({
       // ids as the current batch. The done screen's gate counts these ids —
       // Done stays disabled until every one of them is server-attached.
       // Accumulates across repeated "More photos → Attach" rounds.
-      await releaseQueued(evidencePackId, notes)
+      // NEVER HOSTAGE (22 Jul evening): the Attach screen once sat frozen on
+      // "0/25 done" for four minutes because this await hung inside a Safari
+      // IndexedDB transaction. Storage ops are now deadline-bounded AND this
+      // screen advances regardless — any un-released photo remains durable,
+      // visible, and re-attachable from the queue panel.
+      try {
+        const { failedIds } = await releaseQueued(evidencePackId, notes)
+        if (failedIds.length > 0) {
+          // Per-record failures are REPORTED, not swallowed (audit item 5):
+          // the worker returns exactly which ids stayed behind.
+          setBatchError(
+            `${failedIds.length} photo${failedIds.length === 1 ? '' : 's'} could not ` +
+              'be handed to the uploader — still safe on this device. Use ' +
+              '"Attach saved photos" on the pack page to finish.',
+          )
+        }
+      } catch (err) {
+        setBatchError(
+          'Some photos could not be handed to the uploader — they are still ' +
+            'safe on this device. Use "Attach saved photos" on the pack page ' +
+            'to finish them.',
+        )
+        dbg('release:threw', {
+          detail: err instanceof Error ? err.message : 'release failed',
+        })
+      }
       setBatchIds((prev) => {
         const next = new Set(prev)
         for (const it of readyItems) next.add(it.id)
@@ -1383,6 +1408,9 @@ export function EvidenceCapture({
                 // line; ONE concise failure state only after retries are
                 // truly exhausted.
                 <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
+                  {batchError ? (
+                    <p className="w-full text-xs text-amber-400">{batchError}</p>
+                  ) : null}
                   {batch.exhausted > 0 ? (
                     <p className="text-sm text-red-400 mr-auto">
                       {batch.exhausted} photo{batch.exhausted === 1 ? '' : 's'} could not
