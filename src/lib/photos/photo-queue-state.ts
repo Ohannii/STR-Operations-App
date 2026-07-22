@@ -608,11 +608,16 @@ export function msUntilNextRetry(
  * 'saved_local' is intentionally NOT uploadable — the inspector has not
  * released it yet (they may still be adding a note).
  */
-export function nextUploadable(
-  records: QueuedPhotoMeta[],
+/**
+ * ALL released records ready for the upload/attach path, oldest first.
+ * Multi-pick form powering bounded parallelism and batch attach — the single
+ * pickers delegate here so pickers and claims can never drift apart.
+ */
+export function uploadableRecords<T extends QueuedPhotoMeta>(
+  records: T[],
   nowMs: number,
-): QueuedPhotoMeta | null {
-  const ready = records
+): T[] {
+  return records
     .filter((r) => {
       // A removed photo must NEVER be uploaded or attached, whatever its
       // pipeline state — its only remaining work is the discard path.
@@ -629,7 +634,13 @@ export function nextUploadable(
       return since >= retryDelayMs(r.attempts)
     })
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
-  return ready[0] ?? null
+}
+
+export function nextUploadable(
+  records: QueuedPhotoMeta[],
+  nowMs: number,
+): QueuedPhotoMeta | null {
+  return uploadableRecords(records, nowMs)[0] ?? null
 }
 
 /**
@@ -661,15 +672,16 @@ export function nextDiscardable(
  * simply uploaded the old way when the inspector releases it, so staging can
  * never lose a photo — it is purely an accelerator.
  */
-export function nextStageable(
-  records: QueuedPhotoMeta[],
+/** Multi-pick form for the bounded staging pool; see uploadableRecords. */
+export function stageableRecords<T extends QueuedPhotoMeta>(
+  records: T[],
   nowMs: number,
-): QueuedPhotoMeta | null {
-  const ready = records
+): T[] {
+  return records
     .filter((r) => {
       // No new intent may EVER be created for a removed photo.
       if (r.discardRequested) return false
-      // Same no-spin invariant as nextUploadable: never offer what the
+      // Same no-spin invariant as uploadableRecords: never offer what the
       // claim will refuse.
       if ((r.leaseUntil ?? 0) > nowMs) return false
       if (r.state !== 'saved_local' || r.bytesStaged) return false
@@ -678,7 +690,13 @@ export function nextStageable(
       return since >= retryDelayMs(r.attempts)
     })
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
-  return ready[0] ?? null
+}
+
+export function nextStageable(
+  records: QueuedPhotoMeta[],
+  nowMs: number,
+): QueuedPhotoMeta | null {
+  return stageableRecords(records, nowMs)[0] ?? null
 }
 
 /** True when a record's scope matches the active context exactly. */
@@ -755,6 +773,43 @@ export function thumbBadge(
   }
   if (!online) return 'saved_device'
   return 'uploading'
+}
+
+/**
+ * BOUNDED PARALLELISM + BATCH SIZE — single source of truth, exported so the
+ * acceptance tests prove the real values the worker uses.
+ */
+export const UPLOAD_CONCURRENCY = 3
+export const ATTACH_BATCH_SIZE = 20
+
+export type BatchOutcome = {
+  /** Ids whose OWN server result confirmed the attach — the only ids whose
+   *  local records may be deleted. */
+  attached: string[]
+  /** Ids that failed, with reasons — including ids the server returned NO
+   *  result for (ambiguous — fail closed, retry-safe: the attach RPC is
+   *  idempotent by photo uuid, so a replay of an actually-attached photo
+   *  returns already_completed). */
+  failed: Array<{ id: string; error: string }>
+}
+
+/** Match per-photo batch results to the claimed local ids. Pure, so proofs
+ *  5–8 (result matching, confirmed-only deletion, failure isolation,
+ *  ambiguous-result fail-closed) are unit-testable. */
+export function resolveBatchOutcomes(
+  claimedIds: readonly string[],
+  results: ReadonlyArray<{ photoId: string; ok: boolean; error?: string }>,
+): BatchOutcome {
+  const byId = new Map(results.map((r) => [r.photoId, r]))
+  const attached: string[] = []
+  const failed: Array<{ id: string; error: string }> = []
+  for (const id of claimedIds) {
+    const r = byId.get(id)
+    if (r?.ok) attached.push(id)
+    else if (r) failed.push({ id, error: r.error ?? 'Attach failed.' })
+    else failed.push({ id, error: 'No result returned for this photo — retrying.' })
+  }
+  return { attached, failed }
 }
 
 export type QueueTone = 'ok' | 'busy' | 'waiting' | 'error'

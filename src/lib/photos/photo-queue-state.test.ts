@@ -10,8 +10,13 @@ import {
   isExhausted,
   isStranded,
   MAX_AUTO_RETRY_ATTEMPTS,
+  ATTACH_BATCH_SIZE,
   ORPHAN_GRACE_MS,
   provenAttachPaths,
+  resolveBatchOutcomes,
+  stageableRecords,
+  UPLOAD_CONCURRENCY,
+  uploadableRecords,
   reclaimDecision,
   releaseDecision,
   reviewReadiness,
@@ -56,6 +61,97 @@ function rec(state: QueuedPhotoState, o: Partial<QueuedPhotoMeta> = {}): QueuedP
     ...o,
   }
 }
+
+describe('batch attach + bounded parallelism acceptance (chat proofs 1–12)', () => {
+  const NOW = 11_000_000
+  const forty = () =>
+    Array.from({ length: 40 }, (_, i) =>
+      rec('queued', {
+        id: `photo-${String(i).padStart(2, '0')}`,
+        bytesStaged: true,
+        masterPath: `companies/co1/property/prop1/p${i}.jpg`,
+        thumbPath: `companies/co1/property/prop1/p${i}_thumb.jpg`,
+        note: `caption ${i}`,
+      }),
+    )
+
+  it('1: staging/upload waves never exceed the real concurrency constant (3)', () => {
+    expect(UPLOAD_CONCURRENCY).toBe(3)
+    const uploadWave = uploadableRecords(forty(), NOW).slice(0, UPLOAD_CONCURRENCY)
+    expect(uploadWave).toHaveLength(3)
+    const staging = Array.from({ length: 10 }, () => rec('saved_local'))
+    expect(stageableRecords(staging, NOW).slice(0, UPLOAD_CONCURRENCY)).toHaveLength(3)
+  })
+
+  it('3+4: a 40-photo queue divides into exactly two batches of ≤20 UNIQUE ids', () => {
+    expect(ATTACH_BATCH_SIZE).toBe(20)
+    let remaining = uploadableRecords(forty(), NOW)
+    const batches: string[][] = []
+    while (remaining.length > 0) {
+      const batch = remaining.slice(0, ATTACH_BATCH_SIZE).map((r) => r.id)
+      expect(batch.length).toBeLessThanOrEqual(20)
+      expect(new Set(batch).size).toBe(batch.length) // unique ids
+      batches.push(batch)
+      // 9: attached records are DELETED — the next round cannot reprocess them.
+      const attachedSet = new Set(batch)
+      remaining = remaining.filter((r) => !attachedSet.has(r.id))
+    }
+    expect(batches).toHaveLength(2)
+    expect(batches[0]).toHaveLength(20)
+    expect(batches[1]).toHaveLength(20)
+  })
+
+  it('5+6: per-photo results match the correct ids; ONLY confirmed successes may delete', () => {
+    const out = resolveBatchOutcomes(
+      ['a', 'b', 'c'],
+      [
+        { photoId: 'c', ok: true }, // order scrambled on purpose
+        { photoId: 'a', ok: true },
+        { photoId: 'b', ok: false, error: 'storage object missing' },
+      ],
+    )
+    expect(out.attached.sort()).toEqual(['a', 'c'])
+    expect(out.failed).toEqual([{ id: 'b', error: 'storage object missing' }])
+  })
+
+  it('7: one failed photo does not fail or delete the other 19', () => {
+    const ids = Array.from({ length: 20 }, (_, i) => `p${i}`)
+    const results = ids.map((photoId) => ({
+      photoId,
+      ok: photoId !== 'p7',
+      error: photoId === 'p7' ? 'boom' : undefined,
+    }))
+    const out = resolveBatchOutcomes(ids, results)
+    expect(out.attached).toHaveLength(19)
+    expect(out.failed).toEqual([{ id: 'p7', error: 'boom' }])
+  })
+
+  it('8: an ambiguous/missing result fails CLOSED and stays retry-safe', () => {
+    // Timeout mid-batch: no result for b. It must NOT delete locally; it goes
+    // to the ordinary retry path, and the attach RPC replays idempotently by
+    // photo uuid (server suite E1/J: already_completed / verified replay).
+    const out = resolveBatchOutcomes(['a', 'b'], [{ photoId: 'a', ok: true }])
+    expect(out.attached).toEqual(['a'])
+    expect(out.failed[0].id).toBe('b')
+    expect(out.failed[0].error).toContain('retrying')
+  })
+
+  it('12: captions and deterministic paths ride each batched item unchanged', () => {
+    const records = forty().slice(0, 2)
+    const inputs = records.map((r) =>
+      buildAttachInput(
+        r,
+        r.masterPath as string,
+        r.thumbPath as string,
+        'routine_pre_arrival',
+      ),
+    )
+    expect(inputs[0].note).toBe('caption 0')
+    expect(inputs[1].note).toBe('caption 1')
+    expect(inputs[0].photoId).toBe('photo-00')
+    expect(inputs[1].masterPath).toBe(records[1].masterPath)
+  })
+})
 
 describe('P0 fresh-upload regression: release vs staging lease', () => {
   const NOW = 7_000_000

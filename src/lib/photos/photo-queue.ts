@@ -4,6 +4,7 @@ import { useEffect, useSyncExternalStore } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   attachEvidencePhoto,
+  attachEvidencePhotosBatch,
   discardStagedPhotoIntent,
   requestPhotoUploadSlot,
   type UploadSlot,
@@ -35,14 +36,17 @@ import {
   MAX_AUTO_RETRY_ATTEMPTS,
   msUntilNextRetry,
   nextDiscardable,
-  nextStageable,
-  nextUploadable,
   reclaimDecision,
   reclaimableRecords,
   releaseDecision,
   stageFailureDecision,
   stageFinalizeDecision,
+  ATTACH_BATCH_SIZE,
+  resolveBatchOutcomes,
+  stageableRecords,
   summarizeQueue,
+  UPLOAD_CONCURRENCY,
+  uploadableRecords,
   type QueueSummary,
   type QueuedPhotoMeta,
 } from '@/lib/photos/photo-queue-state'
@@ -658,6 +662,135 @@ async function uploadOne(picked: QueuedPhotoRecord): Promise<void> {
   await refreshQueue(record.packId)
 }
 
+// BOUNDED PARALLELISM (P0 performance, 22 Jul). Concurrency 1 was chosen when
+// in-memory bytes made partial writes dangerous; with bytes durable in
+// IndexedDB BEFORE any network call and every step claim-owned and idempotent
+// by photo uuid, parallel waves are safe — and one slow photo no longer
+// serializes the other 39. Constants live in photo-queue-state so the
+// acceptance tests prove the REAL values (UPLOAD_CONCURRENCY, ATTACH_BATCH_SIZE).
+
+/** Server says this photo was cancelled elsewhere: converge to the discard
+ *  path instead of retrying an upload the server will always reject. */
+async function convergeCancelled(packId: string, photoId: string): Promise<void> {
+  await patchQueuedPhoto(photoId, {
+    discardRequested: true,
+    discardReason: 'Cancelled on the server (removed elsewhere)',
+    attempts: 0,
+    lastAttemptAt: null,
+    lastError: null,
+  })
+  packCapture.remove(packId, photoId)
+  await refreshQueue(packId)
+}
+
+/** Shared upload/attach failure bookkeeping: quiet retry inside the budget,
+ *  one calm surfaced failure at exhaustion, convergence on cancellation. */
+async function handleWorkError(
+  packId: string,
+  record: QueuedPhotoMeta,
+  err: unknown,
+): Promise<void> {
+  const message = err instanceof Error ? err.message : 'Upload failed.'
+  if (isCancelledByServer(message)) {
+    await convergeCancelled(packId, record.id)
+    return
+  }
+  const attempts = record.attempts + 1
+  await patchQueuedPhoto(record.id, {
+    state: 'failed',
+    lastError: message,
+    attempts,
+    lastAttemptAt: Date.now(),
+    leaseUntil: null,
+  })
+  packCapture.mark(
+    packId,
+    record.id,
+    attempts >= MAX_AUTO_RETRY_ATTEMPTS ? 'failed' : 'uploading',
+  )
+  await refreshQueue(packId)
+}
+
+/**
+ * THE FAST PATH: attach a wave of fully-staged records in ONE phone round
+ * trip. Each record is atomically claimed first (exclusive ownership, lease),
+ * paths are proven per item, and the server returns PER-PHOTO results — a
+ * record is deleted only after ITS OWN confirmed attach, exactly as before.
+ * One bad photo fails alone; the rest complete.
+ */
+async function batchAttachStaged(
+  packId: string,
+  candidates: QueuedPhotoMeta[],
+): Promise<void> {
+  const claimed: Array<{
+    rec: QueuedPhotoRecord
+    input: ReturnType<typeof buildAttachInput<RetentionClass>>
+  }> = []
+  for (const r of candidates) {
+    const c = await claimQueuedPhoto(r.id, (cur) =>
+      claimForUploadDecision(cur, Date.now()),
+    )
+    if (!c) continue
+    const paths = provenAttachPaths(c.masterPath ?? null, c.thumbPath ?? null)
+    if (!paths) {
+      // Staged facts vanished between pick and claim: hand back to the slow
+      // path (full pipeline re-derives them). Never attach unproven paths.
+      await claimQueuedPhoto(c.id, (cur) =>
+        cur.state === 'uploading' ? { state: 'queued', leaseUntil: null } : null,
+      )
+      continue
+    }
+    const retention = isRetentionClass(c.retentionClass)
+      ? c.retentionClass
+      : PRE_ARRIVAL_RETENTION
+    claimed.push({
+      rec: c,
+      input: buildAttachInput(c, paths.masterPath, paths.thumbPath, retention),
+    })
+    packCapture.mark(packId, c.id, 'attaching')
+  }
+  if (claimed.length === 0) return
+  await refreshQueue(packId)
+
+  let res: Awaited<ReturnType<typeof attachEvidencePhotosBatch>>
+  try {
+    res = await timed('upload:attach-batch', null, () =>
+      withTimeout(
+        attachEvidencePhotosBatch(claimed.map((x) => x.input)),
+        ACTION_TIMEOUT_MS,
+        'Saving photos',
+      ),
+    )
+  } catch (err) {
+    for (const { rec } of claimed) await handleWorkError(packId, rec, err)
+    return
+  }
+  if (!res.ok) {
+    const err = new Error(res.error)
+    for (const { rec } of claimed) await handleWorkError(packId, rec, err)
+    return
+  }
+  // PURE, TESTED matching (proofs 5–8): confirmed-only deletion, per-id
+  // failure isolation, and a missing result fails CLOSED (retry-safe: the
+  // attach RPC replays idempotently by photo uuid).
+  const outcome = resolveBatchOutcomes(
+    claimed.map((x) => x.rec.id),
+    res.results,
+  )
+  const byRec = new Map(claimed.map((x) => [x.rec.id, x.rec]))
+  for (const id of outcome.attached) {
+    // ITS OWN server confirmation — only now are the device bytes redundant.
+    await deleteQueuedPhoto(id)
+    packCapture.mark(packId, id, 'saved')
+    setState(packId, { serverRefreshNeeded: true })
+  }
+  for (const f of outcome.failed) {
+    const rec = byRec.get(f.id)
+    if (rec) await handleWorkError(packId, rec, new Error(f.error))
+  }
+  await refreshQueue(packId)
+}
+
 /** One pending wake-up per pack. Replaced, never stacked. */
 const wakeTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
@@ -750,83 +883,55 @@ export async function drainQueue(packId: string): Promise<void> {
       }
 
       // Released work next: the inspector is actively finishing the pack.
-      const meta = nextUploadable(all, Date.now())
-      if (meta) {
-        const record = all.find((r) => r.id === meta.id)
-        if (!record) continue
-        try {
-          await uploadOne(record)
-        } catch (err) {
-          const message = err instanceof Error ? err.message : 'Upload failed.'
-          if (isCancelledByServer(message)) {
-            // Another tab (or an earlier removal) cancelled this photo on the
-            // server. Converge: hand it to the discard path instead of
-            // retrying an upload the server will always reject.
-            await patchQueuedPhoto(record.id, {
-              discardRequested: true,
-              discardReason: 'Cancelled on the server (removed elsewhere)',
-              attempts: 0,
-              lastAttemptAt: null,
-              lastError: null,
-            })
-            packCapture.remove(packId, record.id)
-            await refreshQueue(packId)
-            continue
-          }
-          const attempts = record.attempts + 1
-          await patchQueuedPhoto(record.id, {
-            state: 'failed',
-            lastError: message,
-            attempts,
-            lastAttemptAt: Date.now(),
-            leaseUntil: null,
-          })
-          // QUIET RETRIES: only an EXHAUSTED failure surfaces to the person.
-          // Inside the retry budget the photo is still honestly "uploading" —
-          // the retry happens on its own.
-          packCapture.mark(
-            packId,
-            record.id,
-            attempts >= MAX_AUTO_RETRY_ATTEMPTS ? 'failed' : 'uploading',
-          )
-          await refreshQueue(packId)
-          // CONTINUE, do not stop the pass. The old `break` here meant one
-          // flaky photo froze the other 38 until the next resume event —
-          // live incident, 20 Jul 2026. The failed record is now inside its
-          // backoff window, so nextUploadable moves on to the next photo and
-          // this cannot spin on the same record.
+      const uploadables = uploadableRecords(all, Date.now())
+      if (uploadables.length > 0) {
+        // FAST PATH — BATCH ATTACH. Staged records need only the attach RPC,
+        // and each attach used to be its own phone round trip: 40 photos =
+        // 40 × mobile RTT = minutes. Batch them into ONE round trip; the
+        // per-photo RPCs run server-side where latency is milliseconds.
+        const staged = uploadables.filter(
+          (r) => r.bytesStaged && r.masterPath && r.thumbPath,
+        )
+        if (staged.length > 0) {
+          await batchAttachStaged(packId, staged.slice(0, ATTACH_BATCH_SIZE))
+          continue
         }
+        // SLOW PATH — unstaged released photos still need their bytes pushed.
+        // Bounded parallelism: one slow photo must not serialize the rest.
+        const wave = uploadables.slice(0, UPLOAD_CONCURRENCY)
+        await Promise.all(
+          wave.map(async (record) => {
+            try {
+              await uploadOne(record)
+            } catch (err) {
+              await handleWorkError(packId, record, err)
+            }
+          }),
+        )
         continue
       }
 
       // No released work: stage bytes for unreleased captures in the
-      // background, so Attach is near-instant when the inspector taps it.
-      const stage = nextStageable(all, Date.now())
-      if (!stage) break
-      const record = all.find((r) => r.id === stage.id)
-      if (!record) continue
-      try {
-        await stageOne(record)
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Upload failed.'
-        if (isCancelledByServer(message)) {
-          await patchQueuedPhoto(record.id, {
-            discardRequested: true,
-            discardReason: 'Cancelled on the server (removed elsewhere)',
-            attempts: 0,
-            lastAttemptAt: null,
-            lastError: null,
-          })
-          packCapture.remove(packId, record.id)
-          await refreshQueue(packId)
-          continue
-        }
-        // Failure bookkeeping already happened inside stageOne under its own
-        // lease identity (a stale attempt writes nothing). Staging remains an
-        // accelerator, never a gate: if it keeps failing while unreleased,
-        // the release path uploads the old way — nothing is ever lost.
-        await refreshQueue(packId)
-      }
+      // background — in parallel — so Attach is near-instant when tapped.
+      const stageWave = stageableRecords(all, Date.now()).slice(0, UPLOAD_CONCURRENCY)
+      if (stageWave.length === 0) break
+      await Promise.all(
+        stageWave.map(async (record) => {
+          try {
+            await stageOne(record)
+          } catch (err) {
+            const message = err instanceof Error ? err.message : 'Upload failed.'
+            if (isCancelledByServer(message)) {
+              await convergeCancelled(packId, record.id)
+              return
+            }
+            // Failure bookkeeping already happened inside stageOne under its
+            // own lease identity (a stale attempt writes nothing). Staging
+            // remains an accelerator, never a gate.
+          }
+        }),
+      )
+      await refreshQueue(packId)
     }
   } finally {
     running.delete(packId)
