@@ -609,6 +609,83 @@ export type AttachPhotoInput = {
   retentionClass: RetentionClass
 }
 
+/**
+ * BATCH pre-arrival attach — the performance path (P0, 22 Jul).
+ *
+ * WHY: each attach used to be its own phone→server round trip. On mobile
+ * (300–800ms RTT) 40 staged photos cost 40 sequential round trips — minutes
+ * of waiting for work whose bytes were already uploaded. This action moves
+ * the loop server-side: ONE round trip from the phone; Vercel↔Supabase
+ * latency is single-digit milliseconds, so N atomic RPCs complete in a
+ * couple of seconds.
+ *
+ * SAFETY IS UNCHANGED per photo: every item still goes through the same
+ * attach_prearrival_photo RPC — atomic, idempotent by photo uuid,
+ * relationship-verified, storage-checked, tombstone-rejecting. Per-item
+ * results are returned so the client resolves each record individually;
+ * one bad photo never blocks the rest. Pre-arrival pack photos ONLY.
+ */
+export async function attachEvidencePhotosBatch(
+  inputs: AttachPhotoInput[],
+): Promise<
+  | { ok: true; results: Array<{ photoId: string; ok: boolean; error?: string }> }
+  | { ok: false; error: string }
+> {
+  const ctx = await getUserContext()
+  if (!ctx || !ctx.company) return { ok: false, error: 'Not authenticated.' }
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    return { ok: false, error: 'No photos to attach.' }
+  }
+  if (inputs.length > 25) {
+    return { ok: false, error: 'Too many photos in one batch (max 25).' }
+  }
+
+  const supabase = await createClient()
+  const results: Array<{ photoId: string; ok: boolean; error?: string }> = []
+  // Deduplicated cache invalidation targets: successful items must refresh
+  // BOTH the property page and the pack report page (the single-photo action
+  // does both — a freshly generated report/PDF must never render stale).
+  const touchedProperties = new Set<string>()
+  const touchedPackReports = new Set<string>()
+
+  for (const input of inputs) {
+    const photoId = String(input.photoId ?? '').trim()
+    const propertyId = String(input.propertyId ?? '').trim()
+    const evidencePackId = input.evidencePackId
+      ? String(input.evidencePackId).trim()
+      : null
+    if (!isUuid(photoId) || !propertyId || !evidencePackId || input.flagId) {
+      results.push({ photoId, ok: false, error: 'Invalid batch item.' })
+      continue
+    }
+    const note = input.note ? String(input.note).trim().slice(0, 2000) : null
+    const { error: rpcErr } = await supabase.rpc('attach_prearrival_photo', {
+      p_photo_id: photoId,
+      p_width: input.width,
+      p_height: input.height,
+      p_size_bytes: input.sizeBytes,
+      p_captured_at: input.capturedAt ?? null,
+      p_note: note,
+    })
+    if (rpcErr) {
+      console.error('[photos/attach-batch] rpc error for', photoId, rpcErr.message)
+      results.push({ photoId, ok: false, error: rpcErr.message })
+    } else {
+      results.push({ photoId, ok: true })
+      touchedProperties.add(propertyId)
+      touchedPackReports.add(`/properties/${propertyId}/packs/${evidencePackId}/report`)
+    }
+  }
+
+  for (const propertyId of touchedProperties) {
+    revalidatePath(`/properties/${propertyId}`)
+  }
+  for (const reportPath of touchedPackReports) {
+    revalidatePath(reportPath)
+  }
+  return { ok: true, results }
+}
+
 export async function attachEvidencePhoto(
   input: AttachPhotoInput,
 ): Promise<{ ok: true; photoId: string } | { ok: false; error: string }> {
