@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { AlertTriangle, CheckCircle2, Loader2, RotateCcw, Smartphone, WifiOff } from 'lucide-react'
 import { drainQueue, releaseQueued, retryFailed, usePackQueue } from '@/lib/photos/photo-queue'
+import { isExhausted } from '@/lib/photos/photo-queue-state'
 
 /**
  * Device queue panel (Outcome 3).
@@ -30,8 +31,9 @@ export function PackQueuePanel({ packId }: { packId: string }) {
   // ("timed out", "413", "not authenticated") tells us — and support — what
   // is really wrong in the field. Failed DISCARDS surface here too — a
   // removal that cannot reach the server must stay visible, not vanish.
+  // EXHAUSTED failures and stuck discards only — quiet retries stay quiet.
   const firstFailure = records.find(
-    (r) => r.lastError && (r.state === 'failed' || r.discardRequested),
+    (r) => r.lastError && (isExhausted(r) || r.discardRequested),
   )
 
   // Storage unreadable/unusable => fail closed, loudly.
@@ -159,7 +161,7 @@ export function PackQueuePanel({ packId }: { packId: string }) {
             <RotateCcw size={13} aria-hidden />
             {busy === 'retry'
               ? 'Retrying…'
-              : `Retry ${summary.failed} failed photo${summary.failed === 1 ? '' : 's'}`}
+              : `Try again (${summary.failed} photo${summary.failed === 1 ? '' : 's'})`}
           </button>
         ) : null}
       </div>

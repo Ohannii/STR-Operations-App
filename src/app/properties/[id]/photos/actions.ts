@@ -23,6 +23,9 @@ import {
   buildFlagPhotoSlot,
   type FlagPhotoSlotResult,
 } from '@/lib/photos/flag-upload-plan'
+import { isReportConflict } from '@/lib/reports/ensure-report-artifact-core'
+import { verifiedObjectExists } from '@/lib/photos/storage-exists'
+import { mapBounded } from '@/lib/util/bounded-map'
 import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
@@ -58,8 +61,16 @@ export type UploadSlot = {
   photoId: string
   masterPath: string
   thumbPath: string
-  masterUpload: { signedUrl: string; token: string }
-  thumbUpload: { signedUrl: string; token: string }
+  /**
+   * NULL means the object ALREADY EXISTS at its deterministic path (verified
+   * server-side) — nothing to upload for it; skip straight to attach.
+   * P0 lesson (22 Jul, "The resource already exists"): create-only Storage
+   * REFUSES to sign an upload URL for an existing object, so re-requesting a
+   * slot for an already-staged photo used to fail fatally. A safe duplicate
+   * must converge, never error. Master and thumb are handled independently.
+   */
+  masterUpload: { signedUrl: string; token: string } | null
+  thumbUpload: { signedUrl: string; token: string } | null
   /** Server-derived class so the client cannot lie about retention. */
   retentionClass: RetentionClass
   /** Echoed back so the attach call carries the same context. */
@@ -260,34 +271,55 @@ export async function requestPhotoUploadSlot(input: {
   // 2 hours by default. Even if the URL leaks, it cannot be used
   // to read anything (write-only) and the underlying RLS still
   // requires the request session to belong to a company member.
-  const [{ data: masterUpload, error: masterErr }, { data: thumbUpload, error: thumbErr }] =
-    await Promise.all([
-      supabase.storage.from(EVIDENCE_BUCKET).createSignedUploadUrl(masterPath),
-      supabase.storage.from(EVIDENCE_BUCKET).createSignedUploadUrl(thumbPath),
-    ])
+  //
+  // IDEMPOTENT SIGNING (P0, 22 Jul night): create-only Storage refuses to
+  // sign an upload URL for an EXISTING object ("The resource already
+  // exists"). For a deterministic per-photo path that is a SAFE state — the
+  // bytes already landed from a prior attempt — so it converges to
+  // upload: null (verified existing, nothing to upload) instead of failing
+  // the whole slot. Never an overwrite; per-object, so master-exists /
+  // thumb-missing signs only the thumb.
+  const signOrAlreadyUploaded = async (
+    path: string,
+    label: string,
+  ): Promise<
+    | { upload: { signedUrl: string; token: string } | null }
+    | { failed: string }
+  > => {
+    const { data, error } = await supabase.storage
+      .from(EVIDENCE_BUCKET)
+      .createSignedUploadUrl(path)
+    if (!error && data) {
+      return { upload: { signedUrl: data.signedUrl, token: data.token } }
+    }
+    if (error && isReportConflict(error)) {
+      // Duplicate response is a HINT only. POSITIVE existence proof comes
+      // from the storage API itself (official exists() when available,
+      // signed-download probe otherwise) — never from the error text alone.
+      const exists = await verifiedObjectExists(
+        supabase.storage.from(EVIDENCE_BUCKET),
+        path,
+      )
+      if (exists) return { upload: null }
+    }
+    console.error(`[photos/sign] ${label} signed url error:`, error)
+    return { failed: error?.message ?? `Could not get upload slot (${label}).` }
+  }
 
-  if (masterErr || !masterUpload) {
-    console.error('[photos/sign] master signed url error:', masterErr)
-    return {
-      ok: false,
-      error: masterErr?.message ?? 'Could not get upload slot (master).',
-    }
-  }
-  if (thumbErr || !thumbUpload) {
-    console.error('[photos/sign] thumb signed url error:', thumbErr)
-    return {
-      ok: false,
-      error: thumbErr?.message ?? 'Could not get upload slot (thumb).',
-    }
-  }
+  const [masterSigned, thumbSigned] = await Promise.all([
+    signOrAlreadyUploaded(masterPath, 'master'),
+    signOrAlreadyUploaded(thumbPath, 'thumb'),
+  ])
+  if ('failed' in masterSigned) return { ok: false, error: masterSigned.failed }
+  if ('failed' in thumbSigned) return { ok: false, error: thumbSigned.failed }
 
   return {
     ok: true,
     photoId,
     masterPath,
     thumbPath,
-    masterUpload: { signedUrl: masterUpload.signedUrl, token: masterUpload.token },
-    thumbUpload: { signedUrl: thumbUpload.signedUrl, token: thumbUpload.token },
+    masterUpload: masterSigned.upload,
+    thumbUpload: thumbSigned.upload,
     retentionClass,
     companyId: property.company_id,
     evidencePackId: flagId ? null : evidencePackId,
@@ -607,6 +639,104 @@ export type AttachPhotoInput = {
   capturedAt?: string | null
   note?: string | null
   retentionClass: RetentionClass
+}
+
+/**
+ * BATCH pre-arrival attach — the performance path (P0, 22 Jul).
+ *
+ * WHY: each attach used to be its own phone→server round trip. On mobile
+ * (300–800ms RTT) 40 staged photos cost 40 sequential round trips — minutes
+ * of waiting for work whose bytes were already uploaded. This action moves
+ * the loop server-side: ONE round trip from the phone; Vercel↔Supabase
+ * latency is single-digit milliseconds, so N atomic RPCs complete in a
+ * couple of seconds.
+ *
+ * SAFETY IS UNCHANGED per photo: every item still goes through the same
+ * attach_prearrival_photo RPC — atomic, idempotent by photo uuid,
+ * relationship-verified, storage-checked, tombstone-rejecting. Per-item
+ * results are returned so the client resolves each record individually;
+ * one bad photo never blocks the rest. Pre-arrival pack photos ONLY.
+ */
+export async function attachEvidencePhotosBatch(
+  inputs: AttachPhotoInput[],
+): Promise<
+  | { ok: true; results: Array<{ photoId: string; ok: boolean; error?: string }> }
+  | { ok: false; error: string }
+> {
+  const ctx = await getUserContext()
+  if (!ctx || !ctx.company) return { ok: false, error: 'Not authenticated.' }
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    return { ok: false, error: 'No photos to attach.' }
+  }
+  if (inputs.length > 25) {
+    return { ok: false, error: 'Too many photos in one batch (max 25).' }
+  }
+
+  const supabase = await createClient()
+
+  // BOUNDED CONCURRENCY (stall fix, 22 Jul): strictly-sequential RPCs made
+  // this action's duration O(n) — 25 photos could outlive the serverless
+  // response window, and the lost response threw the client into silent
+  // retry cycles ("frozen for two minutes, fine after refresh"). A pool of 5
+  // caps wall clock at ~n/5 RPC latencies. NOT unbounded Promise.all: 25
+  // simultaneous RPCs would thundering-herd the database. Result order is
+  // input order; each item resolves to its own result object, so one failed
+  // photo cannot reject the others (failure isolation preserved).
+  const BATCH_RPC_CONCURRENCY = 5
+  const results = await mapBounded(inputs, BATCH_RPC_CONCURRENCY, async (input) => {
+    const photoId = String(input.photoId ?? '').trim()
+    const propertyId = String(input.propertyId ?? '').trim()
+    const evidencePackId = input.evidencePackId
+      ? String(input.evidencePackId).trim()
+      : null
+    if (!isUuid(photoId) || !propertyId || !evidencePackId || input.flagId) {
+      return { photoId, ok: false as const, error: 'Invalid batch item.' }
+    }
+    // ISOLATION HARDENING (audit, 22 Jul): supabase-js reports failures as
+    // { error }, but an unexpected THROW (network layer, serialization)
+    // would reject this worker's promise and take the whole batch down with
+    // it -- mapBounded deliberately does not swallow rejections. Convert any
+    // throw into this item's own failure result; the other 24 photos finish.
+    try {
+      const note = input.note ? String(input.note).trim().slice(0, 2000) : null
+      const { error: rpcErr } = await supabase.rpc('attach_prearrival_photo', {
+        p_photo_id: photoId,
+        p_width: input.width,
+        p_height: input.height,
+        p_size_bytes: input.sizeBytes,
+        p_captured_at: input.capturedAt ?? null,
+        p_note: note,
+      })
+      if (rpcErr) {
+        console.error('[photos/attach-batch] rpc error for', photoId, rpcErr.message)
+        return { photoId, ok: false as const, error: rpcErr.message }
+      }
+      return { photoId, ok: true as const, propertyId, evidencePackId }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Attach failed unexpectedly.'
+      console.error('[photos/attach-batch] thrown for', photoId, message)
+      return { photoId, ok: false as const, error: message }
+    }
+  })
+
+  // ACKNOWLEDGEMENT IS DECOUPLED FROM CACHE WORK (P0, 22 Jul evening).
+  // revalidatePath inside a Server Action makes Next.js render the updated
+  // page INTO THIS RESPONSE (documented behaviour) — the heavy property page
+  // was riding on every batch acknowledgement, delaying the client's
+  // per-photo confirmations behind page-regeneration work. It is deliberately
+  // NOT called here. Freshness is preserved by officially supported means:
+  //   * both /properties/[id] and the pack report page are DYNAMIC routes
+  //     (server-rendered on demand — no Full Route Cache to invalidate);
+  //   * the client already calls router.refresh() once per completed drain
+  //     cycle (serverRefreshNeeded), which refetches the current route and
+  //     updates the router cache with fresh linked counts;
+  //   * the report page re-renders on navigation.
+  // The single-photo attachEvidencePhoto keeps its revalidatePath calls for
+  // its other callers; results here return as soon as the RPCs settle.
+  return {
+    ok: true,
+    results: results.map(({ photoId, ok, error }) => ({ photoId, ok, error })),
+  }
 }
 
 export async function attachEvidencePhoto(
