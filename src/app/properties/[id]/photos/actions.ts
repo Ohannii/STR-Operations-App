@@ -23,6 +23,7 @@ import {
   buildFlagPhotoSlot,
   type FlagPhotoSlotResult,
 } from '@/lib/photos/flag-upload-plan'
+import { mapBounded } from '@/lib/util/bounded-map'
 import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
@@ -641,49 +642,76 @@ export async function attachEvidencePhotosBatch(
   }
 
   const supabase = await createClient()
-  const results: Array<{ photoId: string; ok: boolean; error?: string }> = []
-  // Deduplicated cache invalidation targets: successful items must refresh
-  // BOTH the property page and the pack report page (the single-photo action
-  // does both — a freshly generated report/PDF must never render stale).
-  const touchedProperties = new Set<string>()
-  const touchedPackReports = new Set<string>()
 
-  for (const input of inputs) {
+  // BOUNDED CONCURRENCY (stall fix, 22 Jul): strictly-sequential RPCs made
+  // this action's duration O(n) — 25 photos could outlive the serverless
+  // response window, and the lost response threw the client into silent
+  // retry cycles ("frozen for two minutes, fine after refresh"). A pool of 5
+  // caps wall clock at ~n/5 RPC latencies. NOT unbounded Promise.all: 25
+  // simultaneous RPCs would thundering-herd the database. Result order is
+  // input order; each item resolves to its own result object, so one failed
+  // photo cannot reject the others (failure isolation preserved).
+  const BATCH_RPC_CONCURRENCY = 5
+  const results = await mapBounded(inputs, BATCH_RPC_CONCURRENCY, async (input) => {
     const photoId = String(input.photoId ?? '').trim()
     const propertyId = String(input.propertyId ?? '').trim()
     const evidencePackId = input.evidencePackId
       ? String(input.evidencePackId).trim()
       : null
     if (!isUuid(photoId) || !propertyId || !evidencePackId || input.flagId) {
-      results.push({ photoId, ok: false, error: 'Invalid batch item.' })
-      continue
+      return { photoId, ok: false as const, error: 'Invalid batch item.' }
     }
-    const note = input.note ? String(input.note).trim().slice(0, 2000) : null
-    const { error: rpcErr } = await supabase.rpc('attach_prearrival_photo', {
-      p_photo_id: photoId,
-      p_width: input.width,
-      p_height: input.height,
-      p_size_bytes: input.sizeBytes,
-      p_captured_at: input.capturedAt ?? null,
-      p_note: note,
-    })
-    if (rpcErr) {
-      console.error('[photos/attach-batch] rpc error for', photoId, rpcErr.message)
-      results.push({ photoId, ok: false, error: rpcErr.message })
-    } else {
-      results.push({ photoId, ok: true })
-      touchedProperties.add(propertyId)
-      touchedPackReports.add(`/properties/${propertyId}/packs/${evidencePackId}/report`)
+    // ISOLATION HARDENING (audit, 22 Jul): supabase-js reports failures as
+    // { error }, but an unexpected THROW (network layer, serialization)
+    // would reject this worker's promise and take the whole batch down with
+    // it -- mapBounded deliberately does not swallow rejections. Convert any
+    // throw into this item's own failure result; the other 24 photos finish.
+    try {
+      const note = input.note ? String(input.note).trim().slice(0, 2000) : null
+      const { error: rpcErr } = await supabase.rpc('attach_prearrival_photo', {
+        p_photo_id: photoId,
+        p_width: input.width,
+        p_height: input.height,
+        p_size_bytes: input.sizeBytes,
+        p_captured_at: input.capturedAt ?? null,
+        p_note: note,
+      })
+      if (rpcErr) {
+        console.error('[photos/attach-batch] rpc error for', photoId, rpcErr.message)
+        return { photoId, ok: false as const, error: rpcErr.message }
+      }
+      return { photoId, ok: true as const, propertyId, evidencePackId }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Attach failed unexpectedly.'
+      console.error('[photos/attach-batch] thrown for', photoId, message)
+      return { photoId, ok: false as const, error: message }
+    }
+  })
+
+  // Deduplicated cache invalidation, SUCCESSFUL items only: both the property
+  // page and the pack report page (the single-photo action does both — a
+  // freshly generated report/PDF must never render stale). Two Set-deduped
+  // calls for a whole batch, not fifty.
+  const touchedProperties = new Set<string>()
+  const touchedPackReports = new Set<string>()
+  for (const r of results) {
+    if (r.ok && r.propertyId && r.evidencePackId) {
+      touchedProperties.add(r.propertyId)
+      touchedPackReports.add(
+        `/properties/${r.propertyId}/packs/${r.evidencePackId}/report`,
+      )
     }
   }
-
   for (const propertyId of touchedProperties) {
     revalidatePath(`/properties/${propertyId}`)
   }
   for (const reportPath of touchedPackReports) {
     revalidatePath(reportPath)
   }
-  return { ok: true, results }
+  return {
+    ok: true,
+    results: results.map(({ photoId, ok, error }) => ({ photoId, ok, error })),
+  }
 }
 
 export async function attachEvidencePhoto(
