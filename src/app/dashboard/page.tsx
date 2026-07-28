@@ -80,15 +80,26 @@ export default async function DashboardPage() {
     .not('status', 'in', '(closed,guest_resolved,ota_resolved)')
     .is('deleted_at', null)
 
+  // PR-A: active team member count for the admin's Team card.
+  const memberCountPromise = supabase
+    .from('company_memberships')
+    .select('id', { count: 'exact', head: true })
+    .eq('company_id', ctx.company.id)
+    .eq('is_active', true)
+    .is('deleted_at', null)
+
   const [
     { data: properties, error },
     { count: openFlagsCount },
     { count: openRecoveryCount },
+    { count: memberCountRaw },
   ] = await Promise.all([
     propertiesPromise,
     openFlagsCountPromise,
     openRecoveryCountPromise,
+    memberCountPromise,
   ])
+  const memberCount = memberCountRaw ?? 0
   perf.mark('queries')
   perf.done()
 
@@ -145,6 +156,18 @@ export default async function DashboardPage() {
             hint="Ships with the turnover workflow."
             muted
           />
+          {/* PR-A: Team management entry — company_admin only. Hiding this
+              card is UX; real authorization is server-side on the page,
+              in every action, and in the SECURITY DEFINER functions. */}
+          {ctx.membership?.role_key === 'company_admin' ? (
+            <SnapshotCard
+              icon={Building2}
+              label="Team"
+              value={memberCount}
+              href="/dashboard/team"
+              hint="Invite people and manage roles."
+            />
+          ) : null}
           <SnapshotCard
             icon={RotateCcw}
             label="Open recovery tasks"

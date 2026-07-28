@@ -77,6 +77,40 @@ export async function createCompanyAction(formData: FormData) {
     redirect('/dashboard')
   }
 
+  // PR-A GUARD (rev 2): an authenticated email with a PENDING invitation
+  // must never create a second company. Try the idempotent claim first; BOTH
+  // the RPC data AND error are inspected — ONLY the literal 'no_invitation'
+  // may proceed to company creation. Any error or any other typed result
+  // (expired/revoked/conflict/unknown) blocks creation with a safe, retryable
+  // message. The database itself backstops this: create_company_with_admin
+  // raises 'invitation_pending' / 'already_member' regardless of app checks.
+  const { data: claim, error: claimError } = await supabase.rpc('claim_pending_invitation')
+  if (claimError) {
+    console.error('[onboard] claim_pending_invitation errored; blocking creation:', claimError)
+    redirect(
+      `/onboard?error=${encodeURIComponent(
+        'We could not check your invitations just now. Please try again — do not create a new company if you were invited to one.'
+      )}`
+    )
+  }
+  if (claim === 'claimed' || claim === 'already_member') {
+    console.log('[onboard] pending invitation claimed instead of creating a company')
+    redirect('/dashboard')
+  }
+  if (claim !== 'no_invitation') {
+    // expired / revoked / conflict / anything unexpected: never proceed.
+    console.error('[onboard] claim returned non-proceed result; blocking creation:', claim)
+    const msg =
+      claim === 'expired'
+        ? 'Your invitation has expired. Ask your admin to resend it instead of creating a company.'
+        : claim === 'revoked'
+          ? 'Your invitation was revoked. Contact your admin instead of creating a company.'
+          : claim === 'conflict'
+            ? 'Your account is already linked to another company. Contact your admin.'
+            : 'An invitation exists for this account and must be resolved first. Contact your admin.'
+    redirect(`/onboard?error=${encodeURIComponent(msg)}`)
+  }
+
   console.log('[onboard] calling create_company_with_admin RPC')
   const { data: newCompanyId, error: rpcError } = await supabase.rpc(
     'create_company_with_admin',
