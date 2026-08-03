@@ -93,6 +93,42 @@ $$;
 revoke all on function public.active_membership_elsewhere(uuid, uuid) from public;
 
 -- ----------------------------------------------------------------
+-- 1b. Single-active-company invariant — ENFORCED AT THE DATABASE
+-- ----------------------------------------------------------------
+-- active_membership_elsewhere() above is an app-level SELECT and is NOT
+-- concurrency-safe on its own: two racing claims/adds can each pass the check
+-- and both insert an active membership. A partial unique index makes "at most
+-- one active membership per user, across ALL companies" a hard invariant, so
+-- the losing transaction fails with unique_violation (mapped to a safe
+-- conflict outcome by each writing RPC below).
+--
+-- Fail closed FIRST if legacy data already violates the rule. We NEVER delete,
+-- deactivate, move, or otherwise repair rows automatically — a human resolves
+-- the duplication, then re-runs the migration.
+do $$
+declare v_dupe record;
+begin
+  select cm.user_id as user_id, count(*) as n
+    into v_dupe
+    from public.company_memberships cm
+   where cm.is_active and cm.deleted_at is null
+   group by cm.user_id
+  having count(*) > 1
+   limit 1;
+  if found then
+    raise exception
+      'MIGRATION BLOCKED: user % already has % active memberships. The single-'
+      'active-company invariant cannot be enforced until this is resolved by '
+      'hand. No data was changed by this migration.', v_dupe.user_id, v_dupe.n
+      using errcode = 'P0001';
+  end if;
+end $$;
+
+create unique index if not exists idx_memberships_one_active_company
+  on public.company_memberships (user_id)
+  where is_active and deleted_at is null;
+
+-- ----------------------------------------------------------------
 -- 2. invitations — lifecycle columns, dedupe indexes, RLS
 -- ----------------------------------------------------------------
 alter table public.invitations
@@ -217,6 +253,7 @@ grant execute on function public.begin_team_invitation(uuid, text, text) to auth
 -- server code); this function still re-validates: the auth email must match
 -- the invitation's canonical email, and confirmed-ness decides direct-add.
 -- Returns: 'added_existing' | 'pending_email' | 'already_member'
+--        | 'existing_company_conflict:<name>'  (revocation committed)
 create or replace function public.finalize_team_invitation(
   p_invitation_id uuid,
   p_auth_user_id  uuid,
@@ -257,12 +294,16 @@ begin
 
   v_conflict := public.active_membership_elsewhere(p_auth_user_id, v_inv.company_id);
   if v_conflict is not null then
-    -- The LIVE invitation must not survive a conflict.
+    -- The LIVE invitation must not survive a conflict. RETURN a typed outcome
+    -- instead of RAISE: a raise here aborts the transaction and rolls this
+    -- revocation back, leaving the invitation live. Returning lets the
+    -- revoked_at/failed_reason write COMMIT. The server action recognises the
+    -- 'existing_company_conflict:<name>' prefix and shows the friendly message.
     update public.invitations
        set revoked_at = now(),
            failed_reason = 'existing_company_conflict'
      where id = v_inv.id;
-    raise exception 'existing_company_conflict:%', v_conflict using errcode = 'P0001';
+    return 'existing_company_conflict:' || v_conflict;
   end if;
 
   update public.invitations
@@ -298,6 +339,13 @@ begin
   -- claims. accepted_at stays null. This is what keeps a pending invited
   -- admin invisible to the last-admin guard.
   return 'pending_email';
+exception
+  when unique_violation then
+    -- A concurrent path activated a membership for this user (here or
+    -- elsewhere) between our check and our insert; the single-active-company
+    -- index rejected the duplicate. Fail closed as a conflict — no membership
+    -- is granted, and the invitation stays live for a safe retry.
+    return 'existing_company_conflict:';
 end; $$;
 revoke all on function public.finalize_team_invitation(uuid, uuid, text, boolean) from public;
 grant execute on function public.finalize_team_invitation(uuid, uuid, text, boolean) to authenticated;
@@ -440,6 +488,12 @@ begin
    where id = v_inv.id;
 
   return case when v_had then 'already_member' else 'claimed' end;
+exception
+  when unique_violation then
+    -- A concurrent claim/add activated a membership elsewhere between our
+    -- check and our insert; the single-active-company index rejected this one.
+    -- Fail closed with the same typed outcome as the pre-check path.
+    return 'conflict';
 end; $$;
 revoke all on function public.claim_pending_invitation() from public;
 grant execute on function public.claim_pending_invitation() to authenticated;
@@ -524,6 +578,13 @@ begin
    where id = v_company_id;
 
   return v_company_id;
+exception
+  when unique_violation then
+    -- A concurrent path created an active membership for this user between the
+    -- guard check and the admin-membership insert; the single-active-company
+    -- index rejected this one. The whole transaction (including the new
+    -- companies row) rolls back, so no orphan company is left behind.
+    raise exception 'already_member' using errcode = 'P0001';
 end;
 $$;
 
@@ -557,6 +618,11 @@ returns void
 language plpgsql security definer set search_path = public
 as $$
 begin
+  -- Serialise authority changes for this company (last-admin race): take the
+  -- company row lock BEFORE the authorization and admin-count checks, so a
+  -- concurrent caller waits and then re-evaluates against post-lock state.
+  -- Two racing demotions can never both pass the last-admin guard.
+  perform 1 from public.companies where id = p_company_id for update;
   if not public.has_company_role(p_company_id, array['company_admin']) then
     raise exception 'not_authorized' using errcode = '42501';
   end if;
@@ -582,6 +648,10 @@ returns void
 language plpgsql security definer set search_path = public
 as $$
 begin
+  -- Serialise authority changes for this company (last-admin race): lock the
+  -- company row BEFORE authorization and admin-count checks so racing
+  -- deactivations cannot both pass the last-admin guard and leave zero admins.
+  perform 1 from public.companies where id = p_company_id for update;
   if not public.has_company_role(p_company_id, array['company_admin']) then
     raise exception 'not_authorized' using errcode = '42501';
   end if;
@@ -603,6 +673,13 @@ begin
   values (p_company_id, auth.uid(),
           case when p_active then 'member_activated' else 'member_deactivated' end,
           'membership', p_user_id, '{}'::jsonb);
+exception
+  when unique_violation then
+    -- Concurrent reactivation elsewhere won the race; the single-active-company
+    -- index rejected this one. Fail closed as a conflict (nothing was changed).
+    raise exception 'existing_company_conflict:%',
+      coalesce(public.active_membership_elsewhere(p_user_id, p_company_id), 'another company')
+      using errcode = 'P0001';
 end; $$;
 
 revoke all on function public.assert_not_last_admin(uuid, uuid) from public;

@@ -117,7 +117,26 @@ export async function inviteTeamMember(input: {
   try {
     authUser = await findAuthUserByEmail(email)
     if (!authUser) {
-      const { data, error } = await adminClient.auth.admin.inviteUserByEmail(email)
+      // The invite email's redirect MUST come from trusted configuration, never
+      // from request.url/Host/x-forwarded-* (all client-influenceable). If the
+      // trusted origin is unconfigured we fail closed rather than send an email
+      // that cannot route back through /auth/confirm.
+      const inviteRedirectTo = trustedAppUrl('/auth/confirm')
+      if (!inviteRedirectTo) {
+        await supabase.rpc('mark_invitation_failed', {
+          p_invitation_id: invitationId,
+          p_reason: 'NEXT_PUBLIC_SITE_URL missing/invalid; invite email redirect unavailable',
+        })
+        return {
+          ok: false,
+          code: 'site_url_missing',
+          error:
+            'The invitation is saved, but the app URL is not configured so the invite email could not be sent. Use Share link, or set NEXT_PUBLIC_SITE_URL correctly and retry.',
+        }
+      }
+      const { data, error } = await adminClient.auth.admin.inviteUserByEmail(email, {
+        redirectTo: inviteRedirectTo,
+      })
       if (error) {
         // Race: created between lookup and invite → converge via re-lookup.
         authUser = await findAuthUserByEmail(email)
@@ -175,6 +194,12 @@ export async function inviteTeamMember(input: {
       code: 'provisioning_failed',
       error: `Invitation saved; finalisation failed (${finErr.message}). Retry converges safely.`,
     }
+  }
+
+  // Conflict is now RETURNED (not raised) so the DB revocation commits; the
+  // invitation is persistently revoked and no membership was granted.
+  if (typeof finalized === 'string' && finalized.startsWith('existing_company_conflict')) {
+    return conflictResult(finalized)
   }
 
   revalidatePath('/dashboard/team')

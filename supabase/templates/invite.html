@@ -1,0 +1,27 @@
+<!--
+  Drop-Inn team invitation email (source-controlled).
+
+  SSR ACCEPTANCE CONTRACT — do not change the action link lightly:
+
+  * The server passes a per-call redirectTo to inviteUserByEmail, equal to the
+    trusted callback URL:  https://<trusted-origin>/auth/confirm
+    (derived only from NEXT_PUBLIC_SITE_URL via trustedAppUrl, never headers).
+  * Supabase exposes that per-call value as the RedirectTo template variable.
+    The action link MUST use RedirectTo. Do NOT use the SiteURL variable (it
+    ignores the per-call redirect) or the ConfirmationURL variable (implicit
+    flow, which does NOT drive the server-side verifyOtp set-password flow at
+    /auth/confirm).
+  * redirectTo ALREADY includes /auth/confirm, so the link appends only the
+    query string. Do NOT add a second /auth/confirm after RedirectTo — that
+    would produce /auth/confirm/auth/confirm.
+
+  Resulting link: https://<trusted-origin>/auth/confirm?token_hash=...&type=invite
+-->
+<h2>You've been invited to Drop-Inn</h2>
+<p>An administrator has invited you to join their team on Drop-Inn.</p>
+<p>
+  <a href="{{ .RedirectTo }}?token_hash={{ .TokenHash }}&type=invite">
+    Accept the invitation and set your password
+  </a>
+</p>
+<p>If you did not expect this, you can ignore this email.</p>
