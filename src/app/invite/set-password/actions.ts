@@ -45,5 +45,24 @@ export async function setInvitePasswordAction(formData: FormData) {
     .eq('id', user.id)
   if (profileError) fail(profileError.message)
 
+  // Complete acceptance ONLY now that setup has succeeded: this creates the
+  // membership and sets accepted_at. Deferring the claim to this human POST
+  // (rather than the /auth/confirm GET) is what makes an email-scanner
+  // prefetch of the invite link harmless - a machine can never reach here.
+  // Both the RPC data AND error are inspected; only benign outcomes proceed.
+  // Retry-safe: updateUser, the profile update and claim are all idempotent,
+  // and the password is already set by this point, so if the claim fails the
+  // user can simply sign in again - /onboard re-runs the claim on next login.
+  const { data: claim, error: claimError } = await supabase.rpc('claim_pending_invitation')
+  if (claimError) {
+    fail('Your password is set, but joining the team did not finish. Please sign in to complete it.')
+  }
+  if (claim === 'expired') fail('This invitation has expired. Ask your admin to renew it.')
+  if (claim === 'revoked') fail('This invitation was revoked. Contact your admin.')
+  if (claim === 'conflict') {
+    fail('This account is already active in another company. Ask your admin about a transfer.')
+  }
+  // 'claimed' | 'already_member' | 'no_invitation' -> setup is complete.
+
   redirect('/dashboard')
 }

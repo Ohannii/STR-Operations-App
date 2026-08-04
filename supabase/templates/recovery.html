@@ -1,0 +1,23 @@
+<!--
+  Drop-Inn password-reset (recovery) email (source-controlled).
+
+  PREFETCH-SAFE CONTRACT - mirrors the invite template:
+  * The action link MUST use the RedirectTo template variable (the per-call
+    redirectTo the server passes to resetPasswordForEmail, equal to the trusted
+    <origin>/auth/recover). Do NOT use the SiteURL or ConfirmationURL variables.
+  * /auth/recover is a GET-inert interstitial, so an email scanner that GETs
+    this link cannot consume the one-time recovery token.
+  * redirectTo already ends in /auth/recover, so the link appends only the
+    query string - never a second /auth/recover.
+
+  Resulting link: https://<origin>/auth/recover?token_hash=...&type=recovery
+-->
+<h2>Reset your Drop-Inn password</h2>
+<p>We received a request to reset the password for your Drop-Inn account.</p>
+<p>
+  <a href="{{ .RedirectTo }}?token_hash={{ .TokenHash }}&type=recovery">
+    Set a new password
+  </a>
+</p>
+<p>If you did not request this, you can safely ignore this email.</p>
+<p>Kind regards,<br />The Drop-Inn team</p>

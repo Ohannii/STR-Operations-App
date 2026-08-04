@@ -13,3 +13,9 @@ Thumbs.db
 
 .vercel/
 .supabase/
+
+# Generated / machine-local artifacts (keep out of commits)
+*.tsbuildinfo
+_tmp_*
+scripts/verify-pr59-*.log
+.claude/settings.local.json
