@@ -37,6 +37,16 @@ export default async function SetPasswordPage({
         </div>
       ) : null}
       <form action={setInvitePasswordAction} className="space-y-4">
+        <Field label="Your name" required htmlFor="full_name">
+          <Input
+            id="full_name"
+            name="full_name"
+            type="text"
+            autoComplete="name"
+            required
+            maxLength={120}
+          />
+        </Field>
         <Field label="New password" required htmlFor="password">
           <Input
             id="password"
