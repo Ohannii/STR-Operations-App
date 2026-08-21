@@ -40,12 +40,12 @@ Preview and Production):
    (Keep the existing `/auth/confirm` entries. Do not change Site URL.)
 
 2. **Authentication -> Email Templates -> "Reset Password":**
-   - Subject: `Reset your Drop-Inn password`
-   - Body: identical to `supabase/templates/recovery.html`, i.e. the action link
-     MUST be:
+   - Subject: `Let's get you back in 🔑`
+   - Body: identical to `supabase/templates/recovery.html`. The action button
+     link MUST be:
      ```html
      <a href="{{ .RedirectTo }}?token_hash={{ .TokenHash }}&type=recovery">
-       Set a new password
+       Choose a new password
      </a>
      ```
    - Do **not** use `{{ .ConfirmationURL }}` or `{{ .SiteURL }}`.

@@ -252,7 +252,7 @@ content_path = "./supabase/templates/invite.html"
 # Keep the hosted Studio "Reset Password" template identical and allow-list the
 # <origin>/auth/recover redirect. See docs/PASSWORD_RECOVERY_CONTRACT.md.
 [auth.email.template.recovery]
-subject = "Reset your Drop-Inn password"
+subject = "Let's get you back in 🔑"
 content_path = "./supabase/templates/recovery.html"
 
 # Uncomment to customize notification email template
