@@ -51,4 +51,15 @@ describe('resolveProxyRedirect', () => {
     expect(resolveProxyRedirect(true, '/dashboard')).toBeNull()
     expect(resolveProxyRedirect(true, '/properties/abc-123')).toBeNull()
   })
+
+  it('never redirects an EXISTING signed-in session away from the invite/recovery flow', () => {
+    // A signed-in user (e.g. Nichole) who clicks an invite or reset link must
+    // still reach the acceptance pages so verifyOtp can switch the session to
+    // the invited/recovering user. These routes are neither protected nor auth
+    // pages, so the proxy must leave them alone in both auth states.
+    for (const p of ['/auth/confirm', '/auth/recover', '/invite/set-password', '/reset-password']) {
+      expect(resolveProxyRedirect(true, p)).toBeNull()
+      expect(resolveProxyRedirect(false, p)).toBeNull()
+    }
+  })
 })
