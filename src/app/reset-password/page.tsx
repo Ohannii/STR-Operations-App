@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
 import { AuthShell } from '@/components/auth-shell'
 import { Alert } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
+import { SubmitButton } from '@/components/ui/submit-button'
 import { Field, Input } from '@/components/ui/input'
 import { createClient } from '@/lib/supabase/server'
 import { setRecoveryPasswordAction } from './actions'
@@ -66,9 +66,9 @@ export default async function ResetPasswordPage({
             minLength={8}
           />
         </Field>
-        <Button type="submit" fullWidth>
+        <SubmitButton fullWidth pendingLabel="Saving…">
           Save password and continue
-        </Button>
+        </SubmitButton>
       </form>
     </AuthShell>
   )

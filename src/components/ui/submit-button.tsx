@@ -22,11 +22,13 @@ export function SubmitButton({
   pendingLabel = 'Working…',
   variant = 'primary',
   size = 'md',
+  fullWidth = false,
 }: {
   children: ReactNode
   pendingLabel?: string
   variant?: ButtonVariant
   size?: ButtonSize
+  fullWidth?: boolean
 }) {
   const { pending } = useFormStatus()
   return (
@@ -34,7 +36,7 @@ export function SubmitButton({
       type="submit"
       disabled={pending}
       aria-busy={pending}
-      className={buttonClasses(variant, size)}
+      className={buttonClasses(variant, size, fullWidth ? 'w-full' : undefined)}
     >
       {pending ? (
         <>
