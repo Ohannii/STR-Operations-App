@@ -1,0 +1,18 @@
+-- ============================================================================
+-- Column-scoped UPDATE grant: public.profiles.full_name
+-- ============================================================================
+-- Invited users set their display name during invite acceptance
+-- (src/app/invite/set-password/actions.ts updates profiles.full_name for their
+-- own row). RLS already restricts writes to a user's OWN row
+-- ("users update own profile": id = auth.uid(), migration 20260525120000), but
+-- PostgreSQL ALSO requires a column/table UPDATE privilege. The base grants
+-- gave `authenticated` SELECT only (20260525120000_table_grants.sql:62), with
+-- table-wide UPDATE deliberately deferred (line 81). At runtime this produced:
+--     permission denied for table profiles
+--
+-- Fix: grant UPDATE on ONLY the full_name column - never table-wide, and never
+-- on id / email / phone / locale / created_at / updated_at / deleted_at.
+-- Combined with the existing own-row RLS, an authenticated user can change only
+-- their OWN display name. `updated_at` is maintained by the BEFORE UPDATE
+-- trigger (set_updated_at) and needs no additional column grant.
+grant update (full_name) on public.profiles to authenticated;

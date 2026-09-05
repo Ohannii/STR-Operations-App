@@ -47,9 +47,15 @@ export async function setRecoveryPasswordAction(formData: FormData) {
       .from('profiles')
       .update({ full_name: fullName })
       .eq('id', user.id)
-    if (profileError) fail(profileError.message)
+    if (profileError) {
+      // Do not leak a raw DB error into the URL/UI; log it server-side.
+      console.error('[reset-password] profile update failed:', profileError)
+      fail('We could not save your name; please try again.')
+    }
   }
 
-  // No claim here - /onboard completes membership for a pending invitee.
+  // No invitation is claimed here. A recovering EXISTING member already has
+  // their membership; a pending invitee completes acceptance via the invite
+  // set-password flow, not recovery.
   redirect('/dashboard')
 }

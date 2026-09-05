@@ -43,26 +43,39 @@ export async function setInvitePasswordAction(formData: FormData) {
     .from('profiles')
     .update({ full_name: fullName })
     .eq('id', user.id)
-  if (profileError) fail(profileError.message)
+  if (profileError) {
+    // Never leak a raw DB error (e.g. "permission denied for table profiles")
+    // into the URL/UI. Log server-side and show a safe message. Membership is
+    // NOT claimed on this failure, so the invitation stays pending/inactive.
+    console.error('[invite/set-password] profile update failed:', profileError)
+    fail('We could not save your details. Please try again.')
+  }
 
-  // Complete acceptance ONLY now that setup has succeeded: this creates the
-  // membership and sets accepted_at. Deferring the claim to this human POST
-  // (rather than the /auth/confirm GET) is what makes an email-scanner
-  // prefetch of the invite link harmless - a machine can never reach here.
-  // Both the RPC data AND error are inspected; only benign outcomes proceed.
-  // Retry-safe: updateUser, the profile update and claim are all idempotent,
-  // and the password is already set by this point, so if the claim fails the
-  // user can simply sign in again - /onboard re-runs the claim on next login.
+  // Acceptance happens ONLY here, and ONLY after password + profile have both
+  // succeeded: this is the SOLE path that creates the membership / sets
+  // accepted_at. /auth/confirm (verify) and /onboard deliberately do NOT claim,
+  // so a mere authenticated session can never activate membership without
+  // completed setup.
   const { data: claim, error: claimError } = await supabase.rpc('claim_pending_invitation')
   if (claimError) {
-    fail('Your password is set, but joining the team did not finish. Please sign in to complete it.')
+    console.error('[invite/set-password] claim failed:', claimError)
+    fail('Your password is set, but joining the team did not finish. Please try again.')
   }
-  if (claim === 'expired') fail('This invitation has expired. Ask your admin to renew it.')
-  if (claim === 'revoked') fail('This invitation was revoked. Contact your admin.')
-  if (claim === 'conflict') {
-    fail('This account is already active in another company. Ask your admin about a transfer.')
+  // FAIL CLOSED: only 'claimed' or 'already_member' count as success. Every
+  // other outcome (no_invitation, expired, revoked, conflict, anything else)
+  // does NOT complete acceptance - no membership is granted.
+  if (claim !== 'claimed' && claim !== 'already_member') {
+    console.error('[invite/set-password] non-success claim outcome:', claim)
+    const msg =
+      claim === 'expired'
+        ? 'This invitation has expired. Ask your admin to renew it.'
+        : claim === 'revoked'
+          ? 'This invitation was revoked. Contact your admin.'
+          : claim === 'conflict'
+            ? 'This account is already active in another company. Ask your admin about a transfer.'
+            : 'We could not complete your invitation. Ask your admin to resend it.'
+    fail(msg)
   }
-  // 'claimed' | 'already_member' | 'no_invitation' -> setup is complete.
 
   redirect('/dashboard')
 }

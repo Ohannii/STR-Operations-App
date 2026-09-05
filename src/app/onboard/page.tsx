@@ -4,7 +4,6 @@ import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { getUserContext } from '@/lib/auth/get-user-context'
-import { createClient } from '@/lib/supabase/server'
 import { createCompanyAction } from './actions'
 
 /**
@@ -25,15 +24,13 @@ export default async function OnboardPage({
   if (!ctx) redirect('/login')
   if (ctx.company) redirect('/dashboard')
 
-  // PR-A GUARD (rev 2): if this email holds a pending invitation, claim it
-  // (idempotent, race-safe) and land in the EXISTING company. An invited user
-  // must never see the create-a-company form. Errors are non-fatal HERE only
-  // because the ACTION re-checks with full data+error inspection, and the
-  // database guard inside create_company_with_admin fails closed regardless.
-  const supabase = await createClient()
-  const { data: claim } = await supabase.rpc('claim_pending_invitation')
-  if (claim === 'claimed' || claim === 'already_member') redirect('/dashboard')
-
+  // SECURITY (rev 3 - fail-open fix): /onboard must NOT claim a pending
+  // invitation. Claiming here activated membership from a mere authenticated
+  // session, BEFORE the invited user completed password + profile setup. Invite
+  // acceptance now happens ONLY in the set-password action, after setup
+  // succeeds. A pending invitee who lands here cannot create a company either
+  // (create_company_with_admin raises invitation_pending) and is routed on to
+  // /invite/set-password by the action.
   const { error } = await searchParams
   const hasError = error !== undefined
   const displayName = ctx.profile?.full_name ?? ctx.user.email ?? 'there'

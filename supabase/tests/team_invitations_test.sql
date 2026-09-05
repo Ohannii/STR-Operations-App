@@ -22,7 +22,7 @@
 -- ============================================================================
 
 begin;
-select plan(9);
+select plan(11);
 
 -- ---- fixtures (fixed UUIDs; rolled back at the end) -------------------------
 insert into auth.users (id, email) values
@@ -68,6 +68,14 @@ select ok(
            where tablename = 'invitations'
              and policyname = 'admins read company invitations'),
   'policy "admins read company invitations" exists (migration-owned, not recreated)');
+
+-- ---- profiles.full_name column grant (invite name capture) ------------------
+select ok(
+  has_column_privilege('authenticated', 'public.profiles', 'full_name', 'UPDATE'),
+  'authenticated may UPDATE profiles.full_name (invite name capture works)');
+select ok(
+  NOT has_column_privilege('authenticated', 'public.profiles', 'email', 'UPDATE'),
+  'authenticated may NOT UPDATE profiles.email (grant is column-scoped, not table-wide)');
 
 -- ---- item 2: one active company per user, enforced at the database ----------
 select throws_ok(
