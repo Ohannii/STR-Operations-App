@@ -56,6 +56,14 @@ export default async function LoginPage({
             autoComplete="current-password"
           />
         </Field>
+        <div className="text-right">
+          <Link
+            href="/forgot-password"
+            className="text-sm font-medium text-slate-600 hover:underline"
+          >
+            Forgot password?
+          </Link>
+        </div>
         <Button type="submit" fullWidth>
           Sign in
         </Button>

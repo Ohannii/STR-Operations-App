@@ -77,40 +77,12 @@ export async function createCompanyAction(formData: FormData) {
     redirect('/dashboard')
   }
 
-  // PR-A GUARD (rev 2): an authenticated email with a PENDING invitation
-  // must never create a second company. Try the idempotent claim first; BOTH
-  // the RPC data AND error are inspected — ONLY the literal 'no_invitation'
-  // may proceed to company creation. Any error or any other typed result
-  // (expired/revoked/conflict/unknown) blocks creation with a safe, retryable
-  // message. The database itself backstops this: create_company_with_admin
-  // raises 'invitation_pending' / 'already_member' regardless of app checks.
-  const { data: claim, error: claimError } = await supabase.rpc('claim_pending_invitation')
-  if (claimError) {
-    console.error('[onboard] claim_pending_invitation errored; blocking creation:', claimError)
-    redirect(
-      `/onboard?error=${encodeURIComponent(
-        'We could not check your invitations just now. Please try again — do not create a new company if you were invited to one.'
-      )}`
-    )
-  }
-  if (claim === 'claimed' || claim === 'already_member') {
-    console.log('[onboard] pending invitation claimed instead of creating a company')
-    redirect('/dashboard')
-  }
-  if (claim !== 'no_invitation') {
-    // expired / revoked / conflict / anything unexpected: never proceed.
-    console.error('[onboard] claim returned non-proceed result; blocking creation:', claim)
-    const msg =
-      claim === 'expired'
-        ? 'Your invitation has expired. Ask your admin to resend it instead of creating a company.'
-        : claim === 'revoked'
-          ? 'Your invitation was revoked. Contact your admin instead of creating a company.'
-          : claim === 'conflict'
-            ? 'Your account is already linked to another company. Contact your admin.'
-            : 'An invitation exists for this account and must be resolved first. Contact your admin.'
-    redirect(`/onboard?error=${encodeURIComponent(msg)}`)
-  }
-
+  // SECURITY (rev 3 - fail-open fix): do NOT claim a pending invitation here.
+  // Claiming from the onboarding path activated membership without completed
+  // password + profile setup. Invite acceptance happens ONLY in the
+  // set-password action. The database still backstops company creation:
+  // create_company_with_admin raises 'invitation_pending' for an invited user,
+  // which we route to /invite/set-password below.
   console.log('[onboard] calling create_company_with_admin RPC')
   const { data: newCompanyId, error: rpcError } = await supabase.rpc(
     'create_company_with_admin',
@@ -118,9 +90,20 @@ export async function createCompanyAction(formData: FormData) {
   )
 
   if (rpcError) {
-    console.error('[onboard] RPC error:', rpcError)
-    const message = rpcError.message || rpcError.code || 'Unknown RPC error'
-    redirect(`/onboard?error=${encodeURIComponent(`Could not create company: ${message}`)}`)
+    console.error('[onboard] create_company_with_admin error:', rpcError)
+    const raw = rpcError.message ?? ''
+    if (raw.includes('invitation_pending')) {
+      // Invited user: they must COMPLETE their invitation (password + profile),
+      // not create a company. Route them to the set-password flow.
+      redirect('/invite/set-password')
+    }
+    if (raw.includes('already_member')) {
+      redirect('/dashboard')
+    }
+    // Safe, generic message; the raw DB error stays in server logs only.
+    redirect(
+      `/onboard?error=${encodeURIComponent('Could not create your company. Please try again.')}`,
+    )
   }
 
   console.log('[onboard] RPC returned new company id:', newCompanyId)

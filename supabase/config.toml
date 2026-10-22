@@ -247,6 +247,14 @@ otp_expiry = 3600
 subject = "You've been invited to Drop-Inn"
 content_path = "./supabase/templates/invite.html"
 
+# Password-reset (recovery) email - source-controlled and prefetch-safe. Routes
+# the recovery token hash through the /auth/recover GET-inert interstitial.
+# Keep the hosted Studio "Reset Password" template identical and allow-list the
+# <origin>/auth/recover redirect. See docs/PASSWORD_RECOVERY_CONTRACT.md.
+[auth.email.template.recovery]
+subject = "Let's get you back in 🔑"
+content_path = "./supabase/templates/recovery.html"
+
 # Uncomment to customize notification email template
 # [auth.email.notification.password_changed]
 # enabled = true
