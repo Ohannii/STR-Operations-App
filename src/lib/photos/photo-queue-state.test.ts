@@ -204,7 +204,19 @@ describe('P0 fresh-upload regression: release vs staging lease', () => {
       note: 'old caption',
     })
     const patch = releaseDecision(staged, 'new caption')!
-    expect(Object.keys(patch).sort()).toEqual(['leaseUntil', 'note', 'state'])
+    // Caption rev 4: the caption's version + identity travel WITH the caption
+    // (they are caption metadata, never upload-stage facts).
+    expect(Object.keys(patch).sort()).toEqual([
+      'leaseUntil',
+      'note',
+      'noteEditId',
+      'noteEditedAt',
+      'state',
+    ])
+    // The invariant under test, stated explicitly: no staging/completion field.
+    for (const k of ['bytesStaged', 'masterPath', 'thumbPath', 'retentionClass', 'intentRequested']) {
+      expect(patch).not.toHaveProperty(k)
+    }
     // Applied to the LATEST row, bytesStaged/paths survive by construction.
     expect({ ...staged, ...patch }).toMatchObject({
       bytesStaged: true,

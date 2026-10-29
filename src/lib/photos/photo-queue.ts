@@ -38,9 +38,11 @@ import {
   MAX_AUTO_RETRY_ATTEMPTS,
   msUntilNextRetry,
   nextDiscardable,
+  noteEditDecision,
   reclaimDecision,
   reclaimableRecords,
   releaseDecision,
+  type NoteEdit,
   stageFailureDecision,
   stageFinalizeDecision,
   ATTACH_BATCH_SIZE,
@@ -52,6 +54,18 @@ import {
   type QueueSummary,
   type QueuedPhotoMeta,
 } from '@/lib/photos/photo-queue-state'
+import {
+  bumpHighWater,
+  clearNoteShadowIfIdentity,
+  readNoteShadow,
+  removeNoteShadow,
+  removeHighWater,
+  clearHighWaterIfSettled,
+  readNoteShadows,
+  shadowSatisfied,
+  shadowScopeMatches,
+} from '@/lib/photos/capture-note-shadow'
+import { captionTooLong } from '@/lib/photos/caption-canonical'
 
 /**
  * Sequential upload worker for the durable photo queue (Outcome 3).
@@ -286,21 +300,63 @@ const RELEASE_CONCURRENCY = 5
  *  Returns the ids that could NOT be confirmed released within the budget so
  *  callers can surface an honest recovery notice instead of a silent partial
  *  release. Total latency is bounded by RELEASE_TOTAL_BUDGET_MS regardless
- *  of photo count. */
+ *  of photo count.
+ *
+ *  CAPTION FAIL-CLOSED (rev 3, 23 Oct): caption shadows are reconciled FIRST
+ *  and a photo whose newer shadow could not be PROVEN into its record is NOT
+ *  released — it stays saved_local, keeps its shadow and is reported in
+ *  failedIds. `editsById` carries the capture keeper's exact release EDIT
+ *  (version + identity, already shadowed) for each caption in `notesById`.
+ *  If a release caption cannot be proven newer than the durable one, that
+ *  photo is NOT released and is reported (rev 4, fail closed).
+ *
+ *  EXACT INTENDED COVERAGE (rev 8): when `notesById` is supplied, its keys ARE
+ *  the handoff. failedIds then covers EXACTLY every intended photo not proven
+ *  handed off — including one missing from the device queue, and every one
+ *  when the queue cannot be read — and unrelated saved_local records of the
+ *  same pack are neither released nor reported. Without `notesById` (the
+ *  PackQueuePanel recovery) every saved_local record of the pack is released
+ *  as before. */
 export async function releaseQueued(
   packId: string,
   notesById?: Record<string, string | null>,
+  editsById?: Record<string, NoteEdit>,
 ): Promise<{ failedIds: string[] }> {
+  const intended: string[] | null = notesById ? Object.keys(notesById) : null
+  let captionBlocked: Set<string>
+  try {
+    captionBlocked = new Set((await reconcileNoteShadows(packId)).blocked)
+  } catch (err) {
+    // reconcileNoteShadows is per-shadow exception-isolated; reaching here
+    // means storage itself is unusable — release NOTHING (fail closed).
+    dbg('release:reconcile-failed', {
+      detail: err instanceof Error ? err.message : 'reconcile failed',
+    })
+    if (intended) return { failedIds: intended }
+    let ids: string[] = []
+    try {
+      ids = (await listQueuedForPack(packId)).map((r) => r.id)
+    } catch {
+      // storage unreadable: the panel's storageError surface owns this state
+    }
+    return { failedIds: ids }
+  }
   let records: QueuedPhotoRecord[]
   try {
     records = await listQueuedForPack(packId)
   } catch (err) {
-    // Storage unreadable: nothing was released; the panel's storageError
-    // surface owns this state.
+    // Storage unreadable: nothing was released. A caller handing off specific
+    // photos gets ALL of them back as failed (never a silent []); the
+    // recovery panel's storageError surface owns the no-map case.
     dbg('release:list-failed', {
       detail: err instanceof Error ? err.message : 'list failed',
     })
-    return { failedIds: [] }
+    return { failedIds: intended ?? [] }
+  }
+  if (intended) {
+    // Only THIS handoff's photos: never release or report unrelated records.
+    const wanted = new Set(intended)
+    records = records.filter((r) => wanted.has(r.id))
   }
 
   // A record is RESOLVED when its claim settles: released, or correctly
@@ -319,12 +375,34 @@ export async function releaseQueued(
   // harmless by construction (releaseDecision is atomic and only ever moves
   // saved_local → queued, which the idempotent drain then attaches).
   const budgetClosed = { current: false }
+  // Fallback stamp for callers that pass notes without keeper edits;
+  // releaseDecision forces it above the record's current version.
+  const releaseStamp = Date.now()
   const work = mapBounded(records, RELEASE_CONCURRENCY, async (r) => {
     if (budgetClosed.current) return // skipped -> unresolved -> failedIds
+    // FAIL CLOSED: an unproven newer caption shadow blocks THIS photo.
+    if (captionBlocked.has(r.id)) return // unresolved -> failedIds
     try {
-      await claimQueuedPhoto(r.id, (cur) =>
-        releaseDecision(cur, notesById ? notesById[r.id] : undefined),
+      const note = notesById ? notesById[r.id] : undefined
+      const claimed = await claimQueuedPhoto(r.id, (cur) =>
+        releaseDecision(cur, note, editsById?.[r.id] ?? releaseStamp),
       )
+      if (!claimed && note !== undefined) {
+        // A null claim is either "already released / removed" (correct) or
+        // "the release caption could not be proven newer" (fail closed).
+        // Re-read to tell them apart; never count the latter as resolved.
+        const fresh = await getQueuedPhoto(r.id)
+        if (!fresh) {
+          // Vanished between listing and claim: NOT proven handed off (rev 8)
+          // — absence is never treated as success here.
+          dbg('release:record-vanished', { photoId: r.id })
+          return // unresolved -> failedIds
+        }
+        if (fresh.state === 'saved_local' && !fresh.discardRequested) {
+          dbg('release:caption-order-unproven', { photoId: r.id })
+          return // unresolved -> failedIds, record + shadow kept
+        }
+      }
       resolved.add(r.id)
     } catch (err) {
       dbg('release:failed', {
@@ -342,7 +420,9 @@ export async function releaseQueued(
     })
   }
 
-  const failedIds = records.map((r) => r.id).filter((id) => !resolved.has(id))
+  // With an intended set, an intended id that never appeared in the listing
+  // is never resolved, so it is reported (rev 8). Object.keys is unique.
+  const failedIds = (intended ?? records.map((r) => r.id)).filter((id) => !resolved.has(id))
   try {
     await refreshQueue(packId)
   } catch {
@@ -350,6 +430,137 @@ export async function releaseQueued(
   }
   void drainQueue(packId)
   return { failedIds }
+}
+
+/**
+ * CAPTION DURABILITY (P0, 22 Oct 2026; rev 4). Persist a capture-screen
+ * caption edit into the photo's durable IndexedDB record. Atomic (CAS claim)
+ * and strictly-newer-wins (see noteEditDecision). Returns true ONLY when the
+ * record provably holds EXACTLY this edit afterwards (identity). The shadow
+ * is cleared only if it is still this same edit — a stale completion can
+ * never clear a newer shadow.
+ */
+export async function updateQueuedNote(
+  packId: string,
+  photoId: string,
+  note: string | null,
+  editedAtMs: number,
+  editId: string,
+): Promise<boolean> {
+  try {
+    const updated = await claimQueuedPhoto(photoId, (cur) =>
+      cur.packId === packId ? noteEditDecision(cur, note, editedAtMs, editId) : null,
+    )
+    if (updated !== null && shadowSatisfied(updated, { note, v: editedAtMs, editId })) {
+      clearNoteShadowIfIdentity(packId, photoId, editId)
+      return true
+    }
+    return false
+  } catch (err) {
+    dbg('note:persist-failed', {
+      photoId,
+      detail: err instanceof Error ? err.message : 'note persist failed',
+    })
+    return false
+  }
+}
+
+/**
+ * CAPTION SHADOW RECONCILE (rev 4 — IDENTITY PROOF, FAIL CLOSED). Fold every
+ * synchronously-persisted capture caption shadow for this pack into its
+ * photo's IndexedDB record. Runs at the top of drainQueue and releaseQueued.
+ *
+ * A shadow is cleared ONLY when the durable record holds EXACTLY its edit
+ * (identity + version + text). Returns the photo ids whose shadow could NOT
+ * be proven durable — callers must not carry those photos' captions forward.
+ *
+ *   - durable record already at an equal-or-higher version with a DIFFERENT
+ *     identity: order cannot be proven -> shadow KEPT, photo BLOCKED, and the
+ *     persisted high-water mark is raised so the inspector's NEXT edit
+ *     provably outranks it (recovery by a deliberate human edit, never by
+ *     discarding text);
+ *   - record missing: shadow KEPT (absence is not proof), nothing blocked;
+ *   - scope mismatch: never applied, KEPT, not blocking.
+ */
+export async function reconcileNoteShadows(
+  packId: string,
+): Promise<{ blocked: string[] }> {
+  const blocked: string[] = []
+  for (const s of readNoteShadows(packId)) {
+    try {
+      let rec = await getQueuedPhoto(s.photoId)
+      if (!rec) continue
+      if (!shadowScopeMatches(rec, s, packId)) continue
+      if (!shadowSatisfied(rec, s)) {
+        await claimQueuedPhoto(s.photoId, (cur) =>
+          shadowScopeMatches(cur, s, packId)
+            ? noteEditDecision(cur, s.note, s.v, s.editId)
+            : null,
+        )
+        rec = await getQueuedPhoto(s.photoId) // VERIFY — never trust the claim's null
+      }
+      if (rec && shadowSatisfied(rec, s)) {
+        clearNoteShadowIfIdentity(packId, s.photoId, s.editId)
+      } else {
+        if (rec && (rec.noteEditedAt ?? 0) >= s.v) {
+          bumpHighWater(packId, s.photoId, rec.noteEditedAt ?? 0)
+        }
+        blocked.push(s.photoId) // not provably durable: fail closed
+      }
+    } catch (err) {
+      dbg('note:shadow-reconcile-failed', {
+        photoId: s.photoId,
+        detail: err instanceof Error ? err.message : 'shadow reconcile failed',
+      })
+      blocked.push(s.photoId) // keep the shadow: it is still the only durable copy
+    }
+  }
+  return { blocked }
+}
+
+/** Refuse — never truncate — an over-limit caption at the attach boundary. */
+export function assertAttachCaptionWithinLimit(note: string | null | undefined): void {
+  if (captionTooLong(note)) {
+    throw new Error('Caption is longer than 2,000 characters — shorten it to attach this photo')
+  }
+}
+
+/**
+ * ATTACH-BOUNDARY CAPTION GATE (rev 4). Called by BOTH attach paths right
+ * after the worker claims a record and BEFORE the caption is sent. If the
+ * photo's current shadow is not exactly what the record holds, it is applied
+ * under the worker's OWN lease — only when strictly newer — and verified by
+ * identity. Otherwise this THROWS: the attach fails closed into the ordinary
+ * failed/backoff path with the shadow kept.
+ */
+export async function captionGateForAttach(
+  packId: string,
+  rec: QueuedPhotoRecord,
+): Promise<QueuedPhotoRecord> {
+  const s = readNoteShadow(packId, rec.id)
+  if (!s || !shadowScopeMatches(rec, s, packId) || shadowSatisfied(rec, s)) return rec
+  const lease = rec.leaseUntil ?? null
+  const updated = await claimQueuedPhoto(rec.id, (cur) =>
+    (cur.leaseUntil ?? null) === lease &&
+    cur.state === rec.state &&
+    !cur.discardRequested &&
+    s.v > (cur.noteEditedAt ?? 0)
+      ? { note: s.note, noteEditedAt: s.v, noteEditId: s.editId }
+      : null,
+  )
+  // A null claim proves nothing either way: re-read and VERIFY identity.
+  const proven =
+    updated ??
+    (await getQueuedPhoto(rec.id).then((fresh) =>
+      fresh && (fresh.leaseUntil ?? null) === lease && fresh.state === rec.state ? fresh : null,
+    ))
+  if (!proven || !shadowSatisfied(proven, s)) {
+    if (proven && (proven.noteEditedAt ?? 0) >= s.v) {
+      bumpHighWater(packId, rec.id, proven.noteEditedAt ?? 0)
+    }
+    throw new Error('Caption changed on this device and is not saved yet — retrying')
+  }
+  return proven
 }
 
 /** Explicit "Try again": reset failed records so the worker picks them up
@@ -529,6 +740,9 @@ async function discardOne(record: QueuedPhotoRecord): Promise<void> {
   // never mistake this deletion for an attachment.
   recordDiscarded(record.packId, record.id)
   await deleteQueuedPhoto(record.id)
+  // The inspector removed this photo: its caption shadow is moot.
+  removeNoteShadow(record.packId, record.id)
+  removeHighWater(record.packId, record.id)
   await refreshQueue(record.packId)
 }
 
@@ -696,10 +910,17 @@ async function uploadOne(picked: QueuedPhotoRecord): Promise<void> {
 
   // Atomic phase advance: refuses if ownership was lost (e.g. a discard was
   // requested since the upload claim). The lease renews with the phase.
-  const owned = await claimQueuedPhoto(record.id, (r) =>
+  const claimedForAttach = await claimQueuedPhoto(record.id, (r) =>
     claimForAttachDecision(r, Date.now()),
   )
-  if (!owned) return
+  if (!claimedForAttach) return
+  // CAPTION GATE (rev 3): the newest on-device caption is applied and
+  // PROVEN into this record before it is sent — or this attach fails closed.
+  const owned = await captionGateForAttach(record.packId, claimedForAttach)
+  // LENGTH LIMIT (rev 5): an over-limit caption is REFUSED before it is sent
+  // — never truncated. Throwing routes the record into the ordinary
+  // failed/backoff path: the photo and its full caption stay on the device.
+  assertAttachCaptionWithinLimit(owned.note)
   packCapture.mark(record.packId, record.id, 'attaching')
   await refreshQueue(record.packId)
   // BOUNDARY PROOF: both storage paths must be non-null strings before the
@@ -728,6 +949,10 @@ async function uploadOne(picked: QueuedPhotoRecord): Promise<void> {
 
   // ONLY now are the device bytes redundant.
   await deleteQueuedPhoto(record.id)
+  // AUTHORITATIVE confirmation: the server holds EXACTLY the caption edit
+  // this attach carried. Only a shadow with that same identity is spent.
+  clearNoteShadowIfIdentity(record.packId, record.id, owned.noteEditId)
+  clearHighWaterIfSettled(record.packId, record.id, owned.noteEditedAt ?? 0)
   // The server has confirmed. This is the call whose absence stuck the banner
   // and the Submit button.
   packCapture.mark(record.packId, record.id, 'saved')
@@ -828,10 +1053,14 @@ async function batchAttachStaged(
     // as an unhandled rejection. Now one candidate's storage failure books
     // its own retry and the rest of the wave proceeds.
     try {
-      const c = await claimQueuedPhoto(r.id, (cur) =>
+      const claimedForBatch = await claimQueuedPhoto(r.id, (cur) =>
         claimForUploadDecision(cur, Date.now()),
       )
-      if (!c) continue
+      if (!claimedForBatch) continue
+      // CAPTION GATE (rev 3): throws (-> this candidate's retry, shadow kept)
+      // when a newer on-device caption cannot be proven into the record.
+      const c = await captionGateForAttach(packId, claimedForBatch)
+      assertAttachCaptionWithinLimit(c.note) // refuse, never truncate (rev 5)
       const paths = provenAttachPaths(c.masterPath ?? null, c.thumbPath ?? null)
       if (!paths) {
         // Staged facts vanished between pick and claim: hand back to the slow
@@ -889,6 +1118,9 @@ async function batchAttachStaged(
     // already_completed replay resolves it — never an escaped rejection.
     try {
       await deleteQueuedPhoto(id)
+      // AUTHORITATIVE confirmation of the exact caption edit this attach carried.
+      clearNoteShadowIfIdentity(packId, id, byRec.get(id)?.noteEditId)
+      clearHighWaterIfSettled(packId, id, byRec.get(id)?.noteEditedAt ?? 0)
       packCapture.mark(packId, id, 'saved')
       setState(packId, { serverRefreshNeeded: true })
     } catch (err) {
@@ -945,6 +1177,10 @@ export async function drainQueue(packId: string): Promise<void> {
   clearRetryWake(packId)
   setState(packId, { draining: true })
   try {
+    // CAPTION SHADOWS FIRST (P0 blocker review, 22 Oct 2026): fold any
+    // synchronously-persisted capture caption shadows into their IndexedDB
+    // records before any upload/attach work can carry a caption forward.
+    await reconcileNoteShadows(packId)
     // RECLAIM STRANDED WORK FIRST. Records left in `uploading`/`attaching`
     // by a killed page were previously invisible to every picker and stalled
     // forever while the UI said "Uploading N photos…". Reclaim ONLY records

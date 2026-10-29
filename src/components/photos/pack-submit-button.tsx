@@ -1,15 +1,11 @@
 'use client'
 
 import { useEffect } from 'react'
-import { AlertTriangle, Camera, Check, CheckCircle2, Loader2, Trash2 } from 'lucide-react'
-import {
-  discardEvidencePackAction,
-  submitEvidencePackAction,
-} from '@/app/properties/[id]/packs/actions'
+import { AlertTriangle, Camera, CheckCircle2, Loader2, Trash2 } from 'lucide-react'
+import { discardEvidencePackAction } from '@/app/properties/[id]/packs/actions'
 import { packCapture, usePackCapture } from '@/lib/photos/pack-capture-store'
 import { usePackQueue } from '@/lib/photos/photo-queue'
 import {
-  canSubmitPack,
   describePackStatus,
   shouldSuppressPackStatusBanner,
   type PackStatusTone,
@@ -134,87 +130,16 @@ export function PackStatusBanner({
   )
 }
 
-/**
- * The ONE guarded submit control. The server's finalise RPC is authoritative;
- * this button simply avoids sending a request that is certain to be rejected.
- * `showStatus` keeps the inline helper line for surfaces that don't render
- * the banner (e.g. the pack report page).
+/*
+ * PackSubmitButton was REMOVED here (P0 caption durability, 22 Oct 2026).
+ * It posted the caption-blind submitEvidencePackAction — the Unit 377
+ * incident path. Pre-arrival submission now lives exclusively on the pack
+ * report (PackCaptionSubmit), which saves the full caption manifest and
+ * finalises in ONE server transaction. The property page links there with
+ * "Review captions and submit". The server action and the database grant on
+ * finalize_prearrival_pack are both closed to match, so no revival of this
+ * component could bypass caption review.
  */
-export function PackSubmitButton({
-  propertyId,
-  packId,
-  linkedPhotoCount,
-  serverUnresolvedCount = 0,
-  showStatus = true,
-}: {
-  propertyId: string
-  packId: string
-  /** Server-rendered count of active, non-deleted linked photos. */
-  linkedPhotoCount: number
-  /**
-   * Server-side unresolved upload intents (authoritative, cross-device).
-   * `null` = UNKNOWN (could not be read) → fail closed.
-   */
-  serverUnresolvedCount?: number | null
-  showStatus?: boolean
-}) {
-  const { intended, blocking, pending, failed, queuedLocal } = useIntended(
-    packId,
-    linkedPhotoCount,
-    serverUnresolvedCount,
-  )
-  const status = describePackStatus({
-    linked: linkedPhotoCount,
-    intended,
-    pending,
-    failed,
-    serverUnresolved: serverUnresolvedCount,
-    queuedLocal,
-  })
-  const canSubmit =
-    !blocking &&
-    canSubmitPack({
-      linked: linkedPhotoCount,
-      intended,
-      pending,
-      failed,
-      serverUnresolved: serverUnresolvedCount,
-      queuedLocal,
-    })
-
-  return (
-    <div className="flex w-full flex-col items-stretch gap-1 sm:w-auto sm:items-start">
-      <form action={submitEvidencePackAction} className="contents">
-        <input type="hidden" name="property_id" value={propertyId} />
-        <input type="hidden" name="pack_id" value={packId} />
-        <input type="hidden" name="expected_count" value={String(intended)} />
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          aria-disabled={!canSubmit}
-          title={canSubmit ? undefined : status.text}
-          className="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 active:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2 sm:w-auto"
-        >
-          <Check size={15} aria-hidden />
-          {canSubmit ? `Submit pack (${linkedPhotoCount})` : 'Submit pack'}
-        </button>
-      </form>
-      {showStatus ? (
-        <span
-          className={
-            status.tone === 'ready'
-              ? 'text-[11px] text-emerald-700'
-              : status.tone === 'empty'
-                ? 'text-[11px] text-slate-500'
-                : 'text-[11px] text-amber-700'
-          }
-        >
-          {status.text}
-        </span>
-      ) : null}
-    </div>
-  )
-}
 
 /**
  * Discarding a draft is destructive and deliberately separated from the

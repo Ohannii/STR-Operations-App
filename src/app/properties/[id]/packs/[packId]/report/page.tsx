@@ -1,8 +1,14 @@
 import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
-import { ArrowLeft, Camera, FileText, Trash2 } from 'lucide-react'
+import { ArrowLeft, Camera, FileText } from 'lucide-react'
 import { SharePdfButton } from '@/components/reports/share-pdf-button'
-import { PackSubmitButton } from '@/components/photos/pack-submit-button'
+import {
+  PackCaptionField,
+  PackCaptionProvider,
+  PackCaptionStatusChip,
+  PackCaptionSubmit,
+  SubmittedCaptionRecovery,
+} from '@/components/photos/pack-caption-editor'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import {
   THUMB_TTL_SECONDS,
@@ -10,10 +16,6 @@ import {
 } from '@/lib/photos/signed-urls'
 import { createClient } from '@/lib/supabase/server'
 import { formatDateSAST, formatDateTimeSAST } from '@/lib/ui/datetime'
-import {
-  softDeleteEvidencePhoto,
-  updatePhotoNote,
-} from '../../../photos/actions'
 
 /**
  * GET /properties/[id]/packs/[packId]/report
@@ -179,7 +181,14 @@ export default async function PackReportPage({
 
   const shareTitle = pack.title ?? 'Pre-arrival Evidence Pack'
 
-  return (
+  // Caption durability (P0, 22 Oct 2026): the editor seeds from these
+  // server-confirmed captions and restores any unspent device drafts over
+  // them. See PackCaptionProvider for the full contract.
+  const serverNotes: Record<string, string | null> = Object.fromEntries(
+    photoRows.map((p) => [p.id, p.notes]),
+  )
+
+  const page = (
     <div className="min-h-screen bg-white text-slate-900 print:bg-white overflow-x-clip">
       <div className="print:hidden sticky top-0 z-10 bg-white/95 backdrop-blur border-b border-slate-200">
         <div className="max-w-4xl mx-auto px-6 py-3 flex items-center justify-between gap-3 flex-wrap">
@@ -191,13 +200,10 @@ export default async function PackReportPage({
             Back to apartment
           </Link>
           <div className="flex items-center gap-2 flex-wrap">
-            {isDraft ? (
-              <PackSubmitButton
-                propertyId={property.id}
-                packId={pack.id}
-                linkedPhotoCount={photos?.length ?? 0}
-              />
-            ) : null}
+            {/* The report page has ONE submit control (the Save-captions-and-
+                submit section at the bottom). The header shows the truthful
+                caption sync state instead of a second, caption-blind Submit. */}
+            {isDraft ? <PackCaptionStatusChip /> : null}
             {!isDraft ? (
               <SharePdfButton
                 prepareUrl={`/properties/${property.id}/packs/${pack.id}/report/prepare`}
@@ -246,10 +252,12 @@ export default async function PackReportPage({
           <div className="border border-t-0 border-amber-300 bg-amber-50 px-6 py-3 print:hidden">
             <p className="text-sm text-amber-900">
               <span className="font-semibold">This pack is still a draft.</span>{' '}
-              Edit captions below, remove photos that shouldn&rsquo;t be in the
-              pack, then return to the apartment and tap{' '}
-              <span className="font-semibold">Submit pack</span>. Submitted packs
-              become an immutable record.
+              Edit captions below, then tap{' '}
+              <span className="font-semibold">Save captions and submit pack</span>{' '}
+              at the bottom of this page. Submitted packs become an immutable
+              record. Photos can&rsquo;t be removed from a pre-arrival pack one by
+              one &mdash; if the wrong photos are in it, discard the draft from the
+              property page and start a new pack.
             </p>
           </div>
         ) : null}
@@ -399,58 +407,21 @@ export default async function PackReportPage({
                     </div>
                     <div className="px-5 py-3 text-sm">
                       {isDraft ? (
-                        // Pack is still a draft — inline caption editor + delete.
+                        // Pack is still a draft — inline caption editor.
                         // Submitted packs render the caption as static text below.
                         // The print:hidden wrapper hides the editor controls when
                         // printing so saved PDFs show the rendered caption only.
-                        <div className="print:hidden">
-                          <form
-                            action={updatePhotoNote}
-                            className="flex flex-col gap-2"
-                          >
-                            <input
-                              type="hidden"
-                              name="property_id"
-                              value={propertyId}
-                            />
-                            <input
-                              type="hidden"
-                              name="photo_id"
-                              value={photo.id}
-                            />
-                            <input
-                              type="hidden"
-                              name="return_to"
-                              value={`/properties/${propertyId}/packs/${packId}/report`}
-                            />
-                            <label
-                              htmlFor={`note-${photo.id}`}
-                              className="text-[10px] font-semibold uppercase tracking-wider text-slate-500"
-                            >
-                              Caption (optional)
-                            </label>
-                            <textarea
-                              id={`note-${photo.id}`}
-                              name="note"
-                              rows={2}
-                              maxLength={2000}
-                              defaultValue={photo.notes ?? ''}
-                              placeholder="What is this photo of? — optional"
-                              className="w-full px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 border border-slate-300 rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-slate-900 resize-y"
-                            />
-                            <div className="flex items-center justify-between gap-2">
-                              <p className="text-xs text-slate-500">
-                                Captured {formatDateTime(capturedDisplay)} ·
-                                Uploaded by {uploader}
-                              </p>
-                              <button
-                                type="submit"
-                                className="inline-flex items-center gap-1 rounded bg-slate-900 text-white px-3 py-1.5 text-xs font-semibold hover:bg-slate-800 active:bg-slate-950 transition"
-                              >
-                                Save caption
-                              </button>
-                            </div>
-                          </form>
+                        <div className="print:hidden flex flex-col gap-2">
+                          {/* P0 caption durability: no per-photo "Save caption"
+                              button. Every keystroke is stored on the device
+                              and autosaved; the one submit action at the
+                              bottom saves ALL captions and finalises in a
+                              single server transaction. */}
+                          <PackCaptionField photoId={photo.id} />
+                          <p className="text-xs text-slate-500">
+                            Captured {formatDateTime(capturedDisplay)} ·
+                            Uploaded by {uploader}
+                          </p>
                         </div>
                       ) : null}
                       {/* Rendered caption — visible on both screen and
@@ -470,37 +441,10 @@ export default async function PackReportPage({
                         </p>
                       </div>
 
-                      {/* Soft-delete control — only when draft. Once
-                          submitted, the pack is an immutable record. */}
-                      {isDraft ? (
-                        <form
-                          action={softDeleteEvidencePhoto}
-                          className="mt-3 print:hidden"
-                        >
-                          <input
-                            type="hidden"
-                            name="property_id"
-                            value={propertyId}
-                          />
-                          <input
-                            type="hidden"
-                            name="photo_id"
-                            value={photo.id}
-                          />
-                          <input
-                            type="hidden"
-                            name="return_to"
-                            value={`/properties/${propertyId}/packs/${packId}/report`}
-                          />
-                          <button
-                            type="submit"
-                            className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-red-600 transition"
-                          >
-                            <Trash2 size={11} aria-hidden />
-                            Remove this photo from the pack
-                          </button>
-                        </form>
-                      ) : null}
+                      {/* rev 6: NO per-photo removal control. The database
+                          refuses soft-deleting a pre-arrival pack photo (the
+                          pack guard), so the old form could only ever fail.
+                          A wrong pack is discarded as a whole instead. */}
                     </div>
                   </li>
                 )
@@ -520,16 +464,14 @@ export default async function PackReportPage({
               Ready to submit?
             </h3>
             <p className="text-sm text-emerald-800 mt-1 leading-relaxed">
-              Submitted packs move into the apartment&rsquo;s history and become
-              an immutable record. After submit, a new pre-arrival pack can be
-              started for the next turnover.
+              Submitting saves every caption on this page and finalises the
+              pack in one step — there are no individual save buttons.
+              Submitted packs move into the apartment&rsquo;s history and
+              become an immutable record. After submit, a new pre-arrival pack
+              can be started for the next turnover.
             </p>
             <div className="mt-3">
-              <PackSubmitButton
-                propertyId={property.id}
-                packId={pack.id}
-                linkedPhotoCount={photos?.length ?? 0}
-              />
+              <PackCaptionSubmit photoCount={photoRows.length} />
             </div>
           </div>
         ) : null}
@@ -545,5 +487,29 @@ export default async function PackReportPage({
         </footer>
       </article>
     </div>
+  )
+
+  // Drafts get the caption editor context (device-durable drafts + autosave +
+  // the single save-and-submit action). Submitted packs render the immutable
+  // record with NO editing machinery — only the read-only device-draft
+  // recovery panel (rev 5), which compares this device's leftovers with the
+  // final captions, clears only proven-identical drafts, and never calls the
+  // server.
+  if (!isDraft) {
+    return (
+      <>
+        <SubmittedCaptionRecovery packId={pack.id} serverNotes={serverNotes} />
+        {page}
+      </>
+    )
+  }
+  return (
+    <PackCaptionProvider
+      propertyId={property.id}
+      packId={pack.id}
+      serverNotes={serverNotes}
+    >
+      {page}
+    </PackCaptionProvider>
   )
 }

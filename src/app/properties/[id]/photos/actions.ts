@@ -28,6 +28,11 @@ import { verifiedObjectExists } from '@/lib/photos/storage-exists'
 import { mapBounded } from '@/lib/util/bounded-map'
 import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
+import {
+  CAPTION_TOO_LONG_MESSAGE,
+  canonicalCaptionOrNull,
+  captionTooLong,
+} from '@/lib/photos/caption-canonical'
 import { createServiceClient } from '@/lib/supabase/service'
 
 /**
@@ -698,7 +703,12 @@ export async function attachEvidencePhotosBatch(
     // it -- mapBounded deliberately does not swallow rejections. Convert any
     // throw into this item's own failure result; the other 24 photos finish.
     try {
-      const note = input.note ? String(input.note).trim().slice(0, 2000) : null
+      // CAPTION LIMIT (rev 5): REFUSE, never silently shorten. This item
+      // fails on its own; the device keeps the photo and its full caption.
+      if (input.note != null && captionTooLong(String(input.note))) {
+        return { photoId, ok: false as const, error: CAPTION_TOO_LONG_MESSAGE }
+      }
+      const note = input.note != null ? canonicalCaptionOrNull(String(input.note)) : null
       const { error: rpcErr } = await supabase.rpc('attach_prearrival_photo', {
         p_photo_id: photoId,
         p_width: input.width,
@@ -758,7 +768,11 @@ export async function attachEvidencePhoto(
     return { ok: false, error: 'Missing photo reference.' }
   }
 
-  const note = input.note ? String(input.note).trim().slice(0, 2000) : null
+  // CAPTION LIMIT (rev 5): REFUSE, never silently shorten (the shared rule).
+  if (input.note != null && captionTooLong(String(input.note))) {
+    return { ok: false, error: CAPTION_TOO_LONG_MESSAGE }
+  }
+  const note = input.note != null ? canonicalCaptionOrNull(String(input.note)) : null
   const supabase = await createClient()
 
   // Outcome 2: pre-arrival photos are recorded by the atomic RPC, which locks
@@ -947,6 +961,31 @@ export async function updatePhotoNote(formData: FormData) {
   if (!ctx || !ctx.company) redirect('/login')
 
   const supabase = await createClient()
+
+  // P0 caption durability (22 Oct 2026): PACK photo captions may only change
+  // through the audited compare-and-set RPC / save-and-submit transaction on
+  // the pack report. This action remains the FLAG photo caption path only —
+  // a direct/stale/manipulated POST with a pack photo id is refused here
+  // (and submitted packs are additionally immutable at the database).
+  const { data: guardRow, error: guardErr } = await supabase
+    .from('photos')
+    .select('evidence_pack_id')
+    .eq('id', photoId)
+    .is('deleted_at', null)
+    .maybeSingle<{ evidence_pack_id: string | null }>()
+  if (guardErr || !guardRow) {
+    console.error('[photos/note] guard read error:', guardErr)
+    const url = returnTo ?? detailUrl
+    redirect(`${url}?error=${encodeURIComponent('Photo not found.')}`)
+  }
+  if (guardRow.evidence_pack_id) {
+    const url = returnTo ?? detailUrl
+    redirect(
+      `${url}?error=${encodeURIComponent(
+        'Pack photo captions are edited on the pack report, where they are saved with the pack.',
+      )}`,
+    )
+  }
 
   const { error } = await supabase
     .from('photos')
