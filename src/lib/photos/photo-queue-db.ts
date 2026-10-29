@@ -283,6 +283,21 @@ export async function listQueuedForPack(packId: string): Promise<QueuedPhotoReco
   )
 }
 
+/**
+ * IDs only of a pack's records (hotfix, one-tap attach). Uses the index's
+ * KEYS, so no photo blob is read: the release path needs to know WHICH
+ * photos exist, never their bytes — and on iOS every blob-bearing read
+ * competes with the background uploader for the same store.
+ */
+export async function listQueuedIdsForPack(packId: string): Promise<string[]> {
+  const keys = await tx<IDBValidKey[]>(
+    'Listing photos on device',
+    'readonly',
+    (s) => s.index(IDX_PACK).getAllKeys(packId) as IDBRequest<IDBValidKey[]>,
+  )
+  return (keys ?? []).map(String).sort()
+}
+
 export async function patchQueuedPhoto(
   id: string,
   patch: Partial<Omit<QueuedPhotoRecord, 'id'>> & { state?: QueuedPhotoState },

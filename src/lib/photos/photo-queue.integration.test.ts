@@ -82,6 +82,11 @@ vi.mock('@/lib/photos/photo-queue-db', () => {
       [...store.values()]
         .filter((r) => r.packId === packId)
         .map((r) => ({ ...r })),
+    listQueuedIdsForPack: async (packId: string) =>
+      [...store.values()]
+        .filter((r) => r.packId === packId)
+        .map((r) => r.id as string)
+        .sort(),
     patchQueuedPhoto: async (id: string, patch: Record<string, unknown>) => {
       const cur = store.get(id)
       if (!cur) return null

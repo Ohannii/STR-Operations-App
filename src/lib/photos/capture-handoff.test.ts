@@ -605,3 +605,89 @@ describe('REV 10 — the pre-pending capture interval is protected', () => {
     expect(plan.blockedMessage).toBe(preparingMessage(2))
   })
 })
+
+// ----------------------------------------------------------------
+// HOTFIX — one-tap attach: ONE automatic retry inside the handoff.
+// ----------------------------------------------------------------
+
+describe('HOTFIX — the handoff retries a failed first release ONCE, transparently', () => {
+  type Call = { notes: Record<string, string | null>; edits?: Record<string, { v: number; editId: string }> }
+  const scripted = (...results: Array<string[] | 'throw' | 'malformed'>) => {
+    const calls: Call[] = []
+    const release = vi.fn(async (_p: string, notes: Record<string, string | null>, edits?: Call['edits']) => {
+      calls.push({ notes, edits })
+      const r = results.shift() ?? []
+      if (r === 'throw') throw new Error('IndexedDB transaction timed out')
+      if (r === 'malformed') return {} as { failedIds: string[] }
+      return { failedIds: r }
+    })
+    return { calls, release }
+  }
+  const notes = { a: 'A', b: 'B', c: 'C' }
+
+  it('first release reports ALL failed, the automatic retry succeeds -> ok, no error shown', async () => {
+    const { calls, release } = scripted(['a', 'b', 'c'], [])
+    const res = await handOffPackRelease({ packId: 'p', notes, secureRelease: okSecure, release })
+    expect(res).toEqual({ ok: true })
+    expect(release).toHaveBeenCalledTimes(2)
+    expect(Object.keys(calls[1].notes)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('a partial first failure retries ONLY the failed photos (subsetted notes and edits)', async () => {
+    const { calls, release } = scripted(['b'], [])
+    const res = await handOffPackRelease({ packId: 'p', notes, secureRelease: okSecure, release })
+    expect(res).toEqual({ ok: true })
+    expect(calls[1].notes).toEqual({ b: 'B' })
+    expect(Object.keys(calls[1].edits ?? {})).toEqual(['b'])
+  })
+
+  it('a first release that THROWS is retried; success -> ok', async () => {
+    const { release } = scripted('throw', [])
+    const res = await handOffPackRelease({ packId: 'p', notes, secureRelease: okSecure, release })
+    expect(res).toEqual({ ok: true })
+    expect(release).toHaveBeenCalledTimes(2)
+  })
+
+  it('a second failure keeps the existing fail-closed error; first-proven photos stay proven', async () => {
+    const { release } = scripted(['b', 'c'], ['c'])
+    const res = await handOffPackRelease({ packId: 'p', notes, secureRelease: okSecure, release })
+    expect(res).toMatchObject({ ok: false, reason: 'release_failed', failedIds: ['c'], handedOffIds: ['a', 'b'] })
+    expect(release).toHaveBeenCalledTimes(2) // exactly one retry, never a loop
+  })
+
+  it('a second THROW is reported as release_threw for the retried photos only', async () => {
+    const { release } = scripted(['b'], 'throw')
+    const res = await handOffPackRelease({ packId: 'p', notes, secureRelease: okSecure, release })
+    expect(res).toMatchObject({ ok: false, reason: 'release_threw', failedIds: ['b'], handedOffIds: ['a', 'c'] })
+  })
+
+  it('unknown ids or a malformed first result retry the WHOLE intended set (fail closed)', async () => {
+    for (const first of [['someone-else'], 'malformed'] as const) {
+      const { calls, release } = scripted(first as string[] | 'malformed', [])
+      const res = await handOffPackRelease({ packId: 'p', notes, secureRelease: okSecure, release })
+      expect(res).toEqual({ ok: true })
+      expect(Object.keys(calls[1].notes)).toEqual(['a', 'b', 'c'])
+    }
+  })
+
+  it('caption too long / unsafe NEVER retry (release never called)', async () => {
+    const { release } = scripted([], [])
+    expect((await handOffPackRelease({ packId: 'p', notes: { a: 'x'.repeat(2001) }, release })).ok).toBe(false)
+    const unsafe = await handOffPackRelease({
+      packId: 'p',
+      notes: { a: 'A' },
+      secureRelease: async () => ({ ok: false, edits: {}, unsafeIds: ['a'] }),
+      release,
+    })
+    expect(unsafe).toMatchObject({ ok: false, reason: 'caption_unsafe' })
+    expect(release).not.toHaveBeenCalled()
+  })
+
+  it('the retry reuses the IDENTICAL caption edit identities (secureRelease runs once)', async () => {
+    const secure = vi.fn(okSecure)
+    const { calls, release } = scripted(['a', 'b'], [])
+    await handOffPackRelease({ packId: 'p', notes, secureRelease: secure, release })
+    expect(secure).toHaveBeenCalledTimes(1)
+    expect(calls[1].edits).toEqual({ a: calls[0].edits!.a, b: calls[0].edits!.b })
+  })
+})

@@ -20,6 +20,13 @@ const failClaimFor = new Set<string>()
 const failList = { current: false }
 /** rev 8: records that disappear between the listing and their claim. */
 const vanishOnClaim = new Set<string>()
+/** Hotfix: claims held open (the slow iPhone transaction) until released. */
+const heldClaims = new Map<string, Promise<void>>()
+/** Hotfix: ONE-SHOT holds — only the NEXT claim on the id is slow. */
+const heldOnce = new Map<string, Promise<void>>()
+/** Hotfix: every CLAIM that WROTE a record, in order, with what it changed. */
+const writes: Array<{ id: string; keys: string[]; state?: unknown }> = []
+const listIdsCalls = { current: 0 }
 /** Every state transition written through the double, in order. */
 const stateLog: Array<{ id: string; state: unknown }> = []
 
@@ -46,6 +53,15 @@ vi.mock('@/lib/photos/photo-queue-db', () => {
       if (failList.current) throw new PhotoQueueUnavailableError('Listing photos on device timed out')
       return [...store.values()].filter((r) => r.packId === packId).map((r) => ({ ...r }))
     },
+    // Hotfix: the release path lists KEYS only (no blob reads).
+    listQueuedIdsForPack: async (packId: string) => {
+      listIdsCalls.current += 1
+      if (failList.current) throw new PhotoQueueUnavailableError('Listing photos on device timed out')
+      return [...store.values()]
+        .filter((r) => r.packId === packId)
+        .map((r) => r.id as string)
+        .sort()
+    },
     patchQueuedPhoto: async (id: string, patch: Record<string, unknown>) => {
       const cur = store.get(id)
       if (!cur) return null
@@ -64,12 +80,20 @@ vi.mock('@/lib/photos/photo-queue-db', () => {
     ) => {
       if (failClaimFor.has(id)) throw new PhotoQueueUnavailableError('Claiming photo on device timed out')
       if (vanishOnClaim.has(id)) store.delete(id)
+      const held = heldClaims.get(id)
+      if (held) await held
+      const once = heldOnce.get(id)
+      if (once) {
+        heldOnce.delete(id)
+        await once
+      }
       const cur = store.get(id)
       if (!cur) return null
       const patch = decide({ ...cur })
       if (!patch) return null
       const next = { ...cur, ...patch, updatedAt: new Date().toISOString() }
       store.set(id, next)
+      writes.push({ id, keys: Object.keys(patch).sort(), state: patch.state })
       if ('state' in patch) stateLog.push({ id, state: patch.state })
       return { ...next }
     },
@@ -162,6 +186,10 @@ beforeEach(() => {
   failClaimFor.clear()
   failList.current = false
   vanishOnClaim.clear()
+  heldClaims.clear()
+  heldOnce.clear()
+  writes.length = 0
+  listIdsCalls.current = 0
   stateLog.length = 0
   ;(globalThis as unknown as { window: { localStorage: unknown } }).window = {
     localStorage: makeLocalStorage(),
@@ -1077,5 +1105,123 @@ describe('REV 9 — single flight across Attach and Report issue', () => {
     expect(await rig.exit('attach', [P('a', 'ready')])).toBe('proceeded')
     expect(await rig.exit('attach', [P('a', 'ready'), P('b', 'ready')])).toBe('proceeded')
     expect([...rig.gate.handedOff()].sort()).toEqual(['a', 'b'])
+  })
+})
+
+// ----------------------------------------------------------------
+// HOTFIX — one-tap attach, over the REAL queue double.
+// ----------------------------------------------------------------
+
+describe('HOTFIX — the release does ONE record write per photo and reads no blobs to list', () => {
+  it('Attach of 3 captioned photos: exactly one claim write each, keys-only listing', async () => {
+    for (const id of ['a', 'b', 'c']) await enqueueOne(id, 'pack-hf-1')
+    writes.length = 0
+    const res = await handOff('pack-hf-1', { a: 'Test', b: 'Y', c: 'Z' })
+    expect(res).toEqual({ ok: true })
+    // The release writes each photo ONCE, carrying state AND caption together.
+    const releaseWrites = writes.filter((w) => w.state === 'queued')
+    expect(releaseWrites.map((w) => w.id).sort()).toEqual(['a', 'b', 'c'])
+    for (const w of releaseWrites) expect(w.keys).toEqual(expect.arrayContaining(['note', 'noteEditId', 'state']))
+    // ...and there is NO separate caption-only write (the old reconcile pass).
+    expect(writes.filter((w) => w.keys.includes('note') && w.state === undefined)).toEqual([])
+    expect(listIdsCalls.current).toBe(1)
+    for (const [id, note] of [['a', 'Test'], ['b', 'Y'], ['c', 'Z']]) {
+      expect(store.get(id)!.note).toBe(note) // exact caption, carried by the release claim
+      expect(queuedCount(id)).toBe(1)
+      expect(readNoteShadow('pack-hf-1', id)).toBeNull() // proven, so spent
+    }
+  })
+
+  it('an already-released (queued) record still receives a strictly NEWER release caption', async () => {
+    await enqueueOne('a', 'pack-hf-2')
+    await updateQueuedNote('pack-hf-2', 'a', 'old caption', 100, 'e-old')
+    await releaseQueued('pack-hf-2') // released earlier (e.g. the pack page)
+    const res = await handOff('pack-hf-2', { a: 'newer caption' })
+    expect(res).toEqual({ ok: true })
+    expect(store.get('a')!.note).toBe('newer caption')
+    expect(queuedCount('a')).toBe(1) // never re-released
+  })
+
+  it('a WORKER-OWNED record cannot be proven: still failed with its shadow kept (as reconcile did)', async () => {
+    await enqueueOne('a', 'pack-hf-3')
+    await setState('a', { state: 'uploading', leaseUntil: Date.now() + 60_000, note: 'old', noteEditedAt: 100, noteEditId: 'o' })
+    const res = await handOff('pack-hf-3', { a: 'release caption' })
+    expect(res).toMatchObject({ ok: false, failedIds: ['a'] })
+    expect(store.get('a')!.note).toBe('old')
+    expect(readNoteShadow('pack-hf-3', 'a')?.note).toBe('release caption')
+  })
+
+  it('re-handing off already released photos is idempotent (no duplicate release, ok)', async () => {
+    for (const id of ['a', 'b']) await enqueueOne(id, 'pack-hf-4')
+    expect(await handOff('pack-hf-4', { a: 'A', b: 'B' })).toEqual({ ok: true })
+    expect(await handOff('pack-hf-4', { a: 'A', b: 'B' })).toEqual({ ok: true })
+    expect(queuedCount('a')).toBe(1)
+    expect(queuedCount('b')).toBe(1)
+  })
+})
+
+describe('HOTFIX — a release claim that settles AFTER the budget (the iPhone case)', () => {
+  it('first attempt times out, the claim settles late, the automatic retry proves it: ONE tap, ok', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      await enqueueOne('a', 'pack-hf-5')
+      await enqueueOne('b', 'pack-hf-5')
+      let releaseHold!: () => void
+      heldClaims.set('a', new Promise<void>((r) => (releaseHold = r)))
+      const pending = handOff('pack-hf-5', { a: 'Test', b: 'Y' })
+      await vi.advanceTimersByTimeAsync(10_001) // first release budget expires
+      releaseHold() // the slow IndexedDB transaction finally settles
+      heldClaims.delete('a')
+      await vi.advanceTimersByTimeAsync(0)
+      const res = await pending
+      expect(res).toEqual({ ok: true }) // no red error, no second tap
+      expect(queuedCount('a')).toBe(1) // released exactly once
+      expect(queuedCount('b')).toBe(1)
+      expect(store.get('a')!.note).toBe('Test')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('LATE SETTLEMENT wakes the drain: a release that lands after the budget is picked up at once', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      await enqueueOne('a', 'pack-hf-7')
+      let releaseHold!: () => void
+      // Only the RELEASE claim is slow; the drain that releaseQueued starts
+      // afterwards runs freely and finishes while the photo is still
+      // saved_local — so only the late-settlement wake-up can pick it up.
+      heldOnce.set('a', new Promise<void>((r) => (releaseHold = r)))
+      const pending = releaseQueued('pack-hf-7', { a: 'Test' })
+      await vi.advanceTimersByTimeAsync(10_001)
+      expect((await pending).failedIds).toEqual(['a']) // honest: not proven in time
+      await vi.advanceTimersByTimeAsync(0) // let that first drain finish
+      stateLog.length = 0
+      releaseHold()
+      await vi.advanceTimersByTimeAsync(0)
+      // The late claim released the photo AND the follow-up drain claimed it
+      // for upload — no waiting for a retry timer, no unhandled rejection.
+      expect(releasedTo('a')[0]).toBe('queued')
+      expect(releasedTo('a').slice(1)).not.toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a claim that NEVER settles in either attempt keeps the honest error (never assumed attached)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      await enqueueOne('a', 'pack-hf-6')
+      heldClaims.set('a', new Promise<void>(() => {})) // hung transaction
+      const pending = handOff('pack-hf-6', { a: 'Test' })
+      await vi.advanceTimersByTimeAsync(10_001)
+      await vi.advanceTimersByTimeAsync(10_001)
+      const res = await pending
+      expect(res).toMatchObject({ ok: false, failedIds: ['a'] })
+      expect(store.get('a')!.state).toBe('saved_local') // still recoverable
+    } finally {
+      heldClaims.clear()
+      vi.useRealTimers()
+    }
   })
 })
