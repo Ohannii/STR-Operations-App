@@ -23,6 +23,7 @@ import {
   deleteQueuedPhoto,
   getQueuedPhoto,
   listQueuedForPack,
+  listQueuedIdsForPack,
   patchQueuedPhoto,
   putQueuedPhoto,
   requestPersistentStorage,
@@ -64,8 +65,9 @@ import {
   readNoteShadows,
   shadowSatisfied,
   shadowScopeMatches,
+  type NoteShadow,
 } from '@/lib/photos/capture-note-shadow'
-import { captionTooLong } from '@/lib/photos/caption-canonical'
+import { canonicalCaptionOrNull, captionTooLong } from '@/lib/photos/caption-canonical'
 
 /**
  * Sequential upload worker for the durable photo queue (Outcome 3).
@@ -323,9 +325,30 @@ export async function releaseQueued(
   editsById?: Record<string, NoteEdit>,
 ): Promise<{ failedIds: string[] }> {
   const intended: string[] | null = notesById ? Object.keys(notesById) : null
+
+  // ONE WRITE PER PHOTO (hotfix, one-tap attach). Each record carries its
+  // photo blobs inline, so every claim rewrites the whole record and every
+  // write is serialized with the background uploader. The release caption's
+  // own shadow (written synchronously by prepareRelease) used to be applied
+  // by a SEPARATE reconcile write before the release claim. It is now applied
+  // INSIDE the release claim and proven by the same identity rule
+  // (shadowSatisfied) — a photo whose record does not end up holding exactly
+  // that edit stays failed, exactly as a blocked reconcile did.
+  const carried = new Map<string, NoteEdit & { shadow: NoteShadow; note: string | null }>()
+  if (notesById && editsById) {
+    for (const id of intended ?? []) {
+      const edit = editsById[id]
+      if (!edit) continue
+      const shadow = readNoteShadow(packId, id)
+      if (shadow && shadow.editId === edit.editId && shadow.v === edit.v) {
+        carried.set(id, { ...edit, shadow, note: canonicalCaptionOrNull(notesById[id]) })
+      }
+    }
+  }
+
   let captionBlocked: Set<string>
   try {
-    captionBlocked = new Set((await reconcileNoteShadows(packId)).blocked)
+    captionBlocked = new Set((await reconcileNoteShadows(packId, carried)).blocked)
   } catch (err) {
     // reconcileNoteShadows is per-shadow exception-isolated; reaching here
     // means storage itself is unusable — release NOTHING (fail closed).
@@ -335,15 +358,16 @@ export async function releaseQueued(
     if (intended) return { failedIds: intended }
     let ids: string[] = []
     try {
-      ids = (await listQueuedForPack(packId)).map((r) => r.id)
+      ids = await listQueuedIdsForPack(packId)
     } catch {
       // storage unreadable: the panel's storageError surface owns this state
     }
     return { failedIds: ids }
   }
-  let records: QueuedPhotoRecord[]
+  let ids: string[]
   try {
-    records = await listQueuedForPack(packId)
+    // KEYS ONLY (hotfix): which photos exist — no blob is read.
+    ids = await listQueuedIdsForPack(packId)
   } catch (err) {
     // Storage unreadable: nothing was released. A caller handing off specific
     // photos gets ALL of them back as failed (never a silent []); the
@@ -356,7 +380,7 @@ export async function releaseQueued(
   if (intended) {
     // Only THIS handoff's photos: never release or report unrelated records.
     const wanted = new Set(intended)
-    records = records.filter((r) => wanted.has(r.id))
+    ids = ids.filter((id) => wanted.has(id))
   }
 
   // A record is RESOLVED when its claim settles: released, or correctly
@@ -366,47 +390,68 @@ export async function releaseQueued(
   // only state/lease/note, and revokes any in-flight stager's lease.
   const resolved = new Set<string>()
   // BUDGET GATE (audit, 23 Jul): withDeadline stops WAITING, it cannot stop
-  // WORK — without this gate, later mapBounded waves kept starting claims
-  // after releaseQueued had returned and drainQueue was already running.
-  // The gate is checked before EVERY claim: once the budget closes, no new
-  // claimQueuedPhoto begins; skipped records stay unresolved and land in
-  // failedIds. The ≤5 claims already in flight at closure are each bounded
-  // by the storage layer's own 8s deadline, and a late release success is
-  // harmless by construction (releaseDecision is atomic and only ever moves
-  // saved_local → queued, which the idempotent drain then attaches).
+  // WORK. The gate is checked before EVERY claim: once the budget closes, no
+  // new claimQueuedPhoto begins; skipped records stay unresolved and land in
+  // failedIds. Claims already in flight may still settle LATE — see below.
   const budgetClosed = { current: false }
   // Fallback stamp for callers that pass notes without keeper edits;
   // releaseDecision forces it above the record's current version.
   const releaseStamp = Date.now()
-  const work = mapBounded(records, RELEASE_CONCURRENCY, async (r) => {
+  const work = mapBounded(ids, RELEASE_CONCURRENCY, async (id) => {
     if (budgetClosed.current) return // skipped -> unresolved -> failedIds
     // FAIL CLOSED: an unproven newer caption shadow blocks THIS photo.
-    if (captionBlocked.has(r.id)) return // unresolved -> failedIds
+    if (captionBlocked.has(id)) return // unresolved -> failedIds
     try {
-      const note = notesById ? notesById[r.id] : undefined
-      const claimed = await claimQueuedPhoto(r.id, (cur) =>
-        releaseDecision(cur, note, editsById?.[r.id] ?? releaseStamp),
-      )
+      const note = notesById ? notesById[id] : undefined
+      const carry = carried.get(id)
+      let carryApplies = false
+      const claimed = await claimQueuedPhoto(id, (cur) => {
+        if (cur.packId !== packId) return null
+        // A shadow whose scope does not match is never applied (reconcile's
+        // rule) — and reconcile would have left it alone, so fall back to
+        // the plain release for this photo.
+        carryApplies = carry !== undefined && shadowScopeMatches(cur, carry.shadow, packId)
+        const release = releaseDecision(cur, note, editsById?.[id] ?? releaseStamp)
+        if (release || !carryApplies || !carry) return release
+        // Already released (queued/failed): still carry the strictly newer
+        // release caption into the record, exactly as reconcile did.
+        return noteEditDecision(cur, carry.note, carry.v, carry.editId)
+      })
+      let rec = claimed
       if (!claimed && note !== undefined) {
         // A null claim is either "already released / removed" (correct) or
         // "the release caption could not be proven newer" (fail closed).
         // Re-read to tell them apart; never count the latter as resolved.
-        const fresh = await getQueuedPhoto(r.id)
+        const fresh = await getQueuedPhoto(id)
         if (!fresh) {
-          // Vanished between listing and claim: NOT proven handed off (rev 8)
-          // — absence is never treated as success here.
-          dbg('release:record-vanished', { photoId: r.id })
+          // Missing / vanished: NOT proven handed off (rev 8) — absence is
+          // never treated as success here.
+          dbg('release:record-vanished', { photoId: id })
           return // unresolved -> failedIds
         }
+        if (fresh.packId !== packId) return // never another pack's record
         if (fresh.state === 'saved_local' && !fresh.discardRequested) {
-          dbg('release:caption-order-unproven', { photoId: r.id })
+          dbg('release:caption-order-unproven', { photoId: id })
           return // unresolved -> failedIds, record + shadow kept
         }
+        rec = fresh
       }
-      resolved.add(r.id)
+      if (carry && carryApplies) {
+        // IDENTITY PROOF for the carried release caption (same rule as
+        // reconcile): resolved only if the record holds EXACTLY that edit.
+        if (!rec || !shadowSatisfied(rec, carry.shadow)) {
+          if (rec && (rec.noteEditedAt ?? 0) >= carry.v) {
+            bumpHighWater(packId, id, rec.noteEditedAt ?? 0)
+          }
+          dbg('release:caption-unproven', { photoId: id })
+          return // unresolved -> failedIds, shadow kept
+        }
+        clearNoteShadowIfIdentity(packId, id, carry.editId)
+      }
+      resolved.add(id)
     } catch (err) {
       dbg('release:failed', {
-        photoId: r.id,
+        photoId: id,
         detail: err instanceof Error ? err.message : 'release failed',
       })
     }
@@ -418,11 +463,21 @@ export async function releaseQueued(
     dbg('release:budget-exceeded', {
       detail: err instanceof Error ? err.message : 'release budget exceeded',
     })
+    // LATE SETTLEMENT (hotfix): claims already in flight keep running after
+    // we stop waiting. When they settle, refresh the UI's view and wake the
+    // drain so a late release is picked up at once. Never an unhandled
+    // rejection; a late success is still never reported as proven here.
+    void work
+      .catch(() => undefined)
+      .then(() => refreshQueue(packId))
+      .catch(() => undefined)
+      .then(() => drainQueue(packId))
+      .catch(() => undefined)
   }
 
   // With an intended set, an intended id that never appeared in the listing
   // is never resolved, so it is reported (rev 8). Object.keys is unique.
-  const failedIds = (intended ?? records.map((r) => r.id)).filter((id) => !resolved.has(id))
+  const failedIds = (intended ?? ids).filter((id) => !resolved.has(id))
   try {
     await refreshQueue(packId)
   } catch {
@@ -484,9 +539,14 @@ export async function updateQueuedNote(
  */
 export async function reconcileNoteShadows(
   packId: string,
+  /** Hotfix (one-tap attach): shadows that ARE a release edit the caller
+   *  applies and proves inside its own release claim — skipped here so the
+   *  photo is not rewritten twice. Matched by exact edit identity. */
+  carriedByRelease?: ReadonlyMap<string, { editId: string }>,
 ): Promise<{ blocked: string[] }> {
   const blocked: string[] = []
   for (const s of readNoteShadows(packId)) {
+    if (carriedByRelease?.get(s.photoId)?.editId === s.editId) continue
     try {
       let rec = await getQueuedPhoto(s.photoId)
       if (!rec) continue

@@ -1358,7 +1358,7 @@ export function EvidenceCapture({
                                 return (
                                   <span
                                     className="absolute -bottom-1 -right-1 rounded-full bg-emerald-500 text-white p-0.5 border border-slate-950"
-                                    aria-label="Uploaded"
+                                    aria-label="Ready to attach"
                                   >
                                     <Check size={9} aria-hidden />
                                   </span>
@@ -1501,10 +1501,13 @@ export function EvidenceCapture({
                                 queueRecordById.get(p.id),
                                 packQueue.online,
                               )
+                              // Hotfix: `uploaded` = bytes in cloud storage, NOT
+                              // attached to the pack yet — so the inspector sees
+                              // "Ready" (to attach), never "Uploaded".
                               if (badge === 'uploaded')
                                 return (
                                   <span className="absolute bottom-1 right-1 inline-flex items-center gap-1 rounded bg-emerald-500/95 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                                    <Check size={9} aria-hidden /> Uploaded
+                                    <Check size={9} aria-hidden /> Ready
                                   </span>
                                 )
                               if (badge === 'uploading')

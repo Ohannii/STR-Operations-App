@@ -18,7 +18,9 @@
  *      PROVEN handed off. failedIds is normalised to the intended set and
  *      `handedOffIds` names exactly the proven ones, so a partial handoff can
  *      continue the proven photos while the rest stay on the review screen —
- *      and nothing already handed off is ever resent (handoffPlan).
+ *      and nothing already handed off is ever resent (handoffPlan);
+ *   5. ONE AUTOMATIC RETRY (hotfix) — a failed first release is retried
+ *      once, with the same caption edits, before any error is shown.
  */
 
 import { CAPTION_TOO_LONG_MESSAGE, captionTooLong } from './caption-canonical'
@@ -105,44 +107,57 @@ export async function handOffPackRelease(deps: HandoffDeps): Promise<HandoffResu
     edits = secured.edits
   }
 
-  let reported: string[]
+  // ONE automatic retry (hotfix, one-tap attach). A first release that
+  // throws, is malformed, or reports photos it could not take is retried
+  // ONCE before the inspector sees any error — with the SAME caption edit
+  // identities (secureRelease ran once, above), so the retry is idempotent:
+  // releaseDecision only ever moves saved_local -> queued, and a photo the
+  // first attempt took late is simply proven on the second. Only photos not
+  // proven by the first attempt are retried; unknown/malformed reports retry
+  // the whole intended set (fail closed).
+  const first = await releaseAttempt(deps, ids, edits)
+  if (first.failed.length === 0) return { ok: true }
+  const second = await releaseAttempt(deps, first.failed, edits)
+  if (second.failed.length === 0) return { ok: true }
+  const failedIds = ids.filter((id) => second.failed.includes(id))
+  return {
+    ok: false,
+    reason: second.threw ? 'release_threw' : 'release_failed',
+    failedIds,
+    handedOffIds: ids.filter((id) => !failedIds.includes(id)),
+    message: releaseFailedMessage(failedIds.length),
+  }
+}
+
+/** One release of exactly `subset`, classified fail-closed: the photos of
+ *  `subset` NOT proven handed off (all of them on a throw, a malformed
+ *  result, or any report naming an id outside the subset). */
+async function releaseAttempt(
+  deps: HandoffDeps,
+  subset: readonly string[],
+  edits: Edits | undefined,
+): Promise<{ failed: string[]; threw: boolean }> {
+  const notes: Record<string, string | null> = {}
+  for (const id of subset) notes[id] = deps.notes[id]
+  let subEdits: Edits | undefined
+  if (edits) {
+    subEdits = {}
+    for (const id of subset) if (edits[id]) subEdits[id] = edits[id]
+  }
+  let reported: unknown
   try {
-    ;({ failedIds: reported } = await deps.release(deps.packId, deps.notes, edits))
+    ;({ failedIds: reported } = await deps.release(deps.packId, notes, subEdits))
   } catch {
-    // Nothing PROVEN: every intended photo is failed. (A release that did
-    // partly happen is harmless: a retry's releaseDecision is idempotent.)
-    return {
-      ok: false,
-      reason: 'release_threw',
-      failedIds: ids,
-      handedOffIds: [],
-      message: releaseFailedMessage(ids.length),
-    }
+    return { failed: [...subset], threw: true }
   }
-  if (!Array.isArray(reported)) {
-    return {
-      ok: false,
-      reason: 'release_failed',
-      failedIds: ids,
-      handedOffIds: [],
-      message: releaseFailedMessage(ids.length),
-    }
+  if (!Array.isArray(reported)) return { failed: [...subset], threw: false }
+  const inSubset = new Set(subset)
+  if (reported.some((id) => !inSubset.has(id))) {
+    // An unknown id can never vouch for an intended one: prove nothing.
+    return { failed: [...subset], threw: false }
   }
-  const failedSet = new Set(reported)
-  const failedIds = ids.filter((id) => failedSet.has(id)) // unique, intended only
-  if (failedIds.length > 0 || reported.length > 0) {
-    // Any report at all is a failure; an unknown id can never vouch for an
-    // intended one, so it fails the handoff without being counted as ours.
-    const shown = failedIds.length > 0 ? failedIds : ids
-    return {
-      ok: false,
-      reason: 'release_failed',
-      failedIds: shown,
-      handedOffIds: ids.filter((id) => !shown.includes(id)),
-      message: releaseFailedMessage(shown.length),
-    }
-  }
-  return { ok: true }
+  const failedSet = new Set(reported as string[])
+  return { failed: subset.filter((id) => failedSet.has(id)), threw: false }
 }
 
 // ----------------------------------------------------------------

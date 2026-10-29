@@ -265,4 +265,13 @@ describe('handleRaiseFlag wiring contract (the yellow Report issue button)', () 
     expect(source).toMatch(/planCaptureExit\(capturePhotos, batchIds, evidencePackId \? 'pack' : 'flag', captureWork\)/)
     expect(source).toContain('const hasUnsavedWork = hasUnsavedCaptureWork(capturePhotos, captureWork)')
   })
+
+  it('hotfix: the visible badge says "Ready" (to attach), never "Uploaded"', () => {
+    const code = source.replace(/\/\/[^\n]*/g, '').replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+    expect(code).not.toMatch(/>\s*Uploaded\s*</)
+    expect(code).not.toMatch(/aria-hidden \/> Uploaded/)
+    expect(code).not.toContain('aria-label="Uploaded"')
+    expect(code).toContain('<Check size={9} aria-hidden /> Ready')
+    expect(code).toContain('aria-label="Ready to attach"')
+  })
 })
