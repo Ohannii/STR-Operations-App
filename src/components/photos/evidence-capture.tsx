@@ -66,8 +66,30 @@ import {
   releaseQueued,
   requestDiscard,
   retryFailed as retryQueueFailed,
+  updateQueuedNote,
   usePackQueue,
 } from '@/lib/photos/photo-queue'
+import {
+  BATCH_NOTE_UNSAFE_ID,
+  CaptureNoteKeeper,
+  readBatchNote,
+} from '@/lib/photos/capture-note-shadow'
+import {
+  MAX_CAPTION_LENGTH,
+  canonicalCaption,
+  canonicalCaptionOrNull,
+} from '@/lib/photos/caption-canonical'
+import {
+  CaptureExitGate,
+  handOffPackRelease,
+  idsToHandOff,
+  packRowStatus,
+  hasUnsavedCaptureWork,
+  photosToWarnOnClose,
+  planCaptureExit,
+  type CapturePhotoLite,
+  type CaptureToken,
+} from '@/lib/photos/capture-handoff'
 import {
   evaluateBatch,
   isExhausted,
@@ -112,6 +134,11 @@ type Pending = {
    *  (so a retry skips re-uploading what already landed). */
   masterDone?: boolean
   thumbDone?: boolean
+}
+
+/** rev 9: the exit gate's view of a capture photo. */
+function toCapturePhotos(items: readonly Pending[]): CapturePhotoLite[] {
+  return items.map((p) => ({ id: p.id, state: p.state, hasBytes: Boolean(p.master && p.thumb) }))
 }
 
 type Props = {
@@ -193,7 +220,12 @@ export function EvidenceCapture({
   const [pending, setPending] = useState<Pending[]>([])
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [cameraReady, setCameraReady] = useState(false)
-  const [attachAllNote, setAttachAllNote] = useState('')
+  // "Note for all photos" (rev 5): restored from device storage after a
+  // kill/reopen. The review UI only renders after the modal opens on the
+  // client, so this initial read cannot cause a hydration mismatch.
+  const [attachAllNote, setAttachAllNote] = useState(() =>
+    evidencePackId ? (readBatchNote(evidencePackId) ?? '') : '',
+  )
   const [editingId, setEditingId] = useState<string | null>(null)
   const [stage, setStage] = useState<'shooting' | 'reviewing' | 'uploading' | 'done'>(
     'shooting',
@@ -206,10 +238,70 @@ export function EvidenceCapture({
    * means every one of THESE ids is server-attached — never "queued", never
    * "saved on this device". Historical/unrelated queue records don't block.
    */
-  const [batchIds, setBatchIds] = useState<Set<string>>(() => new Set())
+  const [batchIds, setBatchIds] = useState<ReadonlySet<string>>(() => new Set())
+  /**
+   * rev 9 — ONE single-flight exit gate shared by Attach and Report issue.
+   * It is claimed SYNCHRONOUSLY before any await (a second tap on either
+   * button does nothing) and it holds the session's PROVEN handed-off set,
+   * merged synchronously — handlers read it at call time, never from a
+   * stale render, and an older completion can only add proven ids.
+   * `batchIds` above is its render mirror.
+   */
+  const [exitGate] = useState(() => new CaptureExitGate())
+  const [exiting, setExiting] = useState(false)
+  /**
+   * rev 10 — PRE-PENDING CAPTURE WORK. A shutter photo is not in pending[]
+   * until canvas.toBlob() has called back, and a gallery pick reads files one
+   * by one. Each capture claims a token on the SAME gate synchronously,
+   * before its first await, and holds it until its ingest has finished
+   * (durable/ready or error). While any token is live, Attach and Report
+   * issue cannot claim the gate and Close cannot close. Render mirror below.
+   */
+  const [captureWork, setCaptureWork] = useState(0)
+  const claimCapture = useCallback((): CaptureToken | null => {
+    const token = exitGate.beginCapture() // null while an exit holds the gate
+    if (token) setCaptureWork(exitGate.captureWork)
+    return token
+  }, [exitGate])
+  const releaseCapture = useCallback(
+    (token: CaptureToken) => {
+      exitGate.endCapture(token) // only THIS token; an old session's is inert
+      setCaptureWork(exitGate.captureWork)
+    },
+    [exitGate],
+  )
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
+
+  // CAPTION DURABILITY (P0, 22 Oct 2026; rev 3, 23 Oct): every pack-capture
+  // caption keystroke goes through CaptureNoteKeeper (capture-note-shadow.ts,
+  // behaviour-tested without a DOM):
+  //   1. SYNCHRONOUSLY, before the handler returns, a localStorage shadow is
+  //      written with a unique edit identity and a version above the
+  //      PERSISTED per-photo high-water mark (survives remounts, tabs and
+  //      clock rollback) — a page kill on the next instruction loses nothing;
+  //   2. the same version is debounce-persisted into the IndexedDB record
+  //      (immediately on blur, using the textarea's CURRENT DOM value);
+  //   3. the "not yet safe" warning clears only when the LATEST edit identity
+  //      is provably durable — an older success can never vouch for it.
+  // Flag capture (no evidencePackId) has no queue and is unchanged.
+  const [noteUnsafeIds, setNoteUnsafeIds] = useState<ReadonlySet<string>>(() => new Set())
+  const noteKeeper = useMemo(
+    () =>
+      evidencePackId
+        ? new CaptureNoteKeeper({
+            packId: evidencePackId,
+            scope: { userId: userId ?? '', companyId: companyId ?? '', propertyId },
+            persistToQueue: updateQueuedNote,
+            onUnsafeChange: (ids) => setNoteUnsafeIds(ids),
+          })
+        : null,
+    [evidencePackId, userId, companyId, propertyId],
+  )
+  useEffect(() => {
+    return () => noteKeeper?.dispose() // flushes pending IndexedDB writes
+  }, [noteKeeper])
 
   // Live device-queue state for THIS pack. Staging runs from the moment of
   // capture, and these records carry bytesStaged — that is what draws the
@@ -245,10 +337,15 @@ export function EvidenceCapture({
   // has its bytes CONFIRMED on the server (or already attached). Releasing
   // mid-staging is what collided with the staging lease and stalled fresh
   // uploads for minutes; now Attach unlocks exactly when it can be fast.
-  const readyIds = useMemo(
-    () => pending.filter((p) => p.state === 'ready' && p.master && p.thumb).map((p) => p.id),
-    [pending],
+  // rev 9: readiness is computed over the EXIT PLAN, never over the ready
+  // subset alone — one ready photo can no longer enable Attach while another
+  // is still compressing or has failed.
+  const capturePhotos = useMemo(() => toCapturePhotos(pending), [pending])
+  const exitPlan = useMemo(
+    () => planCaptureExit(capturePhotos, batchIds, evidencePackId ? 'pack' : 'flag', captureWork),
+    [capturePhotos, batchIds, evidencePackId, captureWork],
   )
+  const readyIds = exitPlan.eligibleIds
   const readiness = useMemo(
     () =>
       evidencePackId
@@ -256,6 +353,10 @@ export function EvidenceCapture({
         : { ready: readyIds.length > 0, prepared: readyIds.length, total: readyIds.length },
     [evidencePackId, readyIds, queueRecords, packQueue.hydrated],
   )
+  const canAttach =
+    !exiting &&
+    exitPlan.allowed &&
+    (readyIds.length > 0 ? readiness.ready : Boolean(evidencePackId) && batchIds.size > 0)
 
   // --------------------------------------------------------------
   // Camera lifecycle
@@ -379,7 +480,9 @@ export function EvidenceCapture({
   // Capture helpers
   // --------------------------------------------------------------
 
-  const ingestBlob = useCallback(async (rawBlob: Blob, capturedAt: string) => {
+  const ingestBlob = useCallback(async (rawBlob: Blob, capturedAt: string, token: CaptureToken) => {
+    // rev 10: a capture from a CLOSED session never joins a reopened one.
+    if (!exitGate.isCurrent(token)) return
     const id = makeClientId()
     const previewUrl = URL.createObjectURL(rawBlob)
     const item: Pending = {
@@ -427,12 +530,23 @@ export function EvidenceCapture({
             release: false, // the inspector may still add a note
           },
         )
+        // A photo captured after the batch note was entered INHERITS it,
+        // durably and at once (rev 5) — not only when Attach is tapped.
+        noteKeeper?.registerPhoto(id)
         // UPLOAD EARLY: kick the worker so this photo's bytes start moving
         // to the server WHILE the inspector keeps shooting. The photo is not
         // attached yet — it stays discardable and its note still rides the
         // attach — but by the time they tap Attach most bytes are already
         // up, which is what made the old flow feel fast.
         void drainQueue(evidencePackId)
+      }
+
+      // rev 10: session closed meanwhile — touch nothing here. (A pack photo
+      // that already reached IndexedDB stays recoverable from the pack
+      // page's "Attach saved photos".)
+      if (!exitGate.isCurrent(token)) {
+        URL.revokeObjectURL(previewUrl)
+        return
       }
 
       // Replace preview with the smaller thumb (lower memory).
@@ -454,6 +568,7 @@ export function EvidenceCapture({
         ),
       )
     } catch (err) {
+      if (!exitGate.isCurrent(token)) return // closed session: nothing to show
       const msg = err instanceof Error ? err.message : 'Failed to process image.'
       // A storage failure is NOT a "captured" photo. Surface it loudly and
       // drop the item rather than leaving a false sense of safety.
@@ -470,7 +585,7 @@ export function EvidenceCapture({
         )
       }
     }
-  }, [evidencePackId, userId, companyId, propertyId])
+  }, [evidencePackId, userId, companyId, propertyId, noteKeeper, exitGate])
 
   const handleShutter = useCallback(async () => {
     if (!videoRef.current || !cameraReady) return
@@ -483,26 +598,44 @@ export function EvidenceCapture({
     canvas.height = h
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    ctx.drawImage(video, 0, 0, w, h)
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.92),
-    )
-    if (!blob) return
-    void ingestBlob(blob, new Date().toISOString())
-  }, [cameraReady, ingestBlob])
+    // rev 10: claim capture work BEFORE the first await (canvas.toBlob) and
+    // hold it until the ingest finished — no exit can see an empty session
+    // while this photo exists only in a canvas callback.
+    const token = claimCapture()
+    if (!token) return // an exit holds the gate: no new capture may start
+    try {
+      ctx.drawImage(video, 0, 0, w, h)
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.92),
+      )
+      if (!blob || !exitGate.isCurrent(token)) return
+      await ingestBlob(blob, new Date().toISOString(), token)
+    } finally {
+      releaseCapture(token) // success, null blob, error or closed session
+    }
+  }, [cameraReady, ingestBlob, claimCapture, releaseCapture, exitGate])
 
   const handleGallery = useCallback(
     async (files: FileList | null) => {
       if (!files) return
-      for (const file of Array.from(files)) {
-        if (!file.type.startsWith('image/')) continue
-        const capturedAt = file.lastModified
-          ? new Date(file.lastModified).toISOString()
-          : new Date().toISOString()
-        await ingestBlob(file, capturedAt)
+      // rev 10: ONE claim for the whole selection, taken before the first
+      // await and held until EVERY selected image has finished ingesting.
+      const token = claimCapture()
+      if (!token) return
+      try {
+        for (const file of Array.from(files)) {
+          if (!exitGate.isCurrent(token)) break // session closed meanwhile
+          if (!file.type.startsWith('image/')) continue
+          const capturedAt = file.lastModified
+            ? new Date(file.lastModified).toISOString()
+            : new Date().toISOString()
+          await ingestBlob(file, capturedAt, token)
+        }
+      } finally {
+        releaseCapture(token)
       }
     },
-    [ingestBlob],
+    [ingestBlob, claimCapture, releaseCapture, exitGate],
   )
 
   const removePending = useCallback(
@@ -510,6 +643,7 @@ export function EvidenceCapture({
       // Release the logical photo from the pack intent map (no-op if it was
       // never committed). Does not lower the persisted target.
       if (evidencePackId) packCapture.remove(evidencePackId, id)
+      exitGate.forget(id) // a removed photo leaves the session's proven set
       setPending((prev) => {
         const next: Pending[] = []
         for (const p of prev) {
@@ -545,7 +679,7 @@ export function EvidenceCapture({
         return next
       })
     },
-    [evidencePackId],
+    [evidencePackId, exitGate],
   )
 
   // --------------------------------------------------------------
@@ -576,12 +710,17 @@ export function EvidenceCapture({
       for (const p of prev) URL.revokeObjectURL(p.previewUrl)
       return []
     })
+    // Session over: the fallback already lives in each photo's own record,
+    // so only the pack-level batch key is removed (photos untouched).
+    noteKeeper?.forgetBatchNote()
     setAttachAllNote('')
     setStage('shooting')
     setEditingId(null)
     setBatchError(null)
+    exitGate.reset() // new session identity: late old captures are inert
+    setCaptureWork(0)
     setBatchIds(new Set())
-  }, [stopCamera])
+  }, [stopCamera, noteKeeper, exitGate])
 
   // Dismiss guard (req 8): closing a session that still holds unattached,
   // uploading or failed photos requires an explicit DESTRUCTIVE confirm and
@@ -589,7 +728,20 @@ export function EvidenceCapture({
   // released from the pack intent map (the persisted target is unchanged, so
   // the pack still requires those photos be recaptured before it can submit).
   const dismiss = useCallback(() => {
-    const unresolved = pending.filter((p) => p.state !== 'uploaded')
+    // Never close mid-handoff, nor while a capture is still being prepared
+    // (rev 10: it may not even be in pending[] yet).
+    if (exitGate.inFlight || exitGate.captureWork > 0) return
+    // rev 9: once the batch is COMPLETE (server-attached) its photos are not
+    // "NOT attached"; anything genuinely outstanding still warns.
+    const warnIds = new Set(
+      photosToWarnOnClose(
+        toCapturePhotos(pending),
+        exitGate.handedOff(),
+        evidencePackId ? 'pack' : 'flag',
+        batch.complete,
+      ),
+    )
+    const unresolved = pending.filter((p) => warnIds.has(p.id))
     if (unresolved.length > 0) {
       // Chosen durable outcome for close/reload with unreleased photos
       // (pack mode): records STAY in the device queue as saved_local and the
@@ -603,8 +755,9 @@ export function EvidenceCapture({
           evidencePackId
             ? `${unresolved.length} photo${unresolved.length === 1 ? '' : 's'} ` +
                 `${unresolved.length === 1 ? 'is' : 'are'} NOT attached to the pack yet. ` +
-                `They stay saved on this device — attach them from the pack page ` +
-                `("Attach saved photos"). Close?`
+                `Photos that finished saving on this device can be attached from the ` +
+                `pack page ("Attach saved photos"); any still processing or failed ` +
+                `will be lost. Close?`
             : `${unresolved.length} photo${unresolved.length === 1 ? '' : 's'} ` +
                 `${unresolved.length === 1 ? 'has' : 'have'} NOT been saved and ` +
                 `will be discarded. Close anyway?`,
@@ -615,7 +768,7 @@ export function EvidenceCapture({
       }
     }
     closeModal()
-  }, [pending, evidencePackId, closeModal])
+  }, [pending, evidencePackId, closeModal, exitGate, batch.complete])
 
   // --------------------------------------------------------------
   // Attach pipeline
@@ -692,9 +845,8 @@ export function EvidenceCapture({
         )
 
         if (evidencePackId) packCapture.mark(evidencePackId, item.id, 'attaching')
-        const finalNote = (item.note?.trim() || attachAllNote.trim() || null) as
-          | string
-          | null
+        const finalNote =
+          canonicalCaptionOrNull(item.note) ?? canonicalCaptionOrNull(attachAllNote)
 
         const attached = await attachEvidencePhoto({
           photoId: slot.photoId,
@@ -761,68 +913,101 @@ export function EvidenceCapture({
   )
 
   const handleAttach = useCallback(async () => {
-    const readyItems = pending.filter((p) => p.state === 'ready' && p.master && p.thumb)
-    if (readyItems.length === 0) {
-      setBatchError('Nothing to attach yet. Wait for the photos to finish processing.')
-      return
-    }
-    setStage('uploading')
-    setBatchError(null)
-
-    // PRE-ARRIVAL PACK: the bytes are already durable in IndexedDB, so we do
-    // NOT upload from this component. Release the records to the sequential
-    // worker, which survives this modal closing, a reload, or the browser
-    // being killed, and which resumes automatically. (Flag capture keeps the
-    // original in-memory pipeline below, unchanged.)
-    if (evidencePackId) {
-      for (const it of readyItems) packCapture.commit(evidencePackId, it.id)
-      const notes: Record<string, string | null> = {}
-      for (const it of readyItems) {
-        notes[it.id] = it.note?.trim() || attachAllNote.trim() || null
+    // SINGLE FLIGHT (rev 9): claimed synchronously, before ANY await. A second
+    // tap on Attach or Report issue returns here and does nothing.
+    if (!exitGate.tryEnter()) return
+    setExiting(true)
+    try {
+      // EXIT PLAN (rev 9): never proceed with a partial subset while another
+      // photo is still processing or has failed — and never resend a photo
+      // already proven handed off.
+      const plan = planCaptureExit(
+        toCapturePhotos(pending),
+        exitGate.handedOff(),
+        evidencePackId ? 'pack' : 'flag',
+      )
+      if (!plan.allowed) {
+        setBatchError(plan.blockedMessage)
+        setStage('reviewing')
+        return
       }
-      // Release to the durable background worker, then track EXACTLY these
-      // ids as the current batch. The done screen's gate counts these ids —
-      // Done stays disabled until every one of them is server-attached.
-      // Accumulates across repeated "More photos → Attach" rounds.
-      // NEVER HOSTAGE (22 Jul evening): the Attach screen once sat frozen on
-      // "0/25 done" for four minutes because this await hung inside a Safari
-      // IndexedDB transaction. Storage ops are now deadline-bounded AND this
-      // screen advances regardless — any un-released photo remains durable,
-      // visible, and re-attachable from the queue panel.
-      try {
-        const { failedIds } = await releaseQueued(evidencePackId, notes)
-        if (failedIds.length > 0) {
-          // Per-record failures are REPORTED, not swallowed (audit item 5):
-          // the worker returns exactly which ids stayed behind.
-          setBatchError(
-            `${failedIds.length} photo${failedIds.length === 1 ? '' : 's'} could not ` +
-              'be handed to the uploader — still safe on this device. Use ' +
-              '"Attach saved photos" on the pack page to finish.',
-          )
-        }
-      } catch (err) {
-        setBatchError(
-          'Some photos could not be handed to the uploader — they are still ' +
-            'safe on this device. Use "Attach saved photos" on the pack page ' +
-            'to finish them.',
+      const eligible = new Set(plan.eligibleIds)
+      const readyItems = pending.filter((p) => eligible.has(p.id))
+      if (readyItems.length === 0 && !(evidencePackId && exitGate.handedOff().size > 0)) {
+        setBatchError('Nothing to attach yet.')
+        return
+      }
+      setStage('uploading')
+      setBatchError(null)
+
+      // PRE-ARRIVAL PACK: the bytes are already durable in IndexedDB, so we do
+      // NOT upload from this component. Release the records to the sequential
+      // worker, which survives this modal closing, a reload, or the browser
+      // being killed, and which resumes automatically. (Flag capture keeps the
+      // original in-memory pipeline below, unchanged.)
+      if (evidencePackId) {
+        // rev 8: hand off ONLY photos not already PROVEN handed off this
+        // session — a photo attached in an earlier round is never resent (its
+        // record is gone because it attached, which is not a failure).
+        const intended = idsToHandOff(
+          readyItems.map((it) => it.id),
+          exitGate.handedOff(),
         )
-        dbg('release:threw', {
-          detail: err instanceof Error ? err.message : 'release failed',
+        if (intended.length === 0) {
+          void drainQueue(evidencePackId)
+          setStage('done')
+          return
+        }
+        // In-session submit gate: these photos are now unresolved until the
+        // queue attaches them, the inspector removes them, or the session is
+        // dismissed. A FAILED handoff keeps them committed on purpose (they
+        // really are unattached); every exit path releases them — removePending
+        // and the dismiss confirm call packCapture.remove, and the map is
+        // in-memory only, so a reload falls back to server truth. It can
+        // therefore never block the pack permanently.
+        for (const id of intended) packCapture.commit(evidencePackId, id)
+        const intendedSet = new Set(intended)
+        const notes: Record<string, string | null> = {}
+        for (const it of readyItems) {
+          if (!intendedSet.has(it.id)) continue
+          notes[it.id] = canonicalCaptionOrNull(it.note) ?? canonicalCaptionOrNull(attachAllNote)
+        }
+        // ONE fail-closed handoff (rev 5, capture-handoff.ts). The release is
+        // deadline-bounded (never hostage), so the screen can afford to WAIT
+        // for its proof.
+        const handoff = await handOffPackRelease({
+          packId: evidencePackId,
+          notes,
+          secureRelease: noteKeeper ? (n) => noteKeeper.secureRelease(n) : undefined,
+          release: releaseQueued,
         })
+        // EXACT COVERAGE (rev 8): ONLY photos PROVEN handed off join the batch
+        // the Done gate counts. A missing or unproven photo never does, so the
+        // gate can never read "record absent" as "attached" for it.
+        // Merged into the gate SYNCHRONOUSLY (rev 9): an older completion can
+        // only add proven ids; the render mirror is the gate's latest set.
+        const outcome = exitGate.record(intended, handoff)
+        setBatchIds(outcome.handedOff)
+        void drainQueue(evidencePackId) // proven photos keep moving
+        if (outcome.next === 'review') {
+          // Partial or failed: the failed photos stay HERE, visible and
+          // retryable (Attach again resends only them).
+          setBatchError(handoff.ok ? null : handoff.message)
+          dbg('release:handoff-failed', { detail: handoff.ok ? 'none' : handoff.reason })
+          setStage('reviewing')
+          return
+        }
+        setStage('done')
+        return
       }
-      setBatchIds((prev) => {
-        const next = new Set(prev)
-        for (const it of readyItems) next.add(it.id)
-        return next
-      })
-      void drainQueue(evidencePackId)
-      setStage('done')
-      return
-    }
 
-    await runUploads(readyItems)
-    setStage('done')
-  }, [pending, runUploads, evidencePackId, attachAllNote])
+      await runUploads(readyItems)
+      setStage('done')
+    } finally {
+      exitGate.leave()
+      setExiting(false)
+    }
+  }, [pending, runUploads, evidencePackId, attachAllNote, noteKeeper, exitGate])
 
   // Retry photos whose upload/attach failed, so a failed save is never a
   // silent loss (the compressed blobs are still held in memory here — they
@@ -851,52 +1036,102 @@ export function EvidenceCapture({
   // stay on the review screen and surface the error — no silent
   // photo loss.
   const handleRaiseFlag = useCallback(async () => {
-    const readyItems = pending.filter((p) => p.state === 'ready' && p.master && p.thumb)
-    if (readyItems.length > 0 && evidencePackId) {
-      // PACK MODE = ONE PIPELINE (P0, 22 Jul night). This shortcut used to
-      // run the LEGACY in-modal uploader, which re-requested slots for
-      // already-staged photos — create-only Storage answered "The resource
-      // already exists" and 25 safely-uploaded photos were declared failed.
-      // Packs now release to the durable queue exactly like Attach; the
-      // worker finishes (idempotently) in the background while we navigate,
-      // and the pack page's panel shows live progress.
-      setBatchError(null)
-      for (const it of readyItems) packCapture.commit(evidencePackId, it.id)
-      const notes: Record<string, string | null> = {}
-      for (const it of readyItems) {
-        notes[it.id] = it.note?.trim() || attachAllNote.trim() || null
-      }
-      try {
-        await releaseQueued(evidencePackId, notes)
-      } catch {
-        // Records stay durable; the pack page offers "Attach saved photos".
-      }
-      void drainQueue(evidencePackId)
-    } else if (readyItems.length > 0) {
-      // FLAG capture keeps its original in-memory pipeline.
-      setStage('uploading')
-      setBatchError(null)
-      const allOk = await runUploads(readyItems)
-      if (!allOk) {
-        setBatchError(
-          'Some photos failed to attach. Retry or remove them, then tap Report issue again.',
-        )
+    // SINGLE FLIGHT (rev 9): claimed synchronously, before ANY await.
+    if (!exitGate.tryEnter()) return
+    let navigating = false
+    setExiting(true)
+    try {
+      // EXIT PLAN (rev 9): a full-page navigation would kill a photo still
+      // compressing / being stored, so Report issue never leaves while any
+      // not-yet-handed-off photo is processing or failed. An EMPTY session may
+      // report an issue without photos.
+      const plan = planCaptureExit(
+        toCapturePhotos(pending),
+        exitGate.handedOff(),
+        evidencePackId ? 'pack' : 'flag',
+      )
+      if (!plan.allowed) {
+        setBatchError(plan.blockedMessage)
         setStage('reviewing')
         return
       }
+      const eligible = new Set(plan.eligibleIds)
+      const readyItems = pending.filter((p) => eligible.has(p.id))
+      if (readyItems.length > 0 && evidencePackId) {
+        // PACK MODE = ONE PIPELINE (P0, 22 Jul night). This shortcut used to
+        // run the LEGACY in-modal uploader, which re-requested slots for
+        // already-staged photos — create-only Storage answered "The resource
+        // already exists" and 25 safely-uploaded photos were declared failed.
+        // Packs now release to the durable queue exactly like Attach; the
+        // worker finishes (idempotently) in the background while we navigate,
+        // and the pack page's panel shows live progress.
+        setBatchError(null)
+        // rev 8: never resend a photo already PROVEN handed off this session.
+        const intended = idsToHandOff(
+          readyItems.map((it) => it.id),
+          exitGate.handedOff(),
+        )
+        if (intended.length > 0) {
+          for (const id of intended) packCapture.commit(evidencePackId, id)
+          const intendedSet = new Set(intended)
+          const notes: Record<string, string | null> = {}
+          for (const it of readyItems) {
+            if (!intendedSet.has(it.id)) continue
+            notes[it.id] = canonicalCaptionOrNull(it.note) ?? canonicalCaptionOrNull(attachAllNote)
+          }
+          // FAIL CLOSED (rev 5/8): flag creation is reached ONLY when EVERY
+          // intended photo is proven handed to the queue. Any refusal, unsafe
+          // caption, thrown release, missing or unreadable photo keeps the
+          // inspector HERE, on the review screen — never a silent navigate.
+          const handoff = await handOffPackRelease({
+            packId: evidencePackId,
+            notes,
+            secureRelease: noteKeeper ? (n) => noteKeeper.secureRelease(n) : undefined,
+            release: releaseQueued,
+          })
+          const outcome = exitGate.record(intended, handoff)
+          setBatchIds(outcome.handedOff)
+          void drainQueue(evidencePackId) // proven photos keep moving either way
+          if (!handoff.ok || outcome.next !== 'done') {
+            setBatchError(handoff.ok ? null : handoff.message)
+            setStage('reviewing')
+            return
+          }
+        }
+      } else if (readyItems.length > 0) {
+        // FLAG capture keeps its original in-memory pipeline.
+        setStage('uploading')
+        setBatchError(null)
+        const allOk = await runUploads(readyItems)
+        if (!allOk) {
+          setBatchError(
+            'Some photos failed to attach. Retry or remove them, then tap Report issue again.',
+          )
+          setStage('reviewing')
+          return
+        }
+      }
+      // Stop the camera + clear in-memory state before leaving so we
+      // don't keep a getUserMedia stream alive across the navigation.
+      navigating = true
+      stopCamera()
+      if (typeof window !== 'undefined') {
+        const target = `/properties/${propertyId}/flags/new`
+        // Diagnostic — if the user reports a 404 after this we can
+        // see in dev tools whether the URL was malformed (e.g.
+        // propertyId got dropped to undefined).
+        console.info('[EvidenceCapture] navigating to raise-flag:', target)
+        window.location.href = target
+      }
+    } finally {
+      // Once navigation has started the gate stays CLAIMED: no second
+      // handoff or navigation can begin while the page unloads.
+      if (!navigating) {
+        exitGate.leave()
+        setExiting(false)
+      }
     }
-    // Stop the camera + clear in-memory state before leaving so we
-    // don't keep a getUserMedia stream alive across the navigation.
-    stopCamera()
-    if (typeof window !== 'undefined') {
-      const target = `/properties/${propertyId}/flags/new`
-      // Diagnostic — if the user reports a 404 after this we can
-      // see in dev tools whether the URL was malformed (e.g.
-      // propertyId got dropped to undefined).
-      console.info('[EvidenceCapture] navigating to raise-flag:', target)
-      window.location.href = target
-    }
-  }, [pending, runUploads, propertyId, stopCamera, evidencePackId, attachAllNote])
+  }, [pending, runUploads, propertyId, stopCamera, evidencePackId, attachAllNote, noteKeeper, exitGate])
 
   const finishAndReload = useCallback(() => {
     closeModal()
@@ -922,9 +1157,9 @@ export function EvidenceCapture({
   // blobs live only in memory — a reload would lose them silently, which
   // is exactly how evidence went missing. Native beforeunload only; no
   // new deps, and it self-removes once everything is saved.
-  const hasUnsavedWork = pending.some(
-    (p) => p.state === 'ready' || p.state === 'uploading' || p.state === 'error',
-  )
+  // rev 10: includes `compressing` (the only interval before pack bytes are
+  // durable in IndexedDB) and captures not yet in pending[] at all.
+  const hasUnsavedWork = hasUnsavedCaptureWork(capturePhotos, captureWork)
   useEffect(() => {
     if (!hasUnsavedWork) return
     const handler = (e: BeforeUnloadEvent) => {
@@ -1003,11 +1238,21 @@ export function EvidenceCapture({
                 <button
                   type="button"
                   onClick={handleRaiseFlag}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-amber-400 text-slate-950 px-2.5 py-1.5 text-xs font-semibold hover:bg-amber-300 active:bg-amber-500 transition"
-                  title="Attach pending photos to the pack, then open the report-issue workflow"
+                  // rev 9: disabled while a handoff is in flight or a photo
+                  // is still being prepared (a navigation would kill it).
+                  disabled={exiting || exitPlan.preparing}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-amber-400 text-slate-950 px-2.5 py-1.5 text-xs font-semibold hover:bg-amber-300 active:bg-amber-500 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={
+                    exitPlan.blockedMessage ??
+                    'Attach pending photos to the pack, then open the report-issue workflow'
+                  }
                 >
-                  <Flag size={13} aria-hidden />
-                  Report issue
+                  {exiting ? (
+                    <Loader2 size={13} className="animate-spin" aria-hidden />
+                  ) : (
+                    <Flag size={13} aria-hidden />
+                  )}
+                  {exitPlan.preparing ? 'Preparing photos…' : 'Report issue'}
                 </button>
               ) : null}
               <button
@@ -1015,10 +1260,10 @@ export function EvidenceCapture({
                 onClick={dismiss}
                 className="rounded-full p-1.5 hover:bg-white/10 transition disabled:opacity-40 disabled:cursor-not-allowed"
                 aria-label="Close camera"
-                // Disabled only during an active upload batch (in flight);
-                // otherwise closing with unattached/failed photos goes through
-                // the destructive confirm in `dismiss` (req 8).
-                disabled={isMidUpload}
+                // Disabled during an active upload batch or a handoff in
+                // flight (rev 9); otherwise closing with unattached/failed
+                // photos goes through the destructive confirm in `dismiss`.
+                disabled={isMidUpload || exiting || captureWork > 0}
               >
                 <X size={20} aria-hidden />
               </button>
@@ -1142,7 +1387,8 @@ export function EvidenceCapture({
                         <button
                           type="button"
                           onClick={() => removePending(p.id)}
-                          className="absolute -top-1.5 -right-1.5 rounded-full bg-slate-950 border border-white/30 p-0.5 hover:bg-red-600 transition"
+                          disabled={exiting || p.state === 'compressing'}
+                          className="absolute -top-1.5 -right-1.5 rounded-full bg-slate-950 border border-white/30 p-0.5 hover:bg-red-600 transition disabled:opacity-40"
                           aria-label="Remove photo"
                         >
                           <X size={10} aria-hidden />
@@ -1158,7 +1404,8 @@ export function EvidenceCapture({
                 <button
                   type="button"
                   onClick={() => galleryInputRef.current?.click()}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-white/20 px-3 py-2 text-xs font-medium text-white/80 hover:bg-white/10 transition"
+                  disabled={exiting}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-white/20 px-3 py-2 text-xs font-medium text-white/80 hover:bg-white/10 transition disabled:opacity-40"
                 >
                   <ImageIcon size={14} aria-hidden />
                   Gallery
@@ -1173,7 +1420,7 @@ export function EvidenceCapture({
                   <button
                     type="button"
                     onClick={handleShutter}
-                    disabled={!cameraReady}
+                    disabled={!cameraReady || exiting}
                     className="h-16 w-16 rounded-full bg-white text-slate-950 disabled:opacity-40 active:scale-95 transition flex items-center justify-center shadow-xl border-4 border-white/30"
                     aria-label="Take photo"
                   >
@@ -1184,7 +1431,7 @@ export function EvidenceCapture({
                 <button
                   type="button"
                   onClick={() => setStage('reviewing')}
-                  disabled={pending.length === 0}
+                  disabled={pending.length === 0 || exiting}
                   className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-3 py-2 text-sm font-semibold text-white disabled:opacity-40 active:bg-emerald-600 transition"
                 >
                   Next
@@ -1214,11 +1461,24 @@ export function EvidenceCapture({
                 </label>
                 <textarea
                   value={attachAllNote}
-                  onChange={(e) => setAttachAllNote(e.target.value)}
+                  readOnly={exiting}
+                  maxLength={MAX_CAPTION_LENGTH}
+                  onChange={(e) => {
+                    const text = e.target.value
+                    setAttachAllNote(text)
+                    // Durable at once + propagated to photos with no own caption.
+                    noteKeeper?.setBatchNote(text)
+                  }}
                   placeholder="e.g. Stain on couch — see angles 1–3"
                   rows={2}
                   className="w-full rounded-md bg-slate-900 border border-white/15 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
+                {noteUnsafeIds.has(BATCH_NOTE_UNSAFE_ID) ? (
+                  <p className="mt-1 text-[11px] text-amber-400">
+                    This note is not yet safe on this device — keep this screen
+                    open until the photos are attached.
+                  </p>
+                ) : null}
               </div>
 
               <ul className="space-y-3">
@@ -1281,14 +1541,25 @@ export function EvidenceCapture({
                           <textarea
                             autoFocus
                             value={p.note}
-                            onChange={(e) =>
+                            readOnly={exiting}
+                            maxLength={MAX_CAPTION_LENGTH}
+                            onChange={(e) => {
+                              const text = e.target.value
                               setPending((prev) =>
                                 prev.map((it) =>
-                                  it.id === p.id ? { ...it, note: e.target.value } : it,
+                                  it.id === p.id ? { ...it, note: text } : it,
                                 ),
                               )
-                            }
-                            onBlur={() => setEditingId(null)}
+                              // Shadow written SYNCHRONOUSLY, before return.
+                              noteKeeper?.change(p.id, text)
+                            }}
+                            onBlur={(e) => {
+                              // The textarea's CURRENT value — never the
+                              // possibly-stale render value p.note.
+                              const current = e.currentTarget.value
+                              setEditingId(null)
+                              noteKeeper?.blur(p.id, current)
+                            }}
                             rows={2}
                             placeholder="Caption this photo…"
                             className="w-full rounded-md bg-slate-950 border border-white/15 px-2.5 py-1.5 text-sm text-white placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-emerald-500"
@@ -1297,7 +1568,8 @@ export function EvidenceCapture({
                           <button
                             type="button"
                             onClick={() => setEditingId(p.id)}
-                            className="text-left text-sm text-white/80 hover:text-white inline-flex items-start gap-1.5"
+                            disabled={exiting}
+                            className="text-left text-sm text-white/80 hover:text-white inline-flex items-start gap-1.5 disabled:opacity-60"
                           >
                             <Pencil size={12} className="mt-0.5" aria-hidden />
                             <span>
@@ -1311,6 +1583,12 @@ export function EvidenceCapture({
                             </span>
                           </button>
                         )}
+                        {noteUnsafeIds.has(p.id) ? (
+                          <p className="mt-1 text-[11px] text-amber-400">
+                            Caption not yet safe on this device — keep this
+                            screen open until the photos are attached.
+                          </p>
+                        ) : null}
                         {p.state === 'error' ? (
                           <p className="mt-1.5 text-xs text-red-400">{p.error}</p>
                         ) : null}
@@ -1318,7 +1596,8 @@ export function EvidenceCapture({
                       <button
                         type="button"
                         onClick={() => removePending(p.id)}
-                        className="text-white/50 hover:text-red-400 self-start p-1"
+                        disabled={exiting || p.state === 'compressing'}
+                        className="text-white/50 hover:text-red-400 self-start p-1 disabled:opacity-40"
                         aria-label="Remove photo"
                       >
                         <Trash2 size={14} aria-hidden />
@@ -1331,22 +1610,37 @@ export function EvidenceCapture({
               {batchError ? (
                 <p className="mt-3 text-sm text-red-400">{batchError}</p>
               ) : null}
+              {/* rev 9: the truthful reason Attach / Report issue are held. */}
+              {exitPlan.blockedMessage && exitPlan.blockedMessage !== batchError ? (
+                <p className="mt-3 text-sm text-amber-400" role="status">
+                  {exitPlan.blockedMessage}
+                </p>
+              ) : null}
 
               <div className="mt-5 flex items-center justify-between gap-3">
                 <button
                   type="button"
                   onClick={() => setStage('shooting')}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-white/20 px-3 py-2 text-sm font-medium text-white/80 hover:bg-white/10 transition"
+                  disabled={exiting}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-white/20 px-3 py-2 text-sm font-medium text-white/80 hover:bg-white/10 transition disabled:opacity-40"
                 >
                   ← More photos
                 </button>
                 <button
                   type="button"
                   onClick={handleAttach}
-                  disabled={!readiness.ready}
+                  disabled={!canAttach}
                   className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40 disabled:cursor-not-allowed active:bg-emerald-600 transition"
                 >
-                  {readiness.ready
+                  {exiting
+                    ? 'Attaching…'
+                    : exitPlan.preparing
+                    ? 'Preparing photos…'
+                    : exitPlan.failedIds.length > 0
+                    ? 'Remove failed photos first'
+                    : readyIds.length === 0 && canAttach
+                    ? 'Continue'
+                    : readiness.ready
                     ? `Attach ${readiness.total} photo${readiness.total === 1 ? '' : 's'}`
                     : readiness.total === 0
                       ? // Never the dead "Preparing photos… 0 of 0" (P0, 22
@@ -1375,23 +1669,31 @@ export function EvidenceCapture({
                     />
                     <div className="flex-1 text-sm">
                       <p className="text-white/80 truncate">
-                        {p.note?.trim() || attachAllNote.trim() || (
+                        {canonicalCaption(p.note) || canonicalCaption(attachAllNote) || (
                           <span className="italic text-white/40">No caption</span>
                         )}
                       </p>
                       <p className="text-xs text-white/50 mt-0.5">
                         {evidencePackId
                           ? (() => {
-                              // PACK MODE: live truth from the durable queue.
-                              // Record gone = server-confirmed attach (the
-                              // worker deletes only after confirmation).
-                              // Quiet retries read as Uploading; only an
-                              // exhausted failure says so.
+                              // PACK MODE: live truth from the durable queue —
+                              // but "record gone = attached" ONLY for a photo
+                              // PROVEN handed off this session (rev 8). Quiet
+                              // retries read as Uploading; only an exhausted
+                              // failure says so.
                               const rec = queueRecordById.get(p.id)
-                              if (!packQueue.hydrated) return '…'
-                              if (!rec) return 'Attached'
-                              if (rec.discardRequested) return 'Removing…'
-                              if (isExhausted(rec)) return 'Could not upload'
+                              const status = packRowStatus(
+                                batchIds.has(p.id),
+                                rec
+                                  ? { discardRequested: rec.discardRequested, exhausted: isExhausted(rec) }
+                                  : undefined,
+                                packQueue.hydrated,
+                              )
+                              if (status === 'not_attached') return 'Not attached yet'
+                              if (status === 'pending') return '…'
+                              if (status === 'attached') return 'Attached'
+                              if (status === 'removing') return 'Removing…'
+                              if (status === 'failed') return 'Could not upload'
                               return 'Uploading…'
                             })()
                           : p.state === 'uploading'
@@ -1406,11 +1708,21 @@ export function EvidenceCapture({
                     {evidencePackId ? (
                       (() => {
                         const rec = queueRecordById.get(p.id)
-                        if (!packQueue.hydrated) return null
-                        if (!rec) return <span className="text-emerald-400 text-xs">✓</span>
-                        if (isExhausted(rec))
+                        const status = packRowStatus(
+                          batchIds.has(p.id),
+                          rec
+                            ? { discardRequested: rec.discardRequested, exhausted: isExhausted(rec) }
+                            : undefined,
+                          packQueue.hydrated,
+                        )
+                        if (status === 'not_attached')
                           return <span className="text-red-400 text-xs">!</span>
-                        if (rec.discardRequested) return null
+                        if (status === 'pending') return null
+                        if (status === 'attached')
+                          return <span className="text-emerald-400 text-xs">✓</span>
+                        if (status === 'failed')
+                          return <span className="text-red-400 text-xs">!</span>
+                        if (status === 'removing') return null
                         return (
                           <Loader2
                             size={16}

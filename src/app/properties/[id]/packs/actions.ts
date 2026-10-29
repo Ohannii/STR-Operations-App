@@ -6,8 +6,15 @@ import { getUserContext } from '@/lib/auth/get-user-context'
 import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
 import { formatDateTimeSAST } from '@/lib/ui/datetime'
-import { evaluatePackSubmit, parseExpectedCount } from '@/lib/packs/submit-guard'
 import { buildPackStartRedirect } from '@/lib/packs/start-redirect'
+import {
+  CONFLICT_UNPROVEN_MESSAGE,
+  deriveConflictDetails,
+  describeUnexpected,
+  interpretCaptionSaveRpc,
+  interpretSubmitRpc,
+} from '@/lib/photos/caption-outcomes'
+import type { SubmitActionResult } from '@/lib/photos/caption-submit'
 
 /**
  * Evidence-pack lifecycle server actions.
@@ -132,13 +139,17 @@ export async function startPreArrivalPackAction(formData: FormData) {
 
 
 // ----------------------------------------------------------------
-// submitEvidencePackAction — flip draft → submitted
+// submitEvidencePackAction — LEGACY, now fail-closed for pre-arrival
 // ----------------------------------------------------------------
 //
-// One-tap finalise. We do NOT require photos to exist — an empty
-// submitted pack is unusual but legitimate (e.g., apartment looked
-// fine, no documentation needed). The UI gates this on the user
-// side with a confirm dialog, not the server.
+// P0 caption durability (22 Oct 2026): this action finalised a pre-arrival
+// pack WITHOUT the caption manifest — the exact Unit 377 incident shape. It
+// now refuses pre-arrival finalisation outright and directs the user to the
+// pack report's save-and-submit flow. Defence in depth: migration
+// 20261022090000 also REVOKES the client grant on finalize_prearrival_pack,
+// so even a direct/stale/manipulated POST (or raw RPC call) cannot finalise
+// through this path. The idempotent already-submitted replay is kept so a
+// stale form on an already-submitted pack still lands on a truthful success.
 export async function submitEvidencePackAction(formData: FormData) {
   const propertyId = String(formData.get('property_id') ?? '').trim()
   const packId = String(formData.get('pack_id') ?? '').trim()
@@ -193,81 +204,19 @@ export async function submitEvidencePackAction(formData: FormData) {
   }
 
   // ----------------------------------------------------------------
-  // FAIL-CLOSED PHOTO GUARD (fix/prearrival-photo-submit-guard)
+  // PRE-ARRIVAL: NEVER finalise here (P0 caption durability, 22 Oct 2026).
   // ----------------------------------------------------------------
-  // Scoped to the pre-arrival workflow. Never let a pre-arrival pack
-  // become `submitted` while it has zero active linked photos, or
-  // fewer than the client says it expected (partial-upload race). This
-  // is server-authoritative — it runs regardless of the client's
-  // disabled button, so a direct/stale/duplicate/manipulated request
-  // is rejected too. On failure the pack stays a draft and we redirect
-  // back with a useful error (never a fake success). The count query is
-  // company-scoped by RLS, filtered to this pack, and excludes
-  // soft-deleted rows, so deleted photos can't satisfy the requirement.
+  // Captions are part of the evidence; only the pack report's
+  // submitPackWithCaptionsAction may finalise, because only it carries the
+  // full caption manifest into one transaction. This runs BEFORE any other
+  // pre-arrival handling so no code path below can reach finalisation.
   if (pack.pack_type === 'pre_arrival') {
-    const { count: linkedCount, error: countErr } = await supabase
-      .from('photos')
-      .select('id', { count: 'exact', head: true })
-      .eq('evidence_pack_id', packId)
-      .is('deleted_at', null)
-
-    if (countErr) {
-      console.error('[packs/submit] photo count error:', countErr)
-      const url = returnTo ?? `/properties/${propertyId}`
-      redirect(
-        `${url}?error=${encodeURIComponent(
-          'Could not verify the pack photos. It is still a draft — please try again.',
-        )}`,
-      )
-    }
-
-    const decision = evaluatePackSubmit({
-      linkedActivePhotoCount: linkedCount ?? 0,
-      expected: parseExpectedCount(formData.get('expected_count')),
-    })
-    if (!decision.ok) {
-      const url = returnTo ?? `/properties/${propertyId}`
-      redirect(`${url}?error=${encodeURIComponent(decision.message)}`)
-    }
-  }
-
-  // ----------------------------------------------------------------
-  // AUTHORITATIVE FINALISE (Outcome 2)
-  // ----------------------------------------------------------------
-  // The RPC locks the pack and proves the whole invariant in ONE
-  // transaction: no unresolved intents, every completed intent has its exact
-  // active photos row AND Storage objects, at least one active photo — then
-  // flips draft -> submitted. No client-supplied count is trusted; the
-  // expected_count check above is only a fast, non-authoritative pre-check
-  // retained from Outcome 1. An already-submitted pack replays idempotently.
-  if (pack.pack_type === 'pre_arrival') {
-    const { data: outcome, error: rpcErr } = await supabase.rpc(
-      'finalize_prearrival_pack',
-      { p_pack_id: packId },
+    const url = returnTo ?? `/properties/${propertyId}`
+    redirect(
+      `${url}?error=${encodeURIComponent(
+        'Pre-arrival packs are submitted from the pack report, where captions are saved with the pack. Open the report and tap "Save captions and submit pack".',
+      )}`,
     )
-    if (rpcErr) {
-      console.error('[packs/submit] finalize rpc error:', rpcErr)
-      const url = returnTo ?? `/properties/${propertyId}`
-      redirect(`${url}?error=${encodeURIComponent(rpcErr.message)}`)
-    }
-
-    const { error: auditErr } = await supabase.from('audit_events').insert({
-      company_id: pack.company_id,
-      actor_id: ctx.user.id,
-      event_kind: 'evidence_pack_submit',
-      entity_type: 'evidence_pack',
-      entity_id: packId,
-      before: { status: 'draft' },
-      after: { status: 'submitted', outcome },
-    })
-    if (auditErr) {
-      console.error('[packs/submit] audit write failed:', auditErr)
-    }
-
-    revalidatePath(`/properties/${propertyId}`)
-    revalidatePath(`/properties/${propertyId}/packs/${packId}/report`)
-    if (returnTo) redirect(returnTo)
-    redirect(`/properties/${propertyId}?pack_submitted=1`)
   }
 
   // Any OTHER pack type. Since migration 20260718120000 the client no longer
@@ -284,6 +233,261 @@ export async function submitEvidencePackAction(formData: FormData) {
   )
 }
 
+
+// ----------------------------------------------------------------
+// CAPTION DURABILITY (P0, 22 Oct 2026) — typed-result actions for the
+// pack-report caption editor. These return structured results (no redirect)
+// because the editor shows truthful inline states and must never lose a
+// draft to a navigation. Raw database errors are LOGGED here and replaced
+// with safe user-facing messages — they never reach a URL or the UI.
+// ----------------------------------------------------------------
+
+export type CaptionActionResult =
+  | { ok: true; code: 'saved' | 'unchanged' }
+  | {
+      ok: false
+      code?: 'stale'
+      error: string
+      retryable: boolean
+      /** stale only: the server's CURRENT caption (undefined = unreadable). */
+      serverNotes?: string | null
+    }
+
+function safeCaptionError(raw: string): { error: string; retryable: boolean } {
+  if (raw.includes('caption_locked') || raw.includes('immutable')) {
+    return {
+      error: 'This pack was already submitted — captions can no longer change.',
+      retryable: false,
+    }
+  }
+  if (raw.includes('not an active photo')) {
+    return { error: 'This photo is no longer part of the pack.', retryable: false }
+  }
+  if (raw.includes('too long')) {
+    return { error: 'Caption is too long (max 2000 characters).', retryable: false }
+  }
+  return { error: 'Could not save the caption. It is still kept on this device.', retryable: true }
+}
+
+/**
+ * Autosave ONE caption on a DRAFT pre-arrival pack (audited RPC).
+ * COMPARE-AND-SET, ALWAYS (rev 4): `expectedNotes` — what the client believes
+ * the server currently holds — is MANDATORY and the database compares it
+ * unconditionally; there is no flag that could request a blind overwrite.
+ * A missing or non-string expectation is rejected before any database call.
+ * FAIL CLOSED: only 'saved' / 'unchanged' are success; 'stale' is a typed
+ * conflict carrying the server's current caption; null or any other value is
+ * logged server-side and returned as a safe failure.
+ */
+export async function saveDraftPhotoCaptionAction(input: {
+  photoId: string
+  note: string
+  expectedNotes: string
+}): Promise<CaptionActionResult> {
+  const photoId = String(input?.photoId ?? '').trim()
+  if (typeof input?.note !== 'string' || typeof input?.expectedNotes !== 'string') {
+    return {
+      ok: false,
+      error: 'Caption could not be read. It is still kept on this device.',
+      retryable: false,
+    }
+  }
+  const note = input.note
+  const expectedNotes = input.expectedNotes
+  if (!photoId) return { ok: false, error: 'Missing photo reference.', retryable: false }
+  if (note.length > 2000 || expectedNotes.length > 2000) {
+    return { ok: false, error: 'Caption is too long (max 2000 characters).', retryable: false }
+  }
+
+  const ctx = await getUserContext()
+  if (!ctx || !ctx.company) {
+    return { ok: false, error: 'You appear to be signed out. Log in again.', retryable: false }
+  }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase.rpc('set_prearrival_photo_caption', {
+    p_photo_id: photoId,
+    p_note: note,
+    p_expected_notes: expectedNotes,
+  })
+  if (error) {
+    console.error('[packs/caption] rpc error:', error)
+    const safe = safeCaptionError(error.message ?? '')
+    return { ok: false, ...safe }
+  }
+  const outcome = interpretCaptionSaveRpc(data)
+  if (outcome.kind === 'saved') return { ok: true, code: 'saved' }
+  if (outcome.kind === 'unchanged') return { ok: true, code: 'unchanged' }
+  if (outcome.kind === 'stale') {
+    // Read the server's CURRENT caption so the conflict can show both
+    // versions and let the user choose (RLS-scoped read).
+    let serverNotes: string | null | undefined
+    const { data: row, error: readErr } = await supabase
+      .from('photos')
+      .select('notes')
+      .eq('id', photoId)
+      .maybeSingle<{ notes: string | null }>()
+    if (!readErr && row) serverNotes = row.notes
+    else if (readErr) console.error('[packs/caption] stale re-read failed:', readErr)
+    return {
+      ok: false,
+      code: 'stale',
+      error:
+        'This caption was changed from another tab or device. Your text here is kept — choose which version to keep.',
+      retryable: false,
+      serverNotes,
+    }
+  }
+  console.error('[packs/caption] unexpected rpc result:', describeUnexpected(data))
+  return {
+    ok: false,
+    error: 'Could not confirm the caption was saved. It is still kept on this device.',
+    retryable: false,
+  }
+}
+
+export type SubmitWithCaptionsResult = SubmitActionResult
+
+type ManifestPhotoRow = { id: string; notes: string | null }
+type PackStateRow = { id: string; status: string }
+
+/**
+ * ONE "Save captions and submit pack" operation. The COMPLETE caption
+ * manifest — each entry with the server BASELINE it was written against —
+ * travels into a single SECURITY DEFINER transaction
+ * (submit_prearrival_pack_with_captions), which validates the whole manifest
+ * and every baseline under lock BEFORE writing anything, then saves,
+ * audits and finalises. FAIL CLOSED (rev 3): only 'submitted' /
+ * 'already_submitted' are success; 'caption_conflict' is a typed failure
+ * (zero writes) that names the conflicting photos; null or anything else is
+ * logged and returned as a safe failure. The pack stays a draft on failure.
+ */
+export async function submitPackWithCaptionsAction(input: {
+  propertyId: string
+  packId: string
+  captions: Array<{ photoId: string; note: string; expected: string }>
+}): Promise<SubmitWithCaptionsResult> {
+  const propertyId = String(input?.propertyId ?? '').trim()
+  const packId = String(input?.packId ?? '').trim()
+  const captions = Array.isArray(input?.captions) ? input.captions : null
+  if (!propertyId || !packId || !captions) {
+    return { ok: false, error: 'Missing pack reference.' }
+  }
+  if (captions.length > 500) {
+    return { ok: false, error: 'Too many captions in one submission. Nothing was submitted.' }
+  }
+  for (const c of captions) {
+    if (
+      !c ||
+      typeof c.photoId !== 'string' ||
+      typeof c.note !== 'string' ||
+      typeof c.expected !== 'string'
+    ) {
+      return { ok: false, error: 'Captions could not be read. Nothing was submitted.' }
+    }
+    if (c.note.length > 2000 || c.expected.length > 2000) {
+      return { ok: false, error: 'A caption is too long (max 2000 characters). Nothing was submitted.' }
+    }
+  }
+
+  const ctx = await getUserContext()
+  if (!ctx || !ctx.company) {
+    return { ok: false, error: 'You appear to be signed out. Log in again.' }
+  }
+
+  const supabase = await createClient()
+
+  // The pack must belong to the property in the URL (RLS scopes company).
+  const { data: pack, error: readErr } = await supabase
+    .from('evidence_packs')
+    .select('id, property_id')
+    .eq('id', packId)
+    .is('deleted_at', null)
+    .maybeSingle<{ id: string; property_id: string }>()
+  if (readErr) {
+    console.error('[packs/submit-captions] read error:', readErr)
+    return { ok: false, error: 'Could not verify the pack. It is still a draft — try again.' }
+  }
+  if (!pack || pack.property_id !== propertyId) {
+    return { ok: false, error: 'Pack not found for this property. Nothing was submitted.' }
+  }
+
+  const payload = captions.map((c) => ({
+    photo_id: c.photoId,
+    note: c.note,
+    expected_note: c.expected,
+  }))
+  const { data: rpcData, error: rpcErr } = await supabase.rpc(
+    'submit_prearrival_pack_with_captions',
+    { p_pack_id: packId, p_captions: payload },
+  )
+  if (rpcErr) {
+    console.error('[packs/submit-captions] rpc error:', rpcErr)
+    const raw = rpcErr.message ?? ''
+    const safe = raw.includes('not an active photo') || raw.includes('caption_manifest_incomplete')
+      ? 'The photos in this pack changed while you were editing. Reload the report and try again — nothing was submitted, the pack is still a draft.'
+      : raw.includes('unresolved')
+        ? 'Some photos are still uploading. Wait for them to finish — the pack is still a draft.'
+        : raw.includes('could not be verified against storage') || raw.includes('verified upload path')
+          ? 'Some photos could not be verified. The pack is still a draft — use the recovery panel, then try again.'
+          : raw.includes('no saved photos')
+            ? 'This pack has no saved photos yet. The pack is still a draft.'
+            : 'The pack could not be submitted. It is still a draft and your captions are kept on this device.'
+    return { ok: false, error: safe }
+  }
+
+  const outcome = interpretSubmitRpc(rpcData)
+  if (outcome.kind === 'caption_conflict') {
+    // ZERO writes happened. Re-read and PROVE which photos differ; both read
+    // errors are inspected and an inexact photo set is never guessed at.
+    const ids = captions.map((c) => c.photoId)
+    const [photosRead, packRead] = await Promise.all([
+      supabase.from('photos').select('id, notes').in('id', ids).returns<ManifestPhotoRow[]>(),
+      supabase
+        .from('evidence_packs')
+        .select('id, status')
+        .eq('id', packId)
+        .maybeSingle<PackStateRow>(),
+    ])
+    const details = deriveConflictDetails(
+      captions,
+      { data: photosRead.data, error: photosRead.error },
+      { data: packRead.data, error: packRead.error },
+    )
+    revalidatePath(`/properties/${propertyId}`)
+    revalidatePath(`/properties/${propertyId}/packs/${packId}/report`)
+    if (details.kind === 'unproven') {
+      // Generic, safe, reload-oriented failure: NOT the resolvable-conflict
+      // path, so the editor keeps every draft and shows no empty choice UI.
+      console.error('[packs/submit-captions] conflict details unproven:', details.reason)
+      return { ok: false, error: CONFLICT_UNPROVEN_MESSAGE }
+    }
+    return {
+      ok: false,
+      code: 'caption_conflict',
+      packSubmitted: details.packSubmitted,
+      conflicts: details.conflicts,
+      error: details.packSubmitted
+        ? 'This pack was already submitted from another device with different captions. ' +
+          'Your typed captions were NOT saved into it — they are kept on this device. ' +
+          'Copy them below if you need them.'
+        : 'Some captions were changed from another tab or device since you last saved. ' +
+          'Nothing was submitted and the pack is still a draft — choose which version to keep for the highlighted photos.',
+    }
+  }
+  if (outcome.kind === 'unknown') {
+    console.error('[packs/submit-captions] unexpected rpc result:', describeUnexpected(rpcData))
+    return {
+      ok: false,
+      error:
+        'The submission could not be confirmed. Reload the report to check whether the pack is still a draft — your captions are kept on this device.',
+    }
+  }
+
+  revalidatePath(`/properties/${propertyId}`)
+  revalidatePath(`/properties/${propertyId}/packs/${packId}/report`)
+  return { ok: true, code: outcome.kind }
+}
 
 // ----------------------------------------------------------------
 // recoverPrearrivalPhotoIntentAction — rescue already-uploaded bytes

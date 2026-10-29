@@ -21,7 +21,6 @@ import { EvidenceCapture } from '@/components/photos/evidence-capture'
 import {
   DiscardDraftButton,
   PackStatusBanner,
-  PackSubmitButton,
 } from '@/components/photos/pack-submit-button'
 import { PackQueuePanel } from '@/components/photos/pack-queue-panel'
 import { UnresolvedIntentsPanel } from '@/components/photos/unresolved-intents-panel'
@@ -605,13 +604,18 @@ export default async function PropertyPage({
                       Spotted an issue — report it
                     </Link>
                     <div className="sm:ml-auto">
-                      <PackSubmitButton
-                        propertyId={property.id}
-                        packId={draftPack.id}
-                        linkedPhotoCount={draftPackPhotoCount}
-                        serverUnresolvedCount={draftPackPendingIntents}
-                        showStatus={false}
-                      />
+                      {/* P0 caption durability (22 Oct 2026): the property page
+                          never finalises a pre-arrival pack directly any more.
+                          Submission lives on the pack report, where every
+                          caption is saved WITH the pack in one transaction —
+                          this link is the only submit affordance here. */}
+                      <Link
+                        href={`/properties/${property.id}/packs/${draftPack.id}/report`}
+                        className="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 active:bg-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2 sm:w-auto"
+                      >
+                        <Check size={15} aria-hidden />
+                        Review captions and submit
+                      </Link>
                     </div>
                   </div>
                 </div>

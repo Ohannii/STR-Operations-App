@@ -18,6 +18,8 @@
  * There is no TTL sweep and no implicit cleanup.
  */
 
+import { canonicalCaptionOrNull, sameCaption } from './caption-canonical'
+
 export type QueuedPhotoState =
   /** Bytes are safe on this device; the inspector may still edit its note. */
   | 'saved_local'
@@ -39,6 +41,21 @@ export type QueuedPhotoMeta = {
   packId: string
   capturedAt: string
   note: string | null
+  /**
+   * CAPTION DURABILITY (P0, 22 Oct 2026). Monotonic stamp (ms) of the LATEST
+   * durable caption write for this record. Every caption decision carries the
+   * stamp of the edit it is persisting, and a decision whose stamp is older
+   * than the stored one is refused — a delayed autosave can never overwrite a
+   * newer caption. Absent on older records => 0.
+   */
+  noteEditedAt?: number | null
+  /**
+   * CAPTION IDENTITY (rev 4, 26 Oct). Unique id of the exact edit whose text
+   * is in `note`. Versions order edits; the id PROVES which edit is durable.
+   * A shadow is only ever cleared when this id (and version and text) match
+   * it exactly — a larger version with different text is never proof.
+   */
+  noteEditId?: string | null
   width: number
   height: number
   sizeBytes: number
@@ -267,17 +284,80 @@ export function claimForStagingDecision(
  * per photo. Only `saved_local` records release; anything already released,
  * in flight, failed or removed is left exactly as it is.
  */
+export type NoteEdit = { v: number; editId: string }
+
 export function releaseDecision(
   r: QueuedPhotoMeta,
   note: string | null | undefined,
+  /** The exact caption edit this release carries (the Attach tap), with the
+   *  capture keeper's version + identity. Omitted => fallback stamp. */
+  edit?: NoteEdit | number,
 ): Partial<QueuedPhotoMeta> | null {
   if (r.discardRequested) return null
   if (r.state !== 'saved_local') return null
+  if (note === undefined) return { state: 'queued', leaseUntil: null }
+  const cur = r.noteEditedAt ?? 0
+  if (typeof edit === 'object') {
+    // The release caption is stored in THE canonical form — the same form
+    // prepareRelease shadowed — so identity proof compares like with like.
+    const relNote = canonicalCaptionOrNull(note)
+    // (a) OLDER than the durable caption: order disproven -> refuse.
+    if (edit.v < cur) return null
+    if (edit.v === cur) {
+      // (c) IDEMPOTENT: the durable caption IS this exact release edit (the
+      //     normal path — releaseQueued reconciles the release shadow into
+      //     the record first). Same identity AND same canonical text ->
+      //     only the saved_local -> queued transition; the caption is
+      //     already exactly right.
+      if ((r.noteEditId ?? null) === edit.editId && sameCaption(r.note, relNote)) {
+        return { state: 'queued', leaseUntil: null }
+      }
+      // (b) equal version with a different identity or different text: an
+      //     ambiguous tie — refuse the WHOLE release (fail closed; the
+      //     record stays saved_local and releaseQueued reports it).
+      return null
+    }
+    // (d) strictly NEWER: apply the release edit and queue.
+    return {
+      state: 'queued',
+      leaseUntil: null,
+      note: relNote,
+      noteEditedAt: edit.v,
+      noteEditId: edit.editId,
+    }
+  }
+  // Legacy callers without a keeper: a stamp forced above the record.
   return {
     state: 'queued',
     leaseUntil: null,
-    note: note !== undefined ? note : r.note,
+    note,
+    noteEditedAt: Math.max(edit ?? 0, cur + 1),
+    noteEditId: null,
   }
+}
+
+/**
+ * CAPTION DURABILITY (P0, 22 Oct 2026; rev 4, 26 Oct). Persist a caption
+ * edit into the photo's OWN IndexedDB record. Rules, provable in isolation:
+ *   - records NOT owned by an in-flight worker accept caption edits:
+ *     `saved_local`, `queued` and `failed`. `uploading`/`attaching` are
+ *     worker-owned and handled by the attach-boundary gate;
+ *   - a discard-requested record accepts nothing;
+ *   - an edit must be STRICTLY newer than the durable version. An equal
+ *     version is either the same edit (already applied — nothing to do) or a
+ *     cross-tab tie whose order CANNOT be proven: refused, fail closed (the
+ *     losing shadow stays and blocks the attach; it is never discarded).
+ */
+export function noteEditDecision(
+  r: QueuedPhotoMeta,
+  note: string | null,
+  editedAtMs: number,
+  editId: string,
+): Partial<QueuedPhotoMeta> | null {
+  if (r.discardRequested) return null
+  if (r.state !== 'saved_local' && r.state !== 'queued' && r.state !== 'failed') return null
+  if (editedAtMs <= (r.noteEditedAt ?? 0)) return null
+  return { note, noteEditedAt: editedAtMs, noteEditId: editId }
 }
 
 /**
