@@ -110,6 +110,78 @@ export async function createTaskInProject(
   return { gid, permalinkUrl }
 }
 
+/** Max custom-field-setting pages read for one project (100 per page). */
+export const FIELD_SETTINGS_MAX_PAGES = 20
+
+/**
+ * READ-ONLY (Phase 1, hardened): EVERY custom-field setting of a project —
+ * GET /projects/{gid}/custom_field_settings, paginated (limit=100, following
+ * next_page.offset until null). Each setting is requested with exactly the
+ * nested properties the validator needs (never Asana's compact default):
+ * parent project GID, field GID, resource_subtype, enum option GID + enabled.
+ *
+ * Returns `{ gid, custom_field_settings }` for field-validation.ts to parse
+ * defensively. THROWS on any HTTP error (AsanaApiError, with the 429
+ * Retry-After), a malformed page, a repeated offset or too many pages — the
+ * non-throwing wrapper (field-schema.ts) turns every failure into "no usable
+ * fields". A GET cannot modify the project, so it is not behind the write
+ * allowlist.
+ */
+export async function getProjectCustomFieldSettings(
+  token: string,
+  projectGid: string,
+): Promise<{ gid: string; custom_field_settings: unknown[] }> {
+  const settings: unknown[] = []
+  const seenOffsets = new Set<string>()
+  let offset: string | undefined
+  for (let page = 0; ; page++) {
+    if (page >= FIELD_SETTINGS_MAX_PAGES) {
+      throw new Error(`custom field settings exceeded ${FIELD_SETTINGS_MAX_PAGES} pages`)
+    }
+    const url = new URL(
+      `${ASANA_API_BASE}/projects/${encodeURIComponent(projectGid)}/custom_field_settings`,
+    )
+    url.searchParams.set('limit', '100')
+    url.searchParams.set(
+      'opt_fields',
+      [
+        // `parent` is current; `project` is Asana's deprecated alias — both
+        // are requested and the validator accepts either (never neither).
+        'parent.gid',
+        'project.gid',
+        'custom_field.gid',
+        'custom_field.resource_subtype',
+        'custom_field.enum_options.gid',
+        'custom_field.enum_options.enabled',
+      ].join(','),
+    )
+    if (offset) url.searchParams.set('offset', offset)
+
+    const res = await fetch(url.toString(), { method: 'GET', headers: authHeaders(token) })
+    if (!res.ok) await throwAsana('read project fields', res)
+    const json = (await res.json()) as {
+      data?: unknown
+      next_page?: { offset?: unknown } | null
+    }
+    if (!json || !Array.isArray(json.data)) {
+      throw new Error('custom field settings page is malformed')
+    }
+    settings.push(...json.data)
+
+    const next = json.next_page?.offset
+    if (next === undefined || next === null) break
+    if (typeof next !== 'string' || next.length === 0) {
+      throw new Error('custom field settings pagination offset is malformed')
+    }
+    if (seenOffsets.has(next)) {
+      throw new Error('custom field settings pagination repeated an offset')
+    }
+    seenOffsets.add(next)
+    offset = next
+  }
+  return { gid: projectGid, custom_field_settings: settings }
+}
+
 /** Move a task into a section of its project. */
 export async function addTaskToSection(
   token: string,
