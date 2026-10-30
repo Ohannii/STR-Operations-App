@@ -660,6 +660,81 @@ describe('getProjectCustomFieldSettings — paginated READ-ONLY GET', () => {
   })
 })
 
+describe('PAGINATION FAILS CLOSED — a damaged next_page is never read as "no more pages"', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  const firstPageThen = (nextPage: unknown, include = true) =>
+    pagesFetch([
+      (include
+        ? { data: settingsPage(LIVE_FIELDS.slice(0, 3)), next_page: nextPage }
+        : { data: settingsPage(LIVE_FIELDS.slice(0, 3)) }) as Page,
+      { data: settingsPage(LIVE_FIELDS.slice(3)), next_page: null },
+    ])
+
+  it('(1) MISSING next_page throws (would otherwise accept a truncated schema)', async () => {
+    const fetchMock = firstPageThen(undefined, false)
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(getProjectCustomFieldSettings('tok', ASANA_TEST_PROJECT_GID)).rejects.toThrow(
+      /pagination is malformed/,
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('(2) next_page = {} throws (no offset)', async () => {
+    vi.stubGlobal('fetch', firstPageThen({}))
+    await expect(getProjectCustomFieldSettings('tok', ASANA_TEST_PROJECT_GID)).rejects.toThrow(
+      /offset is malformed/,
+    )
+  })
+
+  it.each([
+    ['a string', 'o1'],
+    ['a number', 7],
+    ['a boolean', true],
+    ['an array', [{ offset: 'o1' }]],
+  ])('(3) next_page as %s throws', async (_label, nextPage) => {
+    vi.stubGlobal('fetch', firstPageThen(nextPage))
+    await expect(getProjectCustomFieldSettings('tok', ASANA_TEST_PROJECT_GID)).rejects.toThrow(
+      /pagination is malformed/,
+    )
+  })
+
+  it.each([['empty', ''], ['spaces', '   '], ['tabs/newlines', '\t\n'], ['missing', undefined]])(
+    '(4) an offset that is %s throws',
+    async (_label, offset) => {
+      vi.stubGlobal('fetch', firstPageThen(offset === undefined ? {} : { offset }))
+      await expect(getProjectCustomFieldSettings('tok', ASANA_TEST_PROJECT_GID)).rejects.toThrow(
+        /offset is malformed/,
+      )
+    },
+  )
+
+  it('(5) next_page = null still completes normally (single and multi page)', async () => {
+    vi.stubGlobal('fetch', pagesFetch([{ data: settingsPage(LIVE_FIELDS), next_page: null }]))
+    expect((await getProjectCustomFieldSettings('tok', ASANA_TEST_PROJECT_GID)).custom_field_settings)
+      .toHaveLength(LIVE_FIELDS.length)
+    vi.stubGlobal('fetch', firstPageThen({ offset: 'o1' }))
+    expect((await getProjectCustomFieldSettings('tok', ASANA_TEST_PROJECT_GID)).custom_field_settings)
+      .toHaveLength(LIVE_FIELDS.length)
+  })
+
+  it.each([
+    ['missing next_page', undefined, false],
+    ['next_page = {}', {}, true],
+    ['next_page = "o1"', 'o1', true],
+    ['blank offset', { offset: '  ' }, true],
+  ])('(6) %s becomes schema_unavailable through the loader (nothing usable, no throw)', async (_l, np, include) => {
+    vi.stubGlobal('fetch', firstPageThen(np, include as boolean))
+    const v = await loadWritableFieldValidation('tok', BETA_MIRROR)
+    expect(v.usable).toEqual({})
+    expect(v.issues).toEqual([expect.objectContaining({ code: 'schema_unavailable' })])
+    expect(resolveCustomFields({ category: 'inventory', evidenceReceived: 'yes' }, v).customFields).toEqual({})
+  })
+})
+
 describe('loadWritableFieldValidation — every read failure means NO usable fields, never a failed task', () => {
   afterEach(() => {
     vi.unstubAllGlobals()

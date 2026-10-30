@@ -159,18 +159,26 @@ export async function getProjectCustomFieldSettings(
 
     const res = await fetch(url.toString(), { method: 'GET', headers: authHeaders(token) })
     if (!res.ok) await throwAsana('read project fields', res)
-    const json = (await res.json()) as {
-      data?: unknown
-      next_page?: { offset?: unknown } | null
-    }
+    const json = (await res.json()) as { data?: unknown; next_page?: unknown }
     if (!json || !Array.isArray(json.data)) {
       throw new Error('custom field settings page is malformed')
     }
     settings.push(...json.data)
 
-    const next = json.next_page?.offset
-    if (next === undefined || next === null) break
-    if (typeof next !== 'string' || next.length === 0) {
+    // FAIL CLOSED: because limit=100 is supplied, Asana always returns
+    // `next_page` — null when complete, an object with an offset when not.
+    // A missing or damaged next_page must never read as "no more pages",
+    // or a truncated schema would be validated as if it were complete.
+    if (!('next_page' in json)) {
+      throw new Error('custom field settings pagination is malformed')
+    }
+    const nextPage = json.next_page
+    if (nextPage === null) break
+    if (typeof nextPage !== 'object' || Array.isArray(nextPage)) {
+      throw new Error('custom field settings pagination is malformed')
+    }
+    const next = (nextPage as { offset?: unknown }).offset
+    if (typeof next !== 'string' || next.trim().length === 0) {
       throw new Error('custom field settings pagination offset is malformed')
     }
     if (seenOffsets.has(next)) {
