@@ -24,7 +24,11 @@ import {
   type FieldValidation,
   type WritableFieldValidation,
 } from '@/lib/integrations/asana/field-validation'
-import { inspectFieldConfig, loadWritableFieldValidation } from '@/lib/integrations/asana/field-schema'
+import {
+  createWritableFieldValidationLoader,
+  inspectFieldConfig,
+  loadWritableFieldValidation,
+} from '@/lib/integrations/asana/field-schema'
 import { ASANA_TEST_PROJECT_GID, DisallowedAsanaProjectError } from '@/lib/integrations/asana/config'
 import {
   FIELD_SETTINGS_MAX_PAGES,
@@ -217,8 +221,8 @@ describe('BETA WRITE BOUNDARY — live configuration can be inspected, never wri
   })
 })
 
-describe('source contracts — read-only, by GID, not wired into the worker', () => {
-  const files = ['field-config.ts', 'field-validation.ts', 'field-schema.ts']
+describe('source contracts — read-only, by GID, wired ONLY through the writable BETA path', () => {
+  const files = ['field-config.ts', 'field-validation.ts', 'field-schema.ts', 'field-mapping.ts']
 
   it('never reads field/option NAMES and never makes a write call', () => {
     for (const f of files) {
@@ -247,25 +251,55 @@ describe('source contracts — read-only, by GID, not wired into the worker', ()
     }
   })
 
-  it('NOT wired: no worker, route or app file imports the field modules; no custom_fields are sent', () => {
-    const offenders: string[] = []
+  it('BOUNDARY: only the provider, the worker and the worker route import the field modules', () => {
+    const allowed = new Set([
+      'src/lib/integrations/asana/provider.ts', // BETA field-GID guard (configForWrite)
+      'src/lib/integrations/worker/process-outbox.ts', // mapping + resolver
+      'src/app/api/integrations/asana/worker/route.ts', // per-request writable loader
+    ])
+    const importers: string[] = []
     const walk = (dir: string) => {
       for (const name of readdirSync(join(process.cwd(), dir))) {
         const rel = `${dir}/${name}`
         if (statSync(join(process.cwd(), rel)).isDirectory()) walk(rel)
         else if (/\.(ts|tsx)$/.test(name) && !/\.test\.tsx?$/.test(name)) {
           const src = read(rel)
-          if (/asana\/field-(config|validation|schema)/.test(src) && !rel.includes('/asana/field-')) {
-            offenders.push(rel)
+          if (/asana\/field-(config|validation|schema|mapping)/.test(src) && !rel.includes('/asana/field-')) {
+            importers.push(rel)
           }
         }
       }
     }
     walk('src')
-    expect(offenders).toEqual([])
-    const createTask = read('src/lib/integrations/asana/client.ts')
-    expect(createTask).not.toContain('custom_fields')
-    expect(read('src/lib/integrations/types.ts')).not.toMatch(/customFields|custom_fields/)
+    expect(importers.sort()).toEqual([...allowed].sort())
+  })
+
+  it('BOUNDARY: custom fields reach the client ONLY from resolveCustomFields over a WRITABLE BETA validation', () => {
+    const worker = code(read('src/lib/integrations/worker/process-outbox.ts'))
+    // The only producer of request fields in the worker is the resolver.
+    expect(worker).toMatch(/resolveCustomFields\(mapped\.desired, validation\)/)
+    expect(worker).toMatch(/hasCustomFields\(resolved\.customFields\) \? resolved\.customFields : undefined/)
+    expect(worker.match(/customFields\s*[:=]/g)?.length ?? 0).toBeLessThanOrEqual(3)
+    // The validation comes ONLY from the injected writable loader.
+    expect(worker).toMatch(/load: \(\) => Promise<WritableFieldValidation>/)
+    expect(worker).not.toMatch(/validateFieldConfig|inspectFieldConfig|LIVE_INCIDENTS/)
+    // The route builds that loader from configForWrite(ASANA_TEST_PROJECT_GID) only.
+    const route = code(read('src/app/api/integrations/asana/worker/route.ts'))
+    expect(route).toContain('createWritableFieldValidationLoader(asanaToken, configForWrite(ASANA_TEST_PROJECT_GID))')
+    expect(route).not.toMatch(/LIVE_INCIDENTS|inspectFieldConfig/)
+    // The client sends custom_fields only behind the non-empty guard; no update endpoint.
+    const client = code(read('src/lib/integrations/asana/client.ts'))
+    expect(client.match(/custom_fields:/g)).toHaveLength(1)
+    expect(client).toContain('...(hasCustomFields(args.customFields) ? { custom_fields: args.customFields } : {})')
+    expect(client).not.toMatch(/method:\s*'(PUT|PATCH|DELETE)'/)
+    // The provider checks project, then BETA field GIDs, before the request.
+    const provider = code(read('src/lib/integrations/asana/provider.ts'))
+    expect(provider.indexOf('assertAllowedProject(payload.projectGid)')).toBeLessThan(
+      provider.indexOf('assertBetaCustomFields(payload.projectGid, customFields)'),
+    )
+    expect(provider.indexOf('assertBetaCustomFields(payload.projectGid, customFields)')).toBeLessThan(
+      provider.indexOf('createTaskInProject(token'),
+    )
   })
 })
 
@@ -950,3 +984,66 @@ describe('loadWritableFieldValidation — every read failure means NO usable fie
     expect(() => resolveCustomFields({ category: 'inventory' }, v)).toThrow(TypeError)
   })
 })
+
+describe('createWritableFieldValidationLoader — one memoised load per request', () => {
+  it('memoises SUCCESS: many calls, one schema read', async () => {
+    const fetchSchema = vi.fn(async () => betaMetadataFromConfig())
+    const load = createWritableFieldValidationLoader('tok', configForWrite(ASANA_TEST_PROJECT_GID), fetchSchema)
+    const [a, b, c] = await Promise.all([load(), load(), load()])
+    expect(fetchSchema).toHaveBeenCalledTimes(1)
+    expect(a).toBe(b)
+    expect(b).toBe(c)
+    expect(a.ok).toBe(true)
+  })
+
+  it('memoises FAILURE: an unavailable schema is not re-read within the request, and never rejects', async () => {
+    const fetchSchema = vi.fn(async () => { throw new TypeError('fetch failed') })
+    const load = createWritableFieldValidationLoader('tok', configForWrite(ASANA_TEST_PROJECT_GID), fetchSchema)
+    const v1 = await load()
+    const v2 = await load()
+    expect(fetchSchema).toHaveBeenCalledTimes(1)
+    expect(v1).toBe(v2)
+    expect(v1.usable).toEqual({})
+    expect(v1.issues[0].code).toBe('schema_unavailable')
+  })
+
+  it('cannot be built for the live reference', () => {
+    expect(() =>
+      createWritableFieldValidationLoader('tok', configForWrite(LIVE_INCIDENTS_PROJECT_GID)),
+    ).toThrow(DisallowedAsanaProjectError)
+  })
+
+  it('a schema read that HANGS is bounded by the request timeout (unavailable, not stuck)', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.stubGlobal('fetch', vi.fn((_u: string, init: { signal: AbortSignal }) =>
+        new Promise((_r, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason))),
+      ))
+      const p = loadWritableFieldValidation('tok', configForWrite(ASANA_TEST_PROJECT_GID))
+      await vi.advanceTimersByTimeAsync(30_000)
+      const v = await p
+      expect(v.usable).toEqual({})
+      expect(v.issues[0].code).toBe('schema_unavailable')
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+function betaMetadataFromConfig() {
+  return {
+    gid: ASANA_TEST_PROJECT_GID,
+    custom_field_settings: Object.values(BETA_FIELD_CONFIG.fields).map((spec) => ({
+      project: { gid: ASANA_TEST_PROJECT_GID },
+      custom_field: {
+        gid: spec!.gid,
+        resource_subtype: spec!.type,
+        ...(spec!.type === 'enum' || spec!.type === 'multi_enum'
+          ? { enum_options: Object.values(spec!.options ?? {}).map((gid) => ({ gid, enabled: true })) }
+          : {}),
+      },
+    })),
+  }
+}

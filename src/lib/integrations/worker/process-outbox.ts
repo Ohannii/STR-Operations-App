@@ -60,7 +60,14 @@ import {
 } from '@/lib/integrations/company-allowlist'
 import { assertAllowedProject } from '@/lib/integrations/asana/config'
 import { mapFlagToTaskPayload } from '@/lib/integrations/asana/mapping'
-import { taskUrlForGid } from '@/lib/integrations/asana/client'
+import { hasCustomFields, taskUrlForGid } from '@/lib/integrations/asana/client'
+import { desiredFieldValuesForFlag } from '@/lib/integrations/asana/field-mapping'
+import {
+  logFieldWarnings,
+  resolveCustomFields,
+  type WritableFieldValidation,
+} from '@/lib/integrations/asana/field-validation'
+import { masterStoragePath } from '@/lib/photos/paths'
 import {
   buildFlagForMapping,
   type OutboxFlagRow,
@@ -101,6 +108,12 @@ export interface DryRunDeps {
   now?: () => number
   /** Injectable run-token generator. Defaults to crypto.randomUUID. */
   newRunId?: () => string
+  /**
+   * BETA custom fields: ONE lazy, memoised writable-schema loader per worker
+   * HTTP request (createWritableFieldValidationLoader). Called ONLY on the
+   * path that is about to POST a new task. Absent = no custom fields.
+   */
+  loadFieldValidation?: () => Promise<WritableFieldValidation>
 }
 
 export type DryRunResult =
@@ -193,7 +206,7 @@ async function buildPayloadForFlag(
   supabase: SupabaseClient,
   flagId: string,
   deps: DryRunDeps,
-): Promise<{ payload: TaskPayload; propertyId: string } | null> {
+): Promise<{ payload: TaskPayload; propertyId: string; categoryKey: string } | null> {
   const { data: flag, error: flagErr } = await supabase
     .from('flags')
     .select(
@@ -241,7 +254,7 @@ async function buildPayloadForFlag(
   })
   const payload = mapFlagToTaskPayload(forMapping)
   assertAllowedProject(payload.projectGid)
-  return { payload, propertyId: dbRow.propertyId }
+  return { payload, propertyId: dbRow.propertyId, categoryKey: dbRow.categoryKey }
 }
 
 /**
@@ -320,6 +333,71 @@ export async function dryRunNextAsanaOutbox(
     return { status: 'refused', outboxId: g.outboxId, flagId: g.flagId, reason: 'flag not found' }
   }
   return { status: 'dry_run_ok', outboxId: g.outboxId, flagId: g.flagId, payload: built.payload }
+}
+
+/**
+ * Durable evidence for Evidence Received = Yes: at least one photo that
+ * belongs to this company AND flag, is not deleted, still has its bytes,
+ * was finalised ('synced' — finalize_flag_with_photos verifies the master
+ * + thumbnail objects exist before inserting the row) and has EXACTLY the
+ * canonical master path for this company/flag/photo (lib/photos/paths).
+ * Reads ids + paths only — never captions, notes or file contents.
+ * null = the query failed (the field is then omitted; the task is still
+ * created).
+ */
+async function hasDurableEvidence(
+  supabase: SupabaseClient,
+  companyId: string,
+  flagId: string,
+): Promise<boolean | null> {
+  try {
+    const { data, error } = await supabase
+      .from('photos')
+      .select('id, storage_path')
+      .eq('company_id', companyId)
+      .eq('flag_id', flagId)
+      .eq('sync_status', 'synced')
+      .is('deleted_at', null)
+      .is('bytes_deleted_at', null)
+      .limit(50)
+    if (error || !Array.isArray(data)) return null
+    return data.some((r: { id?: unknown; storage_path?: unknown }) => {
+      if (typeof r.id !== 'string' || !r.id) return false
+      const canonical = masterStoragePath({ kind: 'flag', companyId, flagId, photoId: r.id })
+      return r.storage_path === canonical
+    })
+  } catch {
+    return null
+  }
+}
+
+/**
+ * BETA custom fields for a GENUINE new create. Never throws and never
+ * blocks the create: any failure means no custom fields. Warnings carry
+ * codes, field keys and GIDs only (logFieldWarnings).
+ */
+async function customFieldsForCreate(
+  supabase: SupabaseClient,
+  load: () => Promise<WritableFieldValidation>,
+  companyId: string,
+  flagId: string,
+  categoryKey: string,
+): Promise<Record<string, string | string[]> | undefined> {
+  try {
+    const validation = await load()
+    const durableEvidence = await hasDurableEvidence(supabase, companyId, flagId)
+    const mapped = desiredFieldValuesForFlag({ categoryKey, durableEvidence })
+    const resolved = resolveCustomFields(mapped.desired, validation)
+    logFieldWarnings(
+      { flagId, projectGid: validation.projectGid },
+      validation.issues,
+      [...mapped.warnings, ...resolved.warnings],
+    )
+    return hasCustomFields(resolved.customFields) ? resolved.customFields : undefined
+  } catch {
+    console.warn('[asana-fields]', JSON.stringify({ flagId, code: 'field_resolution_failed' }))
+    return undefined
+  }
 }
 
 function defaultRunId(): string {
@@ -672,7 +750,17 @@ export async function runNextAsanaOutbox(
     // Quarantine satisfied: fall through to a replacement attempt.
   }
 
-  // -------- 3. Create: record the attempt FIRST, then send. --------
+  // -------- 3. Create: fields, then record the attempt, then send. --------
+  // BETA custom fields only here — never on the adopt / reconcile / linked
+  // paths — and never after a 400 rejected them for this row.
+  const customFields =
+    !state.customFieldsRejected && deps.loadFieldValidation
+      ? await customFieldsForCreate(
+          supabase, deps.loadFieldValidation, companyId, flagId, built.categoryKey,
+        )
+      : undefined
+  const createPayload: TaskPayload = customFields ? { ...payload, customFields } : payload
+
   state = startAttempt(
     { ...state, protocol: state.protocol ?? CREATE_PROTOCOL },
     flagMarkerLine(flagId),
@@ -685,9 +773,18 @@ export async function runNextAsanaOutbox(
 
   let created: { externalTaskGid: string; externalTaskUrl: string }
   try {
-    created = await provider.createTask(payload)
+    created = await provider.createTask(createPayload)
   } catch (err) {
     const f = classifyCallError(err)
+    if (f.kind === 'rejected' && f.status === 400 && hasCustomFields(createPayload.customFields)) {
+      // 400 to a create WITH custom fields: nothing was created. Remember it
+      // so the NEXT run (normal retry path) creates WITHOUT custom fields.
+      // Never retried in this run.
+      return row.failRetry(CODES.customFieldsRejected, {
+        ...clearAttempt(state),
+        customFieldsRejected: true,
+      })
+    }
     if (f.kind === 'rejected') {
       // Asana refused: nothing was created; no reconciliation needed.
       return row.failRetry(CODES.createRejected(f.status), clearAttempt(state))

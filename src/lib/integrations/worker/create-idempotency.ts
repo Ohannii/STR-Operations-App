@@ -41,6 +41,7 @@ export const STATE_KEYS = {
   createdTaskGid: 'created_task_gid',
   notFoundCount: 'reconciliation_not_found_count',
   lastReconciledAt: 'last_reconciled_at',
+  customFieldsRejected: 'custom_fields_rejected',
 } as const
 
 export type CreateState = {
@@ -54,6 +55,12 @@ export type CreateState = {
   notFoundCount: number
   /** ISO time of the last COUNTED not-found reconciliation. */
   lastReconciledAt: string | null
+  /**
+   * Asana answered 400 to a create that carried custom fields: every later
+   * create for this row sends NO custom fields (and loads no schema). Once
+   * set it is never cleared.
+   */
+  customFieldsRejected: boolean
 }
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null)
@@ -68,6 +75,7 @@ export function readCreateState(payload: Record<string, unknown> | null | undefi
     createdTaskGid: str(p[STATE_KEYS.createdTaskGid]),
     notFoundCount: typeof count === 'number' && Number.isInteger(count) && count > 0 ? count : 0,
     lastReconciledAt: str(p[STATE_KEYS.lastReconciledAt]),
+    customFieldsRejected: p[STATE_KEYS.customFieldsRejected] === true,
   }
 }
 
@@ -88,6 +96,8 @@ export function mergeCreateState(
     [STATE_KEYS.createdTaskGid]: state.createdTaskGid,
     [STATE_KEYS.notFoundCount]: state.notFoundCount,
     [STATE_KEYS.lastReconciledAt]: state.lastReconciledAt,
+    // Written only once true; never cleared (a spread payload keeps it).
+    ...(state.customFieldsRejected ? { [STATE_KEYS.customFieldsRejected]: true } : {}),
   }
 }
 
@@ -345,6 +355,8 @@ export const CODES = {
   lostLock: 'lost_lock',
   createAmbiguous: 'create_ambiguous',
   createRejected: (status: number) => `create_rejected_http_${status}`,
+  /** 400 to a create WITH custom fields: the next run creates without them. */
+  customFieldsRejected: 'create_rejected_custom_fields_http_400',
   lookupFailed: 'reconcile_lookup_failed',
   savedTaskReadFailed: 'saved_task_read_failed',
   linkInsertFailed: 'link_insert_failed',

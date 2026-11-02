@@ -1,10 +1,13 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
+  dryRunNextAsanaOutbox,
   runAsanaOutboxBatch,
   runNextAsanaOutbox,
   type RealRunResult,
 } from '@/lib/integrations/worker/process-outbox'
+import { BETA_FIELD_CONFIG, configForWrite } from '@/lib/integrations/asana/field-config'
+import { createWritableFieldValidationLoader } from '@/lib/integrations/asana/field-schema'
 import { AsanaApiError } from '@/lib/integrations/asana/client'
 import { ASANA_TEST_PROJECT_GID } from '@/lib/integrations/asana/config'
 import {
@@ -15,6 +18,7 @@ import {
   LEGACY_MARKER,
 } from '@/lib/integrations/worker/create-idempotency'
 import type { ProviderTask, TaskPayload, TaskProvider } from '@/lib/integrations/types'
+import type { WritableFieldValidation } from '@/lib/integrations/asana/field-validation'
 
 /**
  * Stage 0 — STATEFUL proof of task-creation idempotency. A real in-memory
@@ -41,6 +45,13 @@ function makeDb(opts: { outbox: Row }) {
   const flagUpdates: Row[] = []
   /** The flag's write-back target (company 'co'). */
   const flag: Row = { id: FLAG, company_id: 'co', asana_task_url: null }
+  /** Custom-field facts: the flag's category key and its photo rows. */
+  const fixtures: { categoryKey: string | null; photos: Row[]; photosError: boolean; photoSelects: string[] } = {
+    categoryKey: 'inventory_missing',
+    photos: [],
+    photosError: false,
+    photoSelects: [],
+  }
   const outboxUpdates: Array<{ patch: Row; filters: Filter[]; matched: boolean }> = []
   const hooks: {
     beforeOutboxWrite?: (patch: Row, filters: Filter[]) => 'fail' | void
@@ -71,7 +82,10 @@ function makeDb(opts: { outbox: Row }) {
     let patch: Row | null = null
     let insertRow: Row | null = null
     const q = {
-      select: () => q,
+      select: (cols?: string) => {
+        if (table === 'photos') fixtures.photoSelects.push(String(cols))
+        return q
+      },
       eq: (col: string, val: unknown) => (filters.push({ op: 'eq', col, val }), q),
       is: (col: string, val: unknown) => (filters.push({ op: 'is', col, val }), q),
       lt: (col: string, val: unknown) => (filters.push({ op: 'lt', col, val }), q),
@@ -81,6 +95,14 @@ function makeDb(opts: { outbox: Row }) {
       update: (p: Row) => ((patch = p), q),
       insert: (r: Row) => ((insertRow = r), q),
       limit: async () => {
+        if (table === 'photos') {
+          if (fixtures.photosError) return { data: null, error: { code: 'XX000', message: 'photos down' } }
+          return {
+            data: fixtures.photos
+              .filter((ph) => matches(ph, filters))
+              .map((ph) => ({ id: ph.id, storage_path: ph.storage_path })),
+          }
+        }
         if (table !== 'integration_outbox') return { data: [] }
         const outboxFilters = filters.filter((f) => !['provider', 'event_type'].includes(f.col))
         return { data: matches(outbox, outboxFilters) ? [{ ...outbox }] : [] }
@@ -161,7 +183,7 @@ function makeDb(opts: { outbox: Row }) {
         }
       }
       if (table === 'properties') return { data: { name: 'Unit 50' } }
-      if (table === 'flag_categories') return { data: { key: 'inventory_missing', display_label: 'Item missing' } }
+      if (table === 'flag_categories') return { data: { key: fixtures.categoryKey, display_label: 'Item missing' } }
       if (table === 'profiles') return { data: { full_name: 'Reporter' } }
       return { data: null }
     }
@@ -169,7 +191,7 @@ function makeDb(opts: { outbox: Row }) {
   }
 
   const client = { from: (t: string) => query(t) } as unknown as SupabaseClient
-  return { client, outbox, links, flag, flagUpdates, outboxUpdates, hooks }
+  return { client, outbox, links, flag, flagUpdates, outboxUpdates, hooks, fixtures }
 }
 
 /** A fake BETA Asana: tasks live here; create can create-then-lose the response. */
@@ -177,7 +199,14 @@ function makeAsana() {
   const tasks: ProviderTask[] = []
   let n = 0
   const behaviour: {
-    create: 'ok' | 'lost_response' | 'timeout_after_create' | 'reject_400' | 'rate_429' | 'server_500_no_create'
+    create:
+      | 'ok'
+      | 'lost_response'
+      | 'timeout_after_create'
+      | 'reject_400'
+      | 'reject_400_if_fields'
+      | 'rate_429'
+      | 'server_500_no_create'
     lookup: 'ok' | 'fail' | 'rate_429'
     get: 'ok' | 'fail'
   } = { create: 'ok', lookup: 'ok', get: 'ok' }
@@ -191,6 +220,9 @@ function makeAsana() {
       switch (behaviour.create) {
         case 'reject_400':
           throw new AsanaApiError('create task', 400, 'bad')
+        case 'reject_400_if_fields':
+          if (payload.customFields) throw new AsanaApiError('create task', 400, 'bad field value')
+          return { externalTaskGid: make(), externalTaskUrl: `https://app.asana.com/0/1/T${n}` }
         case 'rate_429':
           throw new AsanaApiError('create task', 429, 'slow', 17)
         case 'server_500_no_create':
@@ -222,7 +254,10 @@ function makeAsana() {
 
 function setup(
   payload: Row = { flag_id: FLAG, property_id: PROP, create_protocol: CREATE_PROTOCOL },
-  extra: { allowedCompanyIds?: string[] } = {},
+  extra: {
+    allowedCompanyIds?: string[]
+    loadFieldValidation?: () => Promise<WritableFieldValidation>
+  } = {},
 ) {
   const clock = { now: T0 }
   const db = makeDb({
@@ -248,6 +283,7 @@ function setup(
     appBaseUrl: BASE,
     now: () => clock.now,
     newRunId: () => `run-${++r}`,
+    ...(extra.loadFieldValidation ? { loadFieldValidation: extra.loadFieldValidation } : {}),
   }
   const run = () => runNextAsanaOutbox(db.client, asana.provider, deps)
   /** Make the row due now (simulates the next cron tick at `clock.now`). */
@@ -883,5 +919,380 @@ describe('refused-company row', () => {
     const h = setup(undefined, { allowedCompanyIds: ['other'] })
     expect(await h.run()).toMatchObject({ status: 'refused' })
     expect(h.db.outbox.status).toBe('dead')
+  })
+})
+
+// ================================================================
+// BETA custom fields (Category, INVENTORY type, Evidence Received)
+// ================================================================
+
+const F = {
+  unit: '1213116492387386',
+  unitNumber: '1210401516520213',
+  category: '1220057630679849',
+  inventoryType: '1220057630679854',
+  linenType: '1220057561518787',
+  evidence: '1220057561518792',
+  accountable: '1220057561518796',
+}
+const O = {
+  inventory: '1220057630679850',
+  maintenance: '1220057630679851',
+  missing: '1220057561518784',
+  damage: '1220057561518785',
+  yes: '1220057561518793',
+  no: '1220057561518794',
+}
+
+type Setting = { project: { gid: string }; custom_field: Record<string, unknown> }
+
+/** A BETA-shaped custom_field_settings response built from the config (GIDs only). */
+function betaMetadata(mutate?: (byGid: Map<string, Setting>) => void) {
+  const byGid = new Map<string, Setting>()
+  for (const spec of Object.values(BETA_FIELD_CONFIG.fields)) {
+    if (!spec) continue
+    const isEnum = spec.type === 'enum' || spec.type === 'multi_enum'
+    const optionGids = spec.dynamicOptions ? ['1213116492387387'] : Object.values(spec.options ?? {})
+    if (spec.gid === F.evidence) optionGids.push(O.no) // "No" exists in BETA
+    byGid.set(spec.gid, {
+      project: { gid: BETA },
+      custom_field: {
+        gid: spec.gid,
+        resource_subtype: spec.type,
+        ...(isEnum ? { enum_options: optionGids.map((gid) => ({ gid, enabled: true })) } : {}),
+      },
+    })
+  }
+  mutate?.(byGid)
+  return { gid: BETA, custom_field_settings: [...byGid.values()] }
+}
+
+function loaderFor(fetchSchema: () => Promise<unknown>) {
+  const fetchMock = vi.fn(fetchSchema)
+  const load = createWritableFieldValidationLoader('tok', configForWrite(BETA), fetchMock)
+  const spy = vi.fn(load)
+  return { load: spy, fetchMock }
+}
+const goodLoader = () => loaderFor(async () => betaMetadata())
+
+const photo = (id: string, over: Row = {}): Row => ({
+  id,
+  company_id: 'co',
+  flag_id: FLAG,
+  sync_status: 'synced',
+  deleted_at: null,
+  bytes_deleted_at: null,
+  storage_path: `companies/co/flags/${FLAG}/${id}.jpg`,
+  ...over,
+})
+
+function fieldsSetup(categoryKey: string | null, photos: Row[] = [photo('p1')], loader = goodLoader()) {
+  const h = setup(undefined, { loadFieldValidation: loader.load })
+  h.db.fixtures.categoryKey = categoryKey
+  h.db.fixtures.photos = photos
+  return { ...h, loader }
+}
+const sent = (h: { asana: ReturnType<typeof makeAsana> }, i = 0) =>
+  h.asana.provider.createTask.mock.calls[i][0] as TaskPayload
+
+describe('BETA custom fields — happy paths (exactly one POST each)', () => {
+  it('inventory_missing -> Category Inventory + Missing Item + Evidence Yes', async () => {
+    const h = fieldsSetup('inventory_missing')
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    expect(posts(h.asana)).toBe(1)
+    expect(sent(h).customFields).toEqual({ [F.category]: O.inventory, [F.inventoryType]: O.missing, [F.evidence]: O.yes })
+    expect(h.loader.fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('inventory_damaged -> Category Inventory + Physical Damage + Evidence Yes', async () => {
+    const h = fieldsSetup('inventory_damaged')
+    await h.run()
+    expect(sent(h).customFields).toEqual({ [F.category]: O.inventory, [F.inventoryType]: O.damage, [F.evidence]: O.yes })
+  })
+
+  it('maintenance_issue -> Category Maintenance, NO incident type', async () => {
+    const h = fieldsSetup('maintenance_issue')
+    await h.run()
+    expect(sent(h).customFields).toEqual({ [F.category]: O.maintenance, [F.evidence]: O.yes })
+  })
+
+  it.each(['cleaning_issue', 'safety_urgent', 'condition_note', 'guest_damage', 'owner_chargeable', 'company_responsibility', 'follow_up_required', 'no_action_record', 'mystery', '', null])(
+    '%s -> no Category, no incident type (Evidence still independent)',
+    async (key) => {
+      const h = fieldsSetup(key as string | null)
+      await h.run()
+      expect(sent(h).customFields).toEqual({ [F.evidence]: O.yes })
+    },
+  )
+
+  it('Unit #, Unit Number, Linen type, Accountable Party and Evidence "No" are NEVER sent', async () => {
+    for (const key of ['inventory_missing', 'inventory_damaged', 'maintenance_issue', 'cleaning_issue']) {
+      for (const photos of [[photo('p1')], []]) {
+        const h = fieldsSetup(key, photos)
+        await h.run()
+        const cf = sent(h).customFields ?? {}
+        for (const forbidden of [F.unit, F.unitNumber, F.linenType, F.accountable]) expect(cf).not.toHaveProperty(forbidden)
+        expect(Object.values(cf).flat()).not.toContain(O.no)
+      }
+    }
+  })
+})
+
+describe('Evidence Received = Yes only for a durable qualifying photo', () => {
+  it.each<[string, Row[]]>([
+    ['zero photos', []],
+    ['only a deleted photo', [photo('p1', { deleted_at: '2026-11-01T00:00:00Z' })]],
+    ['only a photo whose bytes were deleted', [photo('p1', { bytes_deleted_at: '2026-11-01T00:00:00Z' })]],
+    ['only a photo of another company', [photo('p1', { company_id: 'other' })]],
+    ['only a photo of another flag', [photo('p1', { flag_id: OTHER })]],
+    ['only a non-canonical path (other company prefix)', [photo('p1', { storage_path: `companies/other/flags/${FLAG}/p1.jpg` })]],
+    ['only a non-canonical path (other flag)', [photo('p1', { storage_path: `companies/co/flags/${OTHER}/p1.jpg` })]],
+    ['only a thumbnail path', [photo('p1', { storage_path: `companies/co/flags/${FLAG}/p1_thumb.jpg` })]],
+    ['only a path for a different photo id', [photo('p1', { storage_path: `companies/co/flags/${FLAG}/p2.jpg` })]],
+    ['only a photo not finalised (sync_status != synced)', [photo('p1', { sync_status: 'uploading' })]],
+  ])('%s -> Evidence omitted, task still created', async (_l, photos) => {
+    const h = fieldsSetup('inventory_missing', photos)
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    expect(sent(h).customFields).toEqual({ [F.category]: O.inventory, [F.inventoryType]: O.missing })
+  })
+
+  it('one qualifying photo among bad ones -> Yes', async () => {
+    const h = fieldsSetup('maintenance_issue', [photo('bad', { deleted_at: 'x' }), photo('good')])
+    await h.run()
+    expect(sent(h).customFields).toMatchObject({ [F.evidence]: O.yes })
+  })
+
+  it('evidence query FAILS -> Evidence omitted, value-free warning, task still created', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = fieldsSetup('inventory_missing')
+    h.db.fixtures.photosError = true
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    expect(sent(h).customFields).toEqual({ [F.category]: O.inventory, [F.inventoryType]: O.missing })
+    expect(warn.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('source_unavailable')
+    warn.mockRestore()
+  })
+
+  it('reads photo ids and paths ONLY (no captions / notes / contents)', async () => {
+    const h = fieldsSetup('inventory_missing')
+    await h.run()
+    expect(h.db.fixtures.photoSelects).toEqual(['id, storage_path'])
+  })
+})
+
+describe('schema problems never block the task', () => {
+  it('schema unavailable -> POST WITHOUT any custom_fields key', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = fieldsSetup('inventory_missing', [photo('p1')], loaderFor(async () => { throw new AsanaApiError('read project fields', 503, 'down') }))
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    expect(sent(h)).not.toHaveProperty('customFields')
+    warn.mockRestore()
+  })
+
+  it('a loader that REJECTS (should never happen) still creates the task without fields', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = setup(undefined, { loadFieldValidation: async () => { throw new Error('boom') } })
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    expect(sent(h)).not.toHaveProperty('customFields')
+    warn.mockRestore()
+  })
+
+  it('ONE malformed field (Evidence) -> only that field omitted', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = fieldsSetup('inventory_missing', [photo('p1')], loaderFor(async () =>
+      betaMetadata((m) => { delete (m.get(F.evidence)!.custom_field as Record<string, unknown>).enum_options }),
+    ))
+    await h.run()
+    expect(sent(h).customFields).toEqual({ [F.category]: O.inventory, [F.inventoryType]: O.missing })
+    warn.mockRestore()
+  })
+
+  it('a DISABLED option (Physical Damage) -> only that option omitted, Category kept', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = fieldsSetup('inventory_damaged', [photo('p1')], loaderFor(async () =>
+      betaMetadata((m) => {
+        const cf = m.get(F.inventoryType)!.custom_field as { enum_options: Array<{ gid: string; enabled: boolean }> }
+        cf.enum_options = cf.enum_options.map((o) => (o.gid === O.damage ? { ...o, enabled: false } : o))
+      }),
+    ))
+    await h.run()
+    expect(sent(h).customFields).toEqual({ [F.category]: O.inventory, [F.evidence]: O.yes })
+    warn.mockRestore()
+  })
+
+  it('a malformed Category drops Category AND the dependent incident type', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = fieldsSetup('inventory_missing', [photo('p1')], loaderFor(async () =>
+      betaMetadata((m) => { (m.get(F.category)!.custom_field as Record<string, unknown>).resource_subtype = '' }),
+    ))
+    await h.run()
+    expect(sent(h).customFields).toEqual({ [F.evidence]: O.yes })
+    warn.mockRestore()
+  })
+})
+
+describe('schema loading: once per request, only for a genuine new create', () => {
+  it('several creates in one request -> at most ONE schema load', async () => {
+    const loader = goodLoader()
+    for (let i = 0; i < 3; i++) {
+      const h = fieldsSetup('maintenance_issue', [photo('p1')], loader) // same request-scoped loader
+      expect(await h.run()).toMatchObject({ status: 'created' })
+    }
+    expect(loader.fetchMock).toHaveBeenCalledTimes(1)
+    expect(loader.load).toHaveBeenCalledTimes(3)
+  })
+
+  it('a FAILED load is memoised for the request too (no retry storm)', async () => {
+    const loader = loaderFor(async () => { throw new TypeError('fetch failed') })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    for (let i = 0; i < 3; i++) await fieldsSetup('maintenance_issue', [photo('p1')], loader).run()
+    expect(loader.fetchMock).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
+  })
+
+  it('NO load: empty queue', async () => {
+    const h = fieldsSetup('maintenance_issue')
+    h.db.outbox.status = 'done'
+    expect(await h.run()).toMatchObject({ status: 'no_pending' })
+    expect(h.loader.load).not.toHaveBeenCalled()
+  })
+
+  it('NO load: refused company', async () => {
+    const loader = goodLoader()
+    const h = setup(undefined, { allowedCompanyIds: ['other'], loadFieldValidation: loader.load })
+    expect(await h.run()).toMatchObject({ status: 'refused' })
+    expect(loader.load).not.toHaveBeenCalled()
+  })
+
+  it('NO load: an external link already exists', async () => {
+    const h = fieldsSetup('maintenance_issue')
+    h.db.links.push({ company_id: 'co', provider: 'asana', internal_entity_type: 'flag', internal_entity_id: FLAG, external_task_gid: 'T5', external_task_url: 'https://app.asana.com/0/1/T5', deleted_at: null })
+    expect(await h.run()).toMatchObject({ status: 'already_linked' })
+    expect(h.loader.load).not.toHaveBeenCalled()
+  })
+
+  it('NO load: a saved task GID is verified and adopted', async () => {
+    const loader = goodLoader()
+    const h = setup({ flag_id: FLAG, create_protocol: CREATE_PROTOCOL, create_marker: flagMarkerLine(FLAG), create_attempted_at: new Date(T0 - 2 * MIN).toISOString(), created_task_gid: 'T7' }, { loadFieldValidation: loader.load })
+    h.asana.tasks.push({ gid: 'T7', notes: flagMarkerLine(FLAG), projectGids: [BETA] })
+    expect(await h.run()).toMatchObject({ status: 'adopted' })
+    expect(loader.load).not.toHaveBeenCalled()
+  })
+
+  it('NO load: reconciliation finds the existing task, or is still quarantined', async () => {
+    const loader = goodLoader()
+    const h = setup(undefined, { loadFieldValidation: loader.load })
+    h.asana.behaviour.create = 'lost_response'
+    await h.run() // one load + one POST (fields attempted)
+    expect(loader.load).toHaveBeenCalledTimes(1)
+    h.asana.behaviour.create = 'ok'
+    h.clock.now += 5 * MIN
+    h.due()
+    expect(await h.run()).toMatchObject({ status: 'adopted' })
+    expect(loader.load).toHaveBeenCalledTimes(1)
+
+    const q = setup(undefined, { loadFieldValidation: loader.load })
+    q.asana.behaviour.create = 'server_500_no_create'
+    await q.run()
+    const before = loader.load.mock.calls.length
+    q.clock.now += 5 * MIN
+    q.due()
+    expect(await q.run()).toMatchObject({ status: 'rescheduled', code: 'reconcile_not_found' })
+    expect(loader.load).toHaveBeenCalledTimes(before)
+  })
+
+  it('NO load: dry run', async () => {
+    const h = fieldsSetup('maintenance_issue')
+    const res = await dryRunNextAsanaOutbox(h.db.client, h.deps)
+    expect(res.status).toBe('dry_run_ok')
+    expect(h.loader.load).not.toHaveBeenCalled()
+    expect((res as { payload: TaskPayload }).payload).not.toHaveProperty('customFields')
+  })
+})
+
+describe('fields never change the task identity, marker or placement', () => {
+  it('name, notes (marker), project, section, due date identical with and without fields', async () => {
+    const withF = fieldsSetup('inventory_missing')
+    await withF.run()
+    const without = setup()
+    await without.run()
+    const a = { ...sent(withF) }
+    const b = { ...sent(without) }
+    expect(a.customFields).toBeDefined()
+    delete a.customFields
+    expect(a).toEqual(b)
+    expect(a.notes).toContain(flagMarkerLine(FLAG))
+  })
+
+  it('an empty resolution sends NO customFields property at all', async () => {
+    const h = fieldsSetup('cleaning_issue', [])
+    await h.run()
+    expect(sent(h)).not.toHaveProperty('customFields')
+  })
+})
+
+describe('HTTP 400 fallback', () => {
+  it('400 WITH fields -> custom_fields_rejected recorded, normal retry; next run creates WITHOUT fields; one task', async () => {
+    const h = fieldsSetup('inventory_missing')
+    h.asana.behaviour.create = 'reject_400_if_fields'
+    expect(await h.run()).toMatchObject({ status: 'error', error: 'create_rejected_custom_fields_http_400' })
+    expect(posts(h.asana)).toBe(1) // never retried in the same run
+    expect(h.db.outbox).toMatchObject({ status: 'pending', attempt_count: 1 })
+    expect(h.state()).toMatchObject({ custom_fields_rejected: true, create_attempted_at: null, flag_id: FLAG, property_id: PROP })
+    expect(h.asana.tasks).toHaveLength(0)
+
+    // Next request: a fresh loader that must NOT be used.
+    const next = goodLoader()
+    h.deps.loadFieldValidation = next.load
+    h.clock.now += 5 * MIN
+    h.due()
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    expect(next.load).not.toHaveBeenCalled()
+    expect(posts(h.asana)).toBe(2)
+    expect(sent(h, 1)).not.toHaveProperty('customFields')
+    expect(h.asana.provider.listTasksModifiedSince).not.toHaveBeenCalled() // a 400 is never reconciled
+    expect(h.asana.tasks).toHaveLength(1)
+    const first = { ...sent(h, 0) }
+    delete first.customFields
+    expect(sent(h, 1)).toEqual(first) // identical apart from the fields
+    expect(h.state().custom_fields_rejected).toBe(true) // never cleared
+  })
+
+  it('400 WITHOUT fields keeps the normal rejection (no fallback flag)', async () => {
+    const h = setup()
+    h.asana.behaviour.create = 'reject_400'
+    expect(await h.run()).toMatchObject({ status: 'error', error: 'create_rejected_http_400' })
+    expect(h.state()).not.toHaveProperty('custom_fields_rejected')
+  })
+
+  it('400 when fields resolved to EMPTY keeps the normal rejection', async () => {
+    const h = fieldsSetup('cleaning_issue', [])
+    h.asana.behaviour.create = 'reject_400'
+    expect(await h.run()).toMatchObject({ error: 'create_rejected_http_400' })
+    expect(h.state()).not.toHaveProperty('custom_fields_rejected')
+  })
+
+  it('other rejections (401/403/404) with fields do NOT set the fallback', async () => {
+    const h = fieldsSetup('maintenance_issue')
+    h.asana.provider.createTask.mockImplementationOnce(async () => { throw new AsanaApiError('create task', 403, 'no') })
+    expect(await h.run()).toMatchObject({ error: 'create_rejected_http_403' })
+    expect(h.state()).not.toHaveProperty('custom_fields_rejected')
+  })
+})
+
+describe('warning privacy', () => {
+  it('field warnings carry codes, field keys and GIDs only — no values, names, notes, reporter or token', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = fieldsSetup('cleaning_issue', [], loaderFor(async () =>
+      betaMetadata((m) => { m.delete(F.evidence) }),
+    ))
+    h.db.fixtures.photosError = true
+    await h.run()
+    const out = warn.mock.calls.map((c) => c.map(String).join(' ')).join('\n')
+    expect(out).toContain('unmapped_value')
+    expect(out).toContain('source_unavailable')
+    for (const leak of ['cleaning_issue', 'Unit 50', 'Leaking tap', 'Reporter', 'Item missing', 'tok', 'photos down', BASE]) {
+      expect(out).not.toContain(leak)
+    }
+    warn.mockRestore()
   })
 })

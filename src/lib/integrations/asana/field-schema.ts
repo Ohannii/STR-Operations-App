@@ -8,8 +8,8 @@
  * (HTTP status only; never a response body, message or token). A schema
  * problem must cost the task its custom fields, never the task itself.
  *
- * Not wired into the worker in Phase 1. When it is, the schema should be
- * cached (or preflighted once per run), not fetched for every task.
+ * Wired into the worker through createWritableFieldValidationLoader: ONE
+ * lazy, memoised load per worker HTTP request, never one per task.
  */
 
 import { AsanaApiError, getProjectCustomFieldSettings } from '@/lib/integrations/asana/client'
@@ -51,6 +51,22 @@ export async function loadWritableFieldValidation(
     return unavailableWritableValidation(config, unavailableIssue(err))
   }
   return validateWritableFieldConfig(config, metadata)
+}
+
+/**
+ * ONE lazy, memoised writable validation per worker HTTP request. The first
+ * call starts the (read-only) schema load; every later call — success OR
+ * failure — returns that same result, so a batch of creates costs at most
+ * one schema read and a failed read is not retried within the request.
+ * Never rejects (loadWritableFieldValidation never throws).
+ */
+export function createWritableFieldValidationLoader(
+  token: string,
+  config: WritableFieldConfig,
+  fetchSchema: FetchSchema = getProjectCustomFieldSettings,
+): () => Promise<WritableFieldValidation> {
+  let pending: Promise<WritableFieldValidation> | null = null
+  return () => (pending ??= loadWritableFieldValidation(token, config, fetchSchema))
 }
 
 /** INSPECTION (any project, e.g. the live reference). Read-only; never writable. */

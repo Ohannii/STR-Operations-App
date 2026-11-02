@@ -340,6 +340,8 @@ export type ResolveWarningCode =
   | 'unknown_option'
   | 'empty_value'
   | 'dependency_unmet'
+  /** The app-side source of a value could not be read (e.g. evidence query). */
+  | 'source_unavailable'
 
 /** Codes + field keys only: never the offending value, guest data or a token. */
 export type ResolveWarning = {
