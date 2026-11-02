@@ -25,6 +25,7 @@ import {
   sectionGidForGroup,
 } from '@/lib/integrations/asana/config'
 import type { TaskPayload } from '@/lib/integrations/types'
+import { flagMarkerLine } from '@/lib/integrations/worker/create-idempotency'
 
 /**
  * Raw `chargeable_party_decision` values that mean "the guest pays".
@@ -68,6 +69,15 @@ export interface FlagForMapping {
   todayIso?: string
 }
 
+/**
+ * The app link written into every task's notes ("Open in app: <url>").
+ * ONE builder, shared with the worker's legacy reconciliation, so the exact
+ * line can be re-derived from authoritative ids.
+ */
+export function flagAppUrl(appBaseUrl: string, propertyId: string, flagId: string): string {
+  return `${appBaseUrl.replace(/\/+$/, '')}/properties/${propertyId}/flags/${flagId}`
+}
+
 /** True when the guest is the chargeable party. */
 export function isGuestChargeable(accountability: string | null): boolean {
   return accountability != null && GUEST_CHARGEABLE_ACCOUNTABILITY.has(accountability)
@@ -109,7 +119,7 @@ export function mapFlagToTaskPayload(flag: FlagForMapping): TaskPayload {
   const chargeTag = guestCharge ? ' [Guest charge]' : ''
   const name = `${titleOrSummary} — ${flag.propertyName} [${groupLabel(groupId)}]${chargeTag}`
 
-  const appUrl = `${flag.appBaseUrl.replace(/\/+$/, '')}/properties/${flag.propertyId}/flags/${flag.id}`
+  const appUrl = flagAppUrl(flag.appBaseUrl, flag.propertyId, flag.id)
 
   const notes = [
     'Reported in the Drop-Inn STR app.',
@@ -127,7 +137,12 @@ export function mapFlagToTaskPayload(flag: FlagForMapping): TaskPayload {
     '',
     `Open in app: ${appUrl}`,
     '',
-    '- Auto-created by the STR app (BETA). Do not edit the "Open in app" link.',
+    '- Auto-created by the STR app (BETA). Do not edit the "Open in app" link',
+    '  or the STR-APP-REF line below.',
+    '',
+    // Stage 0: the deterministic, privacy-safe reconciliation marker (the
+    // authoritative flag UUID only). Matched as a complete line, exactly.
+    flagMarkerLine(flag.id),
   ].join('\n')
 
   const payload: TaskPayload = {

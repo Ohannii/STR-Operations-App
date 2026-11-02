@@ -90,13 +90,15 @@ const OUTBOX_ROW = {
   id: 'ob1',
   company_id: 'good-co',
   entity_type: 'flag',
-  entity_id: 'flag-1',
+  entity_id: '0b7c2a3e-4d5f-4a6b-8c9d-0e1f2a3b4c5d',
   status: 'pending',
   attempt_count: 0,
+  // Stage 0: rows enqueued by this version carry the create protocol.
+  payload: { flag_id: '0b7c2a3e-4d5f-4a6b-8c9d-0e1f2a3b4c5d', create_protocol: 2 },
 }
 
 const FLAG_ROW = {
-  id: 'flag-1',
+  id: '0b7c2a3e-4d5f-4a6b-8c9d-0e1f2a3b4c5d',
   description: 'Leaking tap',
   severity: 'med',
   status: 'raised',
@@ -109,7 +111,8 @@ const FLAG_ROW = {
 }
 
 const FLAG_TABLES: Record<string, TableFixture> = {
-  flags: { read: { data: FLAG_ROW } },
+  // `claim` = what the flag URL update returns (it must return the flag's id).
+  flags: { read: { data: FLAG_ROW }, claim: { data: { id: FLAG_ROW.id } } },
   properties: { read: { data: { name: 'Real Property' } } },
   flag_categories: { read: { data: { key: 'maintenance_issue', display_label: 'Broken thing' } } },
   profiles: { read: { data: { full_name: 'Quraisha R.' } } },
@@ -190,19 +193,23 @@ describe('runNextAsanaOutbox', () => {
     expect(writes.insert).not.toHaveBeenCalled()
   })
 
-  it('already-linked: claims, no provider call, marks outbox done, no link insert', async () => {
+  it('already-linked: claims, no provider call, restores the flag URL, marks outbox done, no link insert', async () => {
     const writes = writeSpies()
     const provider = { createTask: vi.fn() }
     const client = makeClient(
       {
         integration_outbox: { read: { data: [OUTBOX_ROW] }, claim: { data: { id: 'ob1' } } },
-        external_task_links: { read: { data: { id: 'link-1' } } },
+        external_task_links: {
+          read: { data: { id: 'link-1', external_task_gid: 'T5', external_task_url: 'https://app.asana.com/0/1/T5' } },
+        },
+        flags: { claim: { data: { id: FLAG_ROW.id } } },
       },
       writes,
     )
     const res = await runNextAsanaOutbox(client, provider as unknown as TaskProvider, deps)
     expect(res.status).toBe('already_linked')
     expect(provider.createTask).not.toHaveBeenCalled()
+    expect(writes.update).toHaveBeenCalledWith('flags', { asana_task_url: 'https://app.asana.com/0/1/T5' })
     expect(writes.update).toHaveBeenCalledWith(
       'integration_outbox',
       expect.objectContaining({ status: 'done' }),
@@ -230,7 +237,7 @@ describe('runNextAsanaOutbox', () => {
     expect(provider.createTask).toHaveBeenCalledTimes(1)
     expect(writes.insert).toHaveBeenCalledWith(
       'external_task_links',
-      expect.objectContaining({ internal_entity_id: 'flag-1', external_task_gid: 'T100' }),
+      expect.objectContaining({ internal_entity_id: '0b7c2a3e-4d5f-4a6b-8c9d-0e1f2a3b4c5d', external_task_gid: 'T100' }),
     )
     expect(writes.update).toHaveBeenCalledWith(
       'flags',
@@ -242,7 +249,7 @@ describe('runNextAsanaOutbox', () => {
     )
   })
 
-  it('provider error: records attempt_count/last_error, no link insert, no flag update', async () => {
+  it('provider error: records attempt_count + a VALUE-FREE code, keeps the attempt, no link, no flag update', async () => {
     const writes = writeSpies()
     const provider = {
       createTask: vi.fn(async () => {
@@ -263,8 +270,15 @@ describe('runNextAsanaOutbox', () => {
     expect(res.status).toBe('error')
     expect(writes.update).toHaveBeenCalledWith(
       'integration_outbox',
-      expect.objectContaining({ attempt_count: 1, last_error: expect.stringContaining('asana 500') }),
+      expect.objectContaining({
+        attempt_count: 1,
+        // An unknown error is AMBIGUOUS: stored as a stable code (never the
+        // message / body), and the attempt is kept so the next run reconciles.
+        last_error: 'create_ambiguous',
+        payload: expect.objectContaining({ create_attempted_at: expect.any(String) }),
+      }),
     )
+    expect(JSON.stringify(writes.update.mock.calls)).not.toContain('asana 500')
     expect(writes.insert).not.toHaveBeenCalled()
     expect(writes.update).not.toHaveBeenCalledWith('flags', expect.anything())
   })

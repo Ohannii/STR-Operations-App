@@ -12,7 +12,7 @@ import {
 
 function baseFlag(overrides: Partial<FlagForMapping> = {}): FlagForMapping {
   return {
-    id: 'flag-123',
+    id: '0b7c2a3e-4d5f-4a6b-8c9d-0e1f2a3b4c5d',
     description: 'Leaking tap under kitchen sink',
     severity: 'med',
     categoryKey: 'maintenance_issue',
@@ -142,7 +142,7 @@ describe('mapFlagToTaskPayload — body + safety due date', () => {
   it('includes the app permalink and key fields', () => {
     const payload = mapFlagToTaskPayload(baseFlag())
     expect(payload.notes).toContain(
-      'Open in app: https://app.example.com/properties/prop-1/flags/flag-123',
+      'Open in app: https://app.example.com/properties/prop-1/flags/0b7c2a3e-4d5f-4a6b-8c9d-0e1f2a3b4c5d',
     )
     expect(payload.notes).toMatch(/Property:\s+Ballito Villa 204/)
     expect(payload.notes).toMatch(/Category:\s+Broken thing/)
@@ -153,7 +153,7 @@ describe('mapFlagToTaskPayload — body + safety due date', () => {
   it('strips a trailing slash from appBaseUrl', () => {
     const payload = mapFlagToTaskPayload(baseFlag({ appBaseUrl: 'https://app.example.com/' }))
     expect(payload.notes).toContain(
-      'Open in app: https://app.example.com/properties/prop-1/flags/flag-123',
+      'Open in app: https://app.example.com/properties/prop-1/flags/0b7c2a3e-4d5f-4a6b-8c9d-0e1f2a3b4c5d',
     )
   })
 
@@ -210,5 +210,31 @@ describe('mapFlagToTaskPayload — issue title (title-ready)', () => {
       baseFlag({ issueTitle: 'Broken pot', categoryKey: 'guest_damage' }),
     )
     expect(payload.sectionGid).toBe(ASANA_TEST_SECTION_GIDS.damage)
+  })
+})
+
+describe('Stage 0 — deterministic reconciliation marker', () => {
+  it('ends the notes with the exact STR-APP-REF line built from the flag UUID only', () => {
+    const p = mapFlagToTaskPayload(baseFlag())
+    const lines = p.notes.split('\n')
+    expect(lines[lines.length - 1]).toBe('STR-APP-REF: flag/0b7c2a3e-4d5f-4a6b-8c9d-0e1f2a3b4c5d')
+    expect(lines.filter((l) => l.startsWith('STR-APP-REF:'))).toHaveLength(1)
+  })
+
+  it('the marker never carries names, descriptions, guest or property data', () => {
+    const p = mapFlagToTaskPayload(baseFlag({ description: 'Guest Jane broke the TV', propertyName: 'Villa 9' }))
+    const marker = p.notes.split('\n').find((l) => l.startsWith('STR-APP-REF:'))!
+    expect(marker).toBe('STR-APP-REF: flag/0b7c2a3e-4d5f-4a6b-8c9d-0e1f2a3b4c5d')
+    expect(marker).not.toMatch(/Jane|Villa|TV/)
+  })
+
+  it('is stable: the same flag always yields the identical marker line', () => {
+    const a = mapFlagToTaskPayload(baseFlag({ description: 'one' })).notes.split('\n').at(-1)
+    const b = mapFlagToTaskPayload(baseFlag({ description: 'two', severity: 'high' })).notes.split('\n').at(-1)
+    expect(a).toBe(b)
+  })
+
+  it('refuses a non-UUID flag id rather than produce an ambiguous marker', () => {
+    expect(() => mapFlagToTaskPayload(baseFlag({ id: 'flag-1' }))).toThrow(/not a UUID/)
   })
 })

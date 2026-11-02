@@ -26,21 +26,29 @@ describe('buildFlagOutboxEvent (pure)', () => {
     expect(row.created_by).toBe('user-9')
   })
 
-  it('defaults payload to { flag_id } when no hints are given', () => {
+  it('defaults payload to { flag_id, create_protocol } when no hints are given', () => {
     const row = buildFlagOutboxEvent(baseInput())
-    expect(row.payload).toEqual({ flag_id: 'flag-123' })
+    expect(row.payload).toEqual({ flag_id: 'flag-123', create_protocol: 2 })
   })
 
   it('merges extra payload hints while keeping flag_id', () => {
     const row = buildFlagOutboxEvent(
       baseInput({ payload: { propertyId: 'prop-1', note: 'x' } }),
     )
-    expect(row.payload).toEqual({ propertyId: 'prop-1', note: 'x', flag_id: 'flag-123' })
+    expect(row.payload).toEqual({ propertyId: 'prop-1', note: 'x', flag_id: 'flag-123', create_protocol: 2 })
   })
 
   it('does NOT let a payload hint overwrite flag_id', () => {
     const row = buildFlagOutboxEvent(baseInput({ payload: { flag_id: 'HACKED' } }))
     expect(row.payload.flag_id).toBe('flag-123')
+  })
+
+  it('Stage 0: a caller hint can neither forge nor remove create_protocol', () => {
+    expect(buildFlagOutboxEvent(baseInput({ payload: { create_protocol: 1 } })).payload.create_protocol).toBe(2)
+    expect(buildFlagOutboxEvent(baseInput({ payload: { create_protocol: undefined } })).payload.create_protocol).toBe(2)
+    // Worker-owned state is never written at enqueue time.
+    const p = buildFlagOutboxEvent(baseInput()).payload
+    for (const k of ['create_marker', 'create_attempted_at', 'created_task_gid']) expect(p).not.toHaveProperty(k)
   })
 
   it('omits DB-owned fields from the insert row', () => {
