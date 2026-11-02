@@ -39,12 +39,19 @@ function makeDb(opts: { outbox: Row }) {
   const outbox: Row = { ...opts.outbox }
   const links: Row[] = []
   const flagUpdates: Row[] = []
+  /** The flag's write-back target (company 'co'). */
+  const flag: Row = { id: FLAG, company_id: 'co', asana_task_url: null }
   const outboxUpdates: Array<{ patch: Row; filters: Filter[]; matched: boolean }> = []
   const hooks: {
     beforeOutboxWrite?: (patch: Row, filters: Filter[]) => 'fail' | void
     /** Apply the update but RETURN this instead (e.g. a different row id). */
     outboxWriteResult?: (patch: Row) => { data: unknown; error?: unknown } | void
     linkInsertError?: { code: string; message: string } | null
+    /** Runs just before a link insert (e.g. a concurrent worker links first). */
+    beforeLinkInsert?: () => void
+    linkReadError?: boolean
+    /** Flag URL updates: 'error' returns a Supabase error; 'crash' throws. */
+    flagUpdate?: Array<'error' | 'crash'>
     onFlagRead?: () => void
     flagMissing?: boolean
   } = {}
@@ -98,21 +105,42 @@ function makeDb(opts: { outbox: Row }) {
         return { data: { id: outbox.id } }
       }
       if (table === 'external_task_links') {
+        const active = links.filter((l) => l.deleted_at == null)
         if (insertRow) {
           if (hooks.linkInsertError) {
             const err = hooks.linkInsertError
             hooks.linkInsertError = null
             return { data: null, error: err }
           }
-          links.push(insertRow)
+          hooks.beforeLinkInsert?.()
+          hooks.beforeLinkInsert = undefined
+          const r = insertRow
+          // Both partial unique indexes from the foundation migration.
+          const dup = links.filter((l) => l.deleted_at == null).some(
+            (l) =>
+              l.company_id === r.company_id &&
+              l.provider === r.provider &&
+              ((l.internal_entity_type === r.internal_entity_type &&
+                l.internal_entity_id === r.internal_entity_id) ||
+                l.external_task_gid === r.external_task_gid),
+          )
+          if (dup) return { data: null, error: { code: '23505', message: 'duplicate key' } }
+          links.push({ ...r, deleted_at: null })
           return { data: null, error: null }
         }
-        const found = links.find((l) => l.internal_entity_id === FLAG)
-        return { data: found ? { id: 'link' } : null }
+        if (hooks.linkReadError) return { data: null, error: { code: 'XX000', message: 'down' } }
+        const found = active.filter((l) => matches(l, filters))
+        if (found.length > 1) return { data: null, error: { code: 'PGRST116', message: 'multiple rows' } }
+        return { data: found[0] ? { id: 'link', ...found[0] } : null }
       }
       if (table === 'flags' && patch) {
+        const mode = hooks.flagUpdate?.shift()
+        if (mode === 'crash') throw new Error('worker crashed')
+        if (mode === 'error') return { data: null, error: { code: 'XX000', message: 'flag write failed' } }
+        if (!matches(flag, filters)) return { data: null }
         flagUpdates.push(patch)
-        return { data: null }
+        Object.assign(flag, patch)
+        return { data: { id: flag.id } }
       }
       if (table === 'flags') {
         hooks.onFlagRead?.()
@@ -141,7 +169,7 @@ function makeDb(opts: { outbox: Row }) {
   }
 
   const client = { from: (t: string) => query(t) } as unknown as SupabaseClient
-  return { client, outbox, links, flagUpdates, outboxUpdates, hooks }
+  return { client, outbox, links, flag, flagUpdates, outboxUpdates, hooks }
 }
 
 /** A fake BETA Asana: tasks live here; create can create-then-lose the response. */
@@ -713,5 +741,147 @@ describe('429 never consumes — and never refunds — a normal attempt', () => 
       expect(h.db.outbox.attempt_count).toBe(1)
     }
     expect(posts(h.asana)).toBe(1)
+  })
+})
+
+describe('write-backs: never "done" before the link is proven and the flag URL is written', () => {
+  const link = (over: Row = {}): Row => ({
+    company_id: 'co',
+    provider: 'asana',
+    internal_entity_type: 'flag',
+    internal_entity_id: FLAG,
+    external_task_gid: 'T1',
+    external_task_url: 'https://app.asana.com/0/1/T1',
+    deleted_at: null,
+    ...over,
+  })
+
+  it('crash AFTER the link insert, BEFORE the flag URL update: the retry restores the URL, no second POST', async () => {
+    const h = setup()
+    h.db.hooks.flagUpdate = ['crash']
+    await expect(h.run()).rejects.toThrow('worker crashed')
+    expect(h.db.links).toHaveLength(1)
+    expect(h.db.flag.asana_task_url).toBeNull()
+    expect(h.db.outbox.status).toBe('processing') // never marked done
+    h.clock.now += 6 * MIN // stale reset hands it to a new run
+    const [res] = await runAsanaOutboxBatch(h.db.client, h.asana.provider, h.deps, 1)
+    expect(res).toMatchObject({ status: 'already_linked' })
+    expect(h.db.flag.asana_task_url).toBe('https://app.asana.com/0/1/T1')
+    expect(h.db.outbox.status).toBe('done')
+    expect(posts(h.asana)).toBe(1)
+  })
+
+  it('flag URL update FAILS: retry (value-free code, GID kept), then a successful retry — exactly one POST', async () => {
+    const h = setup()
+    h.db.hooks.flagUpdate = ['error']
+    expect(await h.run()).toMatchObject({ status: 'error', error: 'flag_url_update_failed' })
+    expect(h.db.outbox).toMatchObject({ status: 'pending', last_error: 'flag_url_update_failed', attempt_count: 1 })
+    expect(h.state().created_task_gid).toBe('T1')
+    expect(h.db.flag.asana_task_url).toBeNull()
+    expect(JSON.stringify(h.db.outboxUpdates)).not.toContain('flag write failed')
+    h.clock.now += 5 * MIN
+    h.due()
+    expect(await h.run()).toMatchObject({ status: 'already_linked' })
+    expect(h.db.flag.asana_task_url).toBe('https://app.asana.com/0/1/T1')
+    expect(h.db.outbox.status).toBe('done')
+    expect(posts(h.asana)).toBe(1)
+  })
+
+  it('flag URL update that touches NO row (e.g. wrong company) is a failure, not done', async () => {
+    const h = setup()
+    h.db.flag.company_id = 'another-co'
+    expect(await h.run()).toMatchObject({ status: 'error', error: 'flag_url_update_failed' })
+    expect(h.db.outbox.status).toBe('pending')
+  })
+
+  it('an existing link restores a MISSING flag URL without any Asana call', async () => {
+    const h = setup()
+    h.db.links.push(link({ external_task_gid: 'T5', external_task_url: 'https://app.asana.com/0/1/T5' }))
+    expect(await h.run()).toMatchObject({ status: 'already_linked' })
+    expect(h.db.flag.asana_task_url).toBe('https://app.asana.com/0/1/T5')
+    expect(h.db.outbox.status).toBe('done')
+    expect(posts(h.asana)).toBe(0)
+    expect(h.asana.provider.getTask).not.toHaveBeenCalled()
+    expect(h.asana.provider.listTasksModifiedSince).not.toHaveBeenCalled()
+  })
+
+  it('existing link but the flag URL write fails: NOT done, retried, still no POST', async () => {
+    const h = setup()
+    h.db.links.push(link())
+    h.db.hooks.flagUpdate = ['error']
+    expect(await h.run()).toMatchObject({ status: 'error', error: 'flag_url_update_failed' })
+    expect(h.db.outbox.status).toBe('pending')
+    expect(posts(h.asana)).toBe(0)
+  })
+
+  it('the existing-link lookup is COMPANY-scoped: another company’s link is ignored', async () => {
+    const h = setup()
+    h.db.links.push(link({ company_id: 'other-co', external_task_gid: 'X9', external_task_url: 'https://app.asana.com/0/1/X9' }))
+    expect(await h.run()).toMatchObject({ status: 'created', externalTaskGid: 'T1' })
+    expect(h.db.flag.asana_task_url).toBe('https://app.asana.com/0/1/T1')
+    const preCheck = h.db.links.filter((l) => l.company_id === 'co')
+    expect(preCheck).toHaveLength(1)
+  })
+
+  it('a link-read failure retries and never creates', async () => {
+    const h = setup()
+    h.db.hooks.linkReadError = true
+    expect(await h.run()).toMatchObject({ status: 'error', error: 'link_read_failed' })
+    expect(posts(h.asana)).toBe(0)
+  })
+
+  it('23505 where the active link is the SAME task: completes safely (flag URL written, done)', async () => {
+    const h = setup()
+    h.db.hooks.beforeLinkInsert = () => h.db.links.push(link()) // a concurrent run linked T1 first
+    expect(await h.run()).toMatchObject({ status: 'created', externalTaskGid: 'T1' })
+    expect(h.db.links).toHaveLength(1)
+    expect(h.db.flag.asana_task_url).toBe('https://app.asana.com/0/1/T1')
+    expect(h.db.outbox.status).toBe('done')
+  })
+
+  it('23505 where the active link is a DIFFERENT task: manual review, flag URL untouched, nothing deleted', async () => {
+    const h = setup()
+    h.db.flag.asana_task_url = 'https://app.asana.com/0/1/T-OLD'
+    h.db.hooks.beforeLinkInsert = () =>
+      h.db.links.push(link({ external_task_gid: 'T-OTHER', external_task_url: 'https://app.asana.com/0/1/T-OTHER' }))
+    const res = await h.run()
+    expect(res).toMatchObject({ status: 'manual_review', code: 'manual_review:link_conflict', taskGids: ['T1', 'T-OTHER'] })
+    expect(h.db.flag.asana_task_url).toBe('https://app.asana.com/0/1/T-OLD')
+    expect(h.db.flagUpdates).toHaveLength(0)
+    expect(h.db.outbox.status).toBe('dead')
+    expect(h.state().created_task_gid).toBe('T1') // kept for the reviewer
+    expect(h.db.links).toHaveLength(1)
+    expect(h.asana.tasks).toHaveLength(1) // nothing deleted
+  })
+
+  it('23505 that NO active link for this flag explains (task GID linked to another flag): manual review', async () => {
+    const h = setup()
+    h.db.hooks.beforeLinkInsert = () => h.db.links.push(link({ internal_entity_id: OTHER })) // T1 on another flag
+    expect(await h.run()).toMatchObject({ status: 'manual_review', code: 'manual_review:link_conflict', taskGids: ['T1'] })
+    expect(h.db.flagUpdates).toHaveLength(0)
+    expect(h.db.outbox.status).toBe('dead')
+  })
+
+  it('a plain 23505 with no matching link at all is NOT treated as success', async () => {
+    const h = setup()
+    h.db.hooks.linkInsertError = { code: '23505', message: 'duplicate key' }
+    expect(await h.run()).toMatchObject({ status: 'manual_review', code: 'manual_review:link_conflict' })
+    expect(h.db.flagUpdates).toHaveLength(0)
+  })
+})
+
+describe('refused-company row', () => {
+  it('terminal write that loses its lock returns lost_lock, not refused', async () => {
+    const h = setup(undefined, { allowedCompanyIds: ['other'] })
+    h.db.hooks.beforeOutboxWrite = (patch) => (patch.status === 'dead' ? 'fail' : undefined)
+    expect(await h.run()).toMatchObject({ status: 'lost_lock', outboxId: 'ob1', flagId: FLAG })
+    expect(h.db.outbox.status).toBe('processing')
+    expect(posts(h.asana)).toBe(0)
+  })
+
+  it('normal case still retires the row as refused', async () => {
+    const h = setup(undefined, { allowedCompanyIds: ['other'] })
+    expect(await h.run()).toMatchObject({ status: 'refused' })
+    expect(h.db.outbox.status).toBe('dead')
   })
 })

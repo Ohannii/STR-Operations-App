@@ -9,7 +9,9 @@
  * creation idempotent as far as Asana allows (no idempotency key exists):
  *
  *   claim (pending -> processing, locked_by = this run's token)
- *     -> existing link?            done, no Asana call
+ *     -> existing link (same company + flag)?
+ *                                  restore flags.asana_task_url from it,
+ *                                  THEN done. No Asana call.
  *     -> saved created_task_gid?   READ it; verify marker + BETA; finish.
  *                                  Missing / mismatched -> manual review.
  *                                  NEVER recreated automatically.
@@ -24,6 +26,12 @@
  *     -> record the attempt FIRST (conditional write), THEN create with
  *        atomic project + section membership, THEN save the task GID,
  *        THEN link, flag URL and done.
+ *
+ * Write-backs: the row is marked done ONLY after the link is proven to
+ * point at THIS task and flags.asana_task_url was confirmed written. A
+ * failed write-back retries with created_task_gid kept, so the retry never
+ * creates another task; a link that points at a DIFFERENT task stops for
+ * manual review without touching the flag URL or either task.
  *
  * Every outbox write after the claim is CONDITIONAL on (row id, status
  * 'processing', locked_by = this run) and must RETURN that row's id. If it
@@ -122,7 +130,7 @@ export type RealRunResult =
 
 export type GuardOutcome =
   | { kind: 'no_pending' }
-  | { kind: 'refused'; outboxId: string; reason: string }
+  | { kind: 'refused'; outboxId: string; reason: string; flagId: string }
   | {
       kind: 'ok'
       outboxId: string
@@ -172,7 +180,7 @@ export async function readAndGuardOutbox(
     assertAllowedCompany(companyId, deps.allowedCompanyIds)
   } catch (err) {
     if (err instanceof DisallowedCompanyError) {
-      return { kind: 'refused', outboxId, reason: 'company not on allowlist' }
+      return { kind: 'refused', outboxId, reason: 'company not on allowlist', flagId }
     }
     throw err
   }
@@ -416,11 +424,62 @@ class OwnedRow {
   }
 }
 
+type ActiveLink = { gid: string | null; url: string | null }
+
+/**
+ * The ACTIVE link for exactly this company + flag (unique index
+ * uq_external_task_links_internal_entity_active). `error` = read failed.
+ */
+async function readActiveLink(
+  supabase: SupabaseClient,
+  companyId: string,
+  flagId: string,
+): Promise<{ link: ActiveLink | null; error: boolean }> {
+  const { data, error } = await supabase
+    .from('external_task_links')
+    .select('id, external_task_gid, external_task_url')
+    .eq('company_id', companyId)
+    .eq('provider', 'asana')
+    .eq('internal_entity_type', 'flag')
+    .eq('internal_entity_id', flagId)
+    .is('deleted_at', null)
+    .maybeSingle()
+  if (error) return { link: null, error: true }
+  if (!data) return { link: null, error: false }
+  const d = data as { external_task_gid?: unknown; external_task_url?: unknown }
+  const str = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v : null)
+  return { link: { gid: str(d.external_task_gid), url: str(d.external_task_url) }, error: false }
+}
+
+/**
+ * Write flags.asana_task_url for exactly this company's flag. True only
+ * when the update succeeded AND returned this flag's id.
+ */
+async function writeFlagTaskUrl(
+  supabase: SupabaseClient,
+  companyId: string,
+  flagId: string,
+  taskUrl: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('flags')
+    .update({ asana_task_url: taskUrl })
+    .eq('id', flagId)
+    .eq('company_id', companyId)
+    .select('id')
+    .maybeSingle()
+  return !error && isRow(data, flagId)
+}
+
 /**
  * The write-backs once the task GID is known (created, adopted or saved):
- * link (idempotent: unique index; 23505 = already linked) -> flag URL ->
- * outbox done. A failure here keeps created_task_gid, so the retry REUSES
- * it and never creates another task.
+ * link -> flag URL -> outbox done, in that order, each CHECKED.
+ *   - 23505 on the link is NOT success by itself: the active link for this
+ *     company + flag is re-read and must point at THIS task; otherwise
+ *     manual review (flag URL untouched, nothing deleted).
+ *   - A failed flag URL write retries; done is never written before it.
+ * Every failure keeps created_task_gid, so the retry REUSES the task and
+ * never creates another.
  */
 async function finishWithTask(
   supabase: SupabaseClient,
@@ -447,8 +506,19 @@ async function finishWithTask(
   if (insertErr && insertErr.code !== '23505') {
     return row.failRetry(CODES.linkInsertFailed, state)
   }
+  if (insertErr) {
+    // Unique violation: something is already linked. Prove it is THIS task.
+    const { link, error } = await readActiveLink(supabase, companyId, row.flagId)
+    if (error) return row.failRetry(CODES.linkReadFailed, state)
+    if (!link || link.gid !== taskGid) {
+      const gids = [taskGid, ...(link?.gid ? [link.gid] : [])]
+      return row.manualReview(CODES.manualLinkConflict, state, gids)
+    }
+  }
 
-  await supabase.from('flags').update({ asana_task_url: taskUrl }).eq('id', row.flagId)
+  if (!(await writeFlagTaskUrl(supabase, companyId, row.flagId, taskUrl))) {
+    return row.failRetry(CODES.flagUrlUpdateFailed, state)
+  }
 
   if (!(await row.done(state))) {
     return { status: 'lost_lock', outboxId: row.outboxId, flagId: row.flagId }
@@ -477,14 +547,15 @@ export async function runNextAsanaOutbox(
     // can't block the queue on every tick — claimed first, then retired by
     // a conditional write, like every other terminal write.
     if (!(await claimRow(supabase, g.outboxId, runId, now()))) {
-      return { status: 'refused', outboxId: g.outboxId, reason: g.reason }
+      return { status: 'skipped', outboxId: g.outboxId, flagId: g.flagId }
     }
-    await ownedWrite(supabase, g.outboxId, runId, {
+    const retired = await ownedWrite(supabase, g.outboxId, runId, {
       status: 'dead',
       last_error: g.reason,
       locked_at: null,
       locked_by: null,
     })
+    if (!retired) return { status: 'lost_lock', outboxId: g.outboxId, flagId: g.flagId }
     return { status: 'refused', outboxId: g.outboxId, reason: g.reason }
   }
 
@@ -499,17 +570,17 @@ export async function runNextAsanaOutbox(
   const row = new OwnedRow(supabase, outboxId, flagId, runId, attemptCount, g.payload, now)
   let state = readCreateState(g.payload)
 
-  // Idempotency pre-check: an active link means the task already exists.
-  const { data: existingLink, error: linkReadErr } = await supabase
-    .from('external_task_links')
-    .select('id')
-    .eq('provider', 'asana')
-    .eq('internal_entity_type', 'flag')
-    .eq('internal_entity_id', flagId)
-    .is('deleted_at', null)
-    .maybeSingle()
-  if (linkReadErr) throw new Error(`link pre-check failed: ${linkReadErr.message}`)
-  if (existingLink) {
+  // Idempotency pre-check: an active link for THIS company + flag means the
+  // task already exists. Restore the flag URL from it (a crash may have hit
+  // between the link insert and the flag update), THEN done. Never creates.
+  const pre = await readActiveLink(supabase, companyId, flagId)
+  if (pre.error) return row.failRetry(CODES.linkReadFailed, state)
+  if (pre.link) {
+    const url = pre.link.url ?? (pre.link.gid ? taskUrlForGid(pre.link.gid) : null)
+    if (!url) return row.manualReview(CODES.manualLinkIncomplete, state)
+    if (!(await writeFlagTaskUrl(supabase, companyId, flagId, url))) {
+      return row.failRetry(CODES.flagUrlUpdateFailed, state)
+    }
     if (!(await row.done(state))) return { status: 'lost_lock', outboxId, flagId }
     return { status: 'already_linked', outboxId, flagId }
   }
