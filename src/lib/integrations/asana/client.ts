@@ -11,10 +11,39 @@ const ASANA_API_BASE = 'https://app.asana.com/api/1.0'
 
 export interface CreateTaskArgs {
   projectGid: string
+  /** Section placement happens IN the create request (atomic membership). */
+  sectionGid: string
   name: string
   notes: string
   /** YYYY-MM-DD. Only sent when present. */
   dueOn?: string
+}
+
+/** Explicit per-request timeout for the create / reconcile calls (Stage 0). */
+export const ASANA_REQUEST_TIMEOUT_MS = 30_000
+
+/**
+ * fetch + read under ONE explicit timeout that covers the whole exchange
+ * (headers AND body). The timer is ALWAYS cleared in `finally` — on
+ * success, on an HTTP error thrown by `read`, and on a network / abort
+ * error — so no timer outlives the request.
+ */
+async function fetchWithTimeout<T>(
+  url: string,
+  init: RequestInit,
+  read: (res: Response) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController()
+  const timer = setTimeout(
+    () => controller.abort(new DOMException('Asana request timed out', 'TimeoutError')),
+    ASANA_REQUEST_TIMEOUT_MS,
+  )
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal })
+    return await read(res)
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export interface CreatedTask {
@@ -73,34 +102,41 @@ async function safeErrorDetail(res: Response): Promise<string> {
   }
 }
 
-/** Create a task in the given project. Returns its gid + permalink. */
+/**
+ * Create a task DIRECTLY in its project AND section (one request:
+ * `memberships: [{ project, section }]`), so no separate section call can
+ * fail after the task exists. Returns its gid + permalink. Throws
+ * AsanaApiError (with Retry-After on 429) or a network / timeout error.
+ */
 export async function createTaskInProject(
   token: string,
   args: CreateTaskArgs,
 ): Promise<CreatedTask> {
-  const res = await fetch(`${ASANA_API_BASE}/tasks?opt_fields=permalink_url`, {
-    method: 'POST',
-    headers: authHeaders(token),
-    body: JSON.stringify({
-      data: {
-        name: args.name,
-        notes: args.notes,
-        projects: [args.projectGid],
-        ...(args.dueOn ? { due_on: args.dueOn } : {}),
-      },
-    }),
-  })
-
-  if (!res.ok) {
-    throw new AsanaApiError('create task', res.status, await safeErrorDetail(res))
-  }
-
-  const json = (await res.json()) as {
-    data?: { gid?: string; permalink_url?: string }
-  }
+  const { status, json } = await fetchWithTimeout(
+    `${ASANA_API_BASE}/tasks?opt_fields=permalink_url`,
+    {
+      method: 'POST',
+      headers: authHeaders(token),
+      body: JSON.stringify({
+        data: {
+          name: args.name,
+          notes: args.notes,
+          memberships: [{ project: args.projectGid, section: args.sectionGid }],
+          ...(args.dueOn ? { due_on: args.dueOn } : {}),
+        },
+      }),
+    },
+    async (res) => {
+      if (!res.ok) await throwAsana('create task', res)
+      return {
+        status: res.status,
+        json: (await res.json()) as { data?: { gid?: string; permalink_url?: string } },
+      }
+    },
+  )
   const gid = json?.data?.gid
   if (!gid) {
-    throw new AsanaApiError('create task', res.status, 'missing task gid in response')
+    throw new AsanaApiError('create task', status, 'missing task gid in response')
   }
   const permalinkUrl =
     typeof json.data?.permalink_url === 'string' && json.data.permalink_url
@@ -188,6 +224,113 @@ export async function getProjectCustomFieldSettings(
     offset = next
   }
   return { gid: projectGid, custom_field_settings: settings }
+}
+
+/** Fallback task URL (used when the permalink is not part of the response). */
+export function taskUrlForGid(gid: string): string {
+  return `https://app.asana.com/0/0/${gid}`
+}
+
+export type ReconcileTaskRecord = {
+  gid: string
+  notes: string | null
+  projectGids: string[]
+}
+
+function toReconcileTask(raw: unknown): ReconcileTaskRecord | null {
+  const t = raw as { gid?: unknown; notes?: unknown; memberships?: unknown } | null
+  if (!t || typeof t.gid !== 'string' || !t.gid) return null
+  const memberships = Array.isArray(t.memberships) ? t.memberships : []
+  const projectGids = memberships
+    .map((m) => (m as { project?: { gid?: unknown } } | null)?.project?.gid)
+    .filter((g): g is string => typeof g === 'string' && g.length > 0)
+  return { gid: t.gid, notes: typeof t.notes === 'string' ? t.notes : null, projectGids }
+}
+
+/**
+ * READ-ONLY (Stage 0): one task by GID — notes and project memberships only.
+ * Returns null on 404 (deleted / not visible). Throws AsanaApiError for any
+ * other HTTP failure, or a network / timeout error.
+ */
+export async function getTaskForReconciliation(
+  token: string,
+  taskGid: string,
+): Promise<ReconcileTaskRecord | null> {
+  const url = new URL(`${ASANA_API_BASE}/tasks/${encodeURIComponent(taskGid)}`)
+  url.searchParams.set('opt_fields', 'notes,memberships.project.gid')
+  const json = await fetchWithTimeout(
+    url.toString(),
+    { method: 'GET', headers: authHeaders(token) },
+    async (res) => {
+      if (res.status === 404) return null
+      if (!res.ok) await throwAsana('read task', res)
+      return (await res.json()) as { data?: unknown }
+    },
+  )
+  if (json === null) return null
+  const task = toReconcileTask(json?.data)
+  if (!task) throw new Error('task read is malformed')
+  return task
+}
+
+/** Max task pages read for one reconciliation lookup (100 per page). */
+export const RECONCILE_MAX_PAGES = 20
+
+/**
+ * READ-ONLY (Stage 0): every task of ONE project modified since
+ * `modifiedSinceIso` — GID, notes and project memberships only. Paginated
+ * (limit=100) and FAIL-CLOSED: a malformed page, a missing / damaged
+ * next_page, a repeated offset or more than RECONCILE_MAX_PAGES pages
+ * THROWS, so an incomplete list can never read as "not found".
+ */
+export async function listProjectTasksModifiedSince(
+  token: string,
+  projectGid: string,
+  modifiedSinceIso: string,
+): Promise<ReconcileTaskRecord[]> {
+  const tasks: ReconcileTaskRecord[] = []
+  const seenOffsets = new Set<string>()
+  let offset: string | undefined
+  for (let page = 0; ; page++) {
+    if (page >= RECONCILE_MAX_PAGES) {
+      throw new Error(`reconciliation lookup exceeded ${RECONCILE_MAX_PAGES} pages`)
+    }
+    const url = new URL(`${ASANA_API_BASE}/tasks`)
+    url.searchParams.set('project', projectGid)
+    url.searchParams.set('modified_since', modifiedSinceIso)
+    url.searchParams.set('limit', '100')
+    url.searchParams.set('opt_fields', 'notes,memberships.project.gid')
+    if (offset) url.searchParams.set('offset', offset)
+
+    const json = await fetchWithTimeout(
+      url.toString(),
+      { method: 'GET', headers: authHeaders(token) },
+      async (res) => {
+        if (!res.ok) await throwAsana('reconcile tasks', res)
+        return (await res.json()) as { data?: unknown; next_page?: unknown }
+      },
+    )
+    if (!json || !Array.isArray(json.data)) throw new Error('reconciliation page is malformed')
+    for (const raw of json.data) {
+      const task = toReconcileTask(raw)
+      if (!task) throw new Error('reconciliation task is malformed')
+      tasks.push(task)
+    }
+    if (!('next_page' in json)) throw new Error('reconciliation pagination is malformed')
+    const nextPage = json.next_page
+    if (nextPage === null) break
+    if (typeof nextPage !== 'object' || Array.isArray(nextPage)) {
+      throw new Error('reconciliation pagination is malformed')
+    }
+    const next = (nextPage as { offset?: unknown }).offset
+    if (typeof next !== 'string' || next.trim().length === 0) {
+      throw new Error('reconciliation pagination offset is malformed')
+    }
+    if (seenOffsets.has(next)) throw new Error('reconciliation pagination repeated an offset')
+    seenOffsets.add(next)
+    offset = next
+  }
+  return tasks
 }
 
 /** Move a task into a section of its project. */

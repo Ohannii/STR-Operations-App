@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { createAsanaProvider } from '@/lib/integrations/asana/provider'
 import { AsanaApiError } from '@/lib/integrations/asana/client'
 import {
@@ -49,27 +51,47 @@ describe('createAsanaProvider', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('creates the task then adds it to the section, returning gid + url', async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      if (String(url).includes('/sections/')) return mockResponse({ data: {} })
-      return mockResponse({ data: { gid: 'T9', permalink_url: 'https://app.asana.com/0/1/T9' } })
-    })
+  it('Stage 0: creates the task in project AND section in ONE request — no separate section call', async () => {
+    const fetchMock = vi.fn(async () =>
+      mockResponse({ data: { gid: 'T9', permalink_url: 'https://app.asana.com/0/1/T9' } }),
+    )
     vi.stubGlobal('fetch', fetchMock)
 
     const provider = createAsanaProvider('tok')
     const res = await provider.createTask(payload())
 
     expect(res).toEqual({ externalTaskGid: 'T9', externalTaskUrl: 'https://app.asana.com/0/1/T9' })
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, opts] = fetchMock.mock.calls[0] as unknown as [string, { body: string }]
+    expect(String(url)).not.toContain('/sections/')
+    expect(JSON.parse(opts.body).data.memberships).toEqual([
+      { project: ASANA_TEST_PROJECT_GID, section: 'S1' },
+    ])
   })
 
-  it('propagates a client API error and does not add to a section', async () => {
+  it('propagates a client API error (one request, nothing else attempted)', async () => {
     const fetchMock = vi.fn(async () => mockResponse('server error', { ok: false, status: 500 }))
     vi.stubGlobal('fetch', fetchMock)
 
     const provider = createAsanaProvider('tok')
     await expect(provider.createTask(payload())).rejects.toBeInstanceOf(AsanaApiError)
-    // create failed → addTask never called
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('the read-only lookups refuse a live/disallowed project BEFORE any network call', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const provider = createAsanaProvider('tok')
+    await expect(provider.getTask('1211426202387126', 'T1')).rejects.toBeInstanceOf(DisallowedAsanaProjectError)
+    await expect(provider.listTasksModifiedSince('1211426202387126', '2026-01-01T00:00:00Z')).rejects.toBeInstanceOf(
+      DisallowedAsanaProjectError,
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('source contract: the provider no longer calls addTaskToSection', () => {
+    const src = readFileSync(join(process.cwd(), 'src/lib/integrations/asana/provider.ts'), 'utf8')
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+    expect(code).not.toContain('addTaskToSection')
   })
 })

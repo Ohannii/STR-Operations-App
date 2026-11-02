@@ -19,6 +19,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { CREATE_PROTOCOL } from '@/lib/integrations/worker/create-idempotency'
 import type {
   IntegrationEntityType,
   IntegrationProvider,
@@ -66,7 +67,11 @@ export function buildFlagOutboxEvent(input: FlagCreatedOutboxInput): OutboxInser
     event_type: 'asana.create_task_for_flag',
     entity_type: 'flag',
     entity_id: input.flagId,
-    payload: { ...(input.payload ?? {}), flag_id: input.flagId },
+    // create_protocol (Stage 0): rows carrying it ALWAYS record an attempt
+    // before any create request, so "no attempt recorded" provably means
+    // untouched. Rows without it are legacy and are reconciled first.
+    // Spread LAST so a caller hint can never forge or remove it.
+    payload: { ...(input.payload ?? {}), flag_id: input.flagId, create_protocol: CREATE_PROTOCOL },
     created_by: input.createdBy,
   }
 }

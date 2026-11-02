@@ -41,12 +41,24 @@ export interface TaskPayload {
   dueOn?: string
 }
 
+/** A task as seen by READ-ONLY reconciliation: identity, notes, projects. */
+export interface ProviderTask {
+  gid: string
+  notes: string | null
+  projectGids: string[]
+}
+
 /**
- * Provider interface. DEFINED here in Slice 3 but intentionally NOT
- * implemented — there is no HTTP client and no Asana call yet.
+ * Provider interface. Every method asserts the pinned project allowlist
+ * BEFORE any network call. Only createTask writes; the other two are
+ * read-only lookups used to reconcile an ambiguous create (Stage 0).
  */
 export interface TaskProvider {
   createTask(
     payload: TaskPayload,
   ): Promise<{ externalTaskGid: string; externalTaskUrl: string }>
+  /** READ-ONLY. null = the task does not exist / is not visible (404). */
+  getTask(projectGid: string, taskGid: string): Promise<ProviderTask | null>
+  /** READ-ONLY. Every task of the project modified since the given time. */
+  listTasksModifiedSince(projectGid: string, modifiedSinceIso: string): Promise<ProviderTask[]>
 }
