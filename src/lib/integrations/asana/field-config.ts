@@ -80,14 +80,12 @@ export type ProjectFieldConfig = {
 /**
  * BETA: "Drop-Inn STR — Integration Test (BETA)".
  *
- * As of the 29 Oct audit the BETA project has NO custom fields. Only the two
- * WORKSPACE-LIBRARY fields (Unit #, Unit Number) keep their GIDs when added
- * to another project, so only they are declared here — the validator will
- * report them `field_missing` until an Asana admin adds them to BETA, which
- * is the intended fail-closed behaviour. The project-local fields (Category,
- * incident types, Evidence Received, Accountable Party) are added here ONLY
- * after the admin mirrors them into BETA and their real BETA GIDs have been
- * captured by a read-only GET.
+ * Unit # and Unit Number are WORKSPACE-LIBRARY fields (same GIDs as live).
+ * The other five are BETA-ONLY copies created by the Asana admin on 2 Nov
+ * 2026 and verified read-only by GID, type, project membership and enabled
+ * options. Their GIDs differ from live by design — never assume equality.
+ * Evidence Received's "No" option exists in BETA but is deliberately not
+ * mapped: the app never sets it.
  */
 export const BETA_FIELD_CONFIG: ProjectFieldConfig = {
   projectGid: ASANA_TEST_PROJECT_GID,
@@ -95,6 +93,46 @@ export const BETA_FIELD_CONFIG: ProjectFieldConfig = {
   fields: {
     unit: { gid: '1213116492387386', type: 'multi_enum', dynamicOptions: true }, // "Unit #" (library)
     unitNumber: { gid: '1210401516520213', type: 'text' }, // "Unit Number" (library)
+    category: {
+      gid: '1220057630679849', // "Category (BETA)"
+      type: 'enum',
+      options: {
+        inventory: '1220057630679850', // "Inventory"
+        maintenance: '1220057630679851', // "Maintenance"
+        linen: '1220057630679852', // "Linen"
+      },
+    },
+    inventoryIncidentType: {
+      gid: '1220057630679854', // "INVENTORY Incident type (BETA)"
+      type: 'enum',
+      options: {
+        missing_item: '1220057561518784', // "Missing Item"
+        physical_damage: '1220057561518785', // "Physical Damage"
+      },
+    },
+    linenIncidentType: {
+      gid: '1220057561518787', // "Linen Incident type (BETA)"
+      type: 'enum',
+      options: {
+        missing: '1220057561518788', // "Missing"
+        stain: '1220057561518789', // "Stain"
+        torn_irreparable: '1220057561518790', // "Torn/Irreparable"
+      },
+    },
+    evidenceReceived: {
+      gid: '1220057561518792', // "Evidence Received (BETA)"
+      type: 'enum',
+      options: { yes: '1220057561518793' }, // "Yes" — "No" is never set by the app
+    },
+    accountableParty: {
+      gid: '1220057561518796', // "Accountable Party (BETA)"
+      type: 'multi_enum',
+      options: {
+        guest: '1220057561518797', // "Guest"
+        drop_inn: '1220057561518798', // "Drop-Inn"
+        investor: '1220057561518799', // "Investor"
+      },
+    },
   },
 }
 

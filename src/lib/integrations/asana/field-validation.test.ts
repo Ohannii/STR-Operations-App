@@ -148,9 +148,39 @@ describe('field configuration', () => {
     ])
   })
 
-  it('BETA declares only the two workspace-library fields until the admin mirrors the rest', () => {
+  it('(2B-1) BETA config holds EXACTLY the verified field and option GIDs (2 Nov 2026)', () => {
     expect(BETA_FIELD_CONFIG.projectGid).toBe(ASANA_TEST_PROJECT_GID)
-    expect(Object.keys(BETA_FIELD_CONFIG.fields).sort()).toEqual(['unit', 'unitNumber'])
+    expect(BETA_FIELD_CONFIG.fields).toEqual({
+      unit: { gid: '1213116492387386', type: 'multi_enum', dynamicOptions: true },
+      unitNumber: { gid: '1210401516520213', type: 'text' },
+      category: {
+        gid: '1220057630679849',
+        type: 'enum',
+        options: { inventory: '1220057630679850', maintenance: '1220057630679851', linen: '1220057630679852' },
+      },
+      inventoryIncidentType: {
+        gid: '1220057630679854',
+        type: 'enum',
+        options: { missing_item: '1220057561518784', physical_damage: '1220057561518785' },
+      },
+      linenIncidentType: {
+        gid: '1220057561518787',
+        type: 'enum',
+        options: { missing: '1220057561518788', stain: '1220057561518789', torn_irreparable: '1220057561518790' },
+      },
+      evidenceReceived: { gid: '1220057561518792', type: 'enum', options: { yes: '1220057561518793' } },
+      accountableParty: {
+        gid: '1220057561518796',
+        type: 'multi_enum',
+        options: { guest: '1220057561518797', drop_inn: '1220057561518798', investor: '1220057561518799' },
+      },
+    })
+    // BETA-only copies never reuse a live project-local GID (only the two library fields are shared).
+    const liveGids = new Set(Object.values(LIVE_INCIDENTS_FIELD_REFERENCE.fields).map((f) => f?.gid))
+    const shared = Object.values(BETA_FIELD_CONFIG.fields).filter((f) => liveGids.has(f?.gid)).map((f) => f?.gid)
+    expect(shared.sort()).toEqual(['1210401516520213', '1213116492387386'])
+    // "No" exists in BETA (1220057561518794) but is never mapped.
+    expect(Object.values(BETA_FIELD_CONFIG.fields.evidenceReceived?.options ?? {})).not.toContain('1220057561518794')
   })
 })
 
@@ -349,12 +379,17 @@ describe('validateFieldConfig — read-only schema check by GID', () => {
     expect(resolveCustomFields({ category: 'inventory', evidenceReceived: 'yes' }, v).customFields).toEqual({})
   })
 
-  it('MISSING FIELD: today’s BETA (no custom fields) reports both library fields missing', () => {
+  it('MISSING FIELD: a BETA project without its fields reports every configured field missing', () => {
     const v = validateFieldConfig(BETA_FIELD_CONFIG, { gid: ASANA_TEST_PROJECT_GID, custom_field_settings: [] })
     expect(v.usable).toEqual({})
     expect(v.issues.map((i) => [i.code, i.field])).toEqual([
       ['field_missing', 'unit'],
       ['field_missing', 'unitNumber'],
+      ['field_missing', 'category'],
+      ['field_missing', 'inventoryIncidentType'],
+      ['field_missing', 'linenIncidentType'],
+      ['field_missing', 'evidenceReceived'],
+      ['field_missing', 'accountableParty'],
     ])
   })
 
@@ -464,7 +499,7 @@ describe('resolveCustomFields — omit + warn, never guess', () => {
     }
   })
 
-  it('MISSING CONFIG: today’s BETA yields a task WITHOUT custom fields, plus warnings', () => {
+  it('MISSING CONFIG: a BETA project without its fields yields a task WITHOUT custom fields, plus warnings', () => {
     const beta = validateWritableFieldConfig(configForWrite(ASANA_TEST_PROJECT_GID), {
       gid: ASANA_TEST_PROJECT_GID,
       custom_field_settings: [],
@@ -478,6 +513,117 @@ describe('resolveCustomFields — omit + warn, never guess', () => {
     const r = resolveCustomFields({ unitNumber: '   ', accountableParty: [] }, writable())
     expect(r.customFields).toEqual({})
     expect(r.warnings.map((w) => w.code)).toEqual(['empty_value', 'empty_value'])
+  })
+})
+
+describe('PHASE 2B — the REAL BETA configuration against the REAL seven-field BETA schema', () => {
+  /**
+   * BETA metadata as read from Asana on 2 Nov 2026 — GIDs, subtypes and
+   * enabled flags ONLY (no names: identity is the GID). Unit # carries a
+   * representative subset including its one DISABLED option.
+   */
+  const B = ASANA_TEST_PROJECT_GID
+  const setting = (gid: string, subtype: string, options?: Array<[string, boolean]>) => ({
+    project: { gid: B },
+    custom_field: {
+      gid,
+      resource_subtype: subtype,
+      ...(options ? { enum_options: options.map(([g, enabled]) => ({ gid: g, enabled })) } : {}),
+    },
+  })
+  const BETA_SCHEMA = {
+    gid: B,
+    custom_field_settings: [
+      setting('1213116492387386', 'multi_enum', [
+        ['1213116492387387', true],
+        ['1214009753087420', true],
+        ['1213373539419812', true],
+        ['1213132578818915', false], // disabled in Asana
+      ]),
+      setting('1210401516520213', 'text'),
+      setting('1220057630679849', 'enum', [['1220057630679850', true], ['1220057630679851', true], ['1220057630679852', true]]),
+      setting('1220057630679854', 'enum', [['1220057561518784', true], ['1220057561518785', true]]),
+      setting('1220057561518787', 'enum', [['1220057561518788', true], ['1220057561518789', true], ['1220057561518790', true]]),
+      setting('1220057561518792', 'enum', [['1220057561518793', true], ['1220057561518794', true]]),
+      setting('1220057561518796', 'multi_enum', [['1220057561518797', true], ['1220057561518798', true], ['1220057561518799', true]]),
+    ],
+  }
+  const realBeta = () => validateWritableFieldConfig(configForWrite(ASANA_TEST_PROJECT_GID), BETA_SCHEMA)
+
+  it('(2B-2/3) validates with ZERO issues and all seven fields usable', () => {
+    const v = realBeta()
+    expect(v.issues).toEqual([])
+    expect(v.ok).toBe(true)
+    expect(Object.keys(v.usable).sort()).toEqual([
+      'accountableParty', 'category', 'evidenceReceived', 'inventoryIncidentType',
+      'linenIncidentType', 'unit', 'unitNumber',
+    ])
+  })
+
+  it('(2B-4) Inventory / Missing Item + Evidence Yes + Guest -> exact payload, no warnings', () => {
+    const r = resolveCustomFields(
+      {
+        unitOptionGid: '1214009753087420',
+        unitNumber: '50',
+        category: 'inventory',
+        inventoryIncidentType: 'missing_item',
+        evidenceReceived: 'yes',
+        accountableParty: ['guest'],
+      },
+      realBeta(),
+    )
+    expect(r.warnings).toEqual([])
+    expect(r.customFields).toEqual({
+      '1213116492387386': ['1214009753087420'],
+      '1210401516520213': '50',
+      '1220057630679849': '1220057630679850',
+      '1220057630679854': '1220057561518784',
+      '1220057561518792': '1220057561518793',
+      '1220057561518796': ['1220057561518797'],
+    })
+  })
+
+  it('(2B-5) Linen: the Linen subtype is included ONLY with Category = Linen', () => {
+    const linen = resolveCustomFields({ category: 'linen', linenIncidentType: 'torn_irreparable' }, realBeta())
+    expect(linen.warnings).toEqual([])
+    expect(linen.customFields).toEqual({
+      '1220057630679849': '1220057630679852',
+      '1220057561518787': '1220057561518790',
+    })
+    const wrong = resolveCustomFields({ category: 'inventory', linenIncidentType: 'stain' }, realBeta())
+    expect(wrong.customFields).toEqual({ '1220057630679849': '1220057630679850' })
+    expect(wrong.warnings).toEqual([expect.objectContaining({ code: 'dependency_unmet', field: 'linenIncidentType' })])
+  })
+
+  it('(2B-6) Maintenance produces NO Inventory or Linen subtype', () => {
+    const r = resolveCustomFields(
+      { category: 'maintenance', inventoryIncidentType: 'physical_damage', linenIncidentType: 'missing' },
+      realBeta(),
+    )
+    expect(r.customFields).toEqual({ '1220057630679849': '1220057630679851' })
+    expect(r.customFields['1220057630679854']).toBeUndefined()
+    expect(r.customFields['1220057561518787']).toBeUndefined()
+  })
+
+  it('(2B-7) disabled or unknown Unit # options are omitted safely; everything else still goes', () => {
+    for (const gid of ['1213132578818915' /* disabled */, '9999999999999999' /* unknown */]) {
+      const r = resolveCustomFields({ unitOptionGid: gid, evidenceReceived: 'yes' }, realBeta())
+      expect(r.customFields).toEqual({ '1220057561518792': '1220057561518793' })
+      expect(r.warnings).toEqual([expect.objectContaining({ code: 'unknown_option', field: 'unit' })])
+    }
+  })
+
+  it('(2B-8) the live project / config still cannot pass the BETA write boundary', () => {
+    expect(() => configForWrite(LIVE_INCIDENTS_PROJECT_GID)).toThrow(DisallowedAsanaProjectError)
+    expect(() => writableFieldConfig(LIVE_INCIDENTS_FIELD_REFERENCE)).toThrow(DisallowedAsanaProjectError)
+    // A BETA config pointed at the LIVE schema invalidates everything (wrong project).
+    const v = validateWritableFieldConfig(configForWrite(ASANA_TEST_PROJECT_GID), liveMetadata())
+    expect(v.usable).toEqual({})
+    expect(v.issues).toEqual([expect.objectContaining({ code: 'project_mismatch' })])
+    // And BETA's schema can never satisfy the live reference either.
+    expect(validateFieldConfig(LIVE_INCIDENTS_FIELD_REFERENCE, BETA_SCHEMA).issues).toEqual([
+      expect.objectContaining({ code: 'project_mismatch' }),
+    ])
   })
 })
 
