@@ -6,8 +6,12 @@ import { getUserContext } from '@/lib/auth/get-user-context'
 import { createClient } from '@/lib/supabase/server'
 import { maybeEnqueueFlagCreated, maybeEnqueueFlagEvents } from '@/lib/integrations/outbox'
 import { VALID_CHARGEABLE_VALUES } from '@/lib/ui/flag-status'
-import { EVIDENCE_BUCKET } from '@/lib/photos/paths'
-import { isUuid, validatePhotoDescriptors } from '@/lib/photos/finalize-helpers'
+import {
+  PHOTOS_NOT_UPLOADED_MESSAGE,
+  isMissingEvidenceObjectError,
+  isUuid,
+  validatePhotoDescriptors,
+} from '@/lib/photos/finalize-helpers'
 
 /**
  * Server action invoked by the raise-flag form at
@@ -267,25 +271,12 @@ export async function finalizeFlagWithPhotos(
     return { ok: false, error: 'Property is not in your company.' }
   }
 
-  // Verify every expected master + thumbnail object exists in Storage
-  // BEFORE finalising — a failed/partial upload must block submit.
-  const prefix = `companies/${ctx.company.id}/flags/${proposedFlagId}`
-  const { data: objects, error: listErr } = await supabase.storage
-    .from(EVIDENCE_BUCKET)
-    .list(prefix, { limit: 100 })
-  if (listErr) {
-    console.error('[flags/finalize] storage list error:', listErr)
-    return { ok: false, error: `Could not verify uploads: ${listErr.message}` }
-  }
-  const present = new Set((objects ?? []).map((o) => o.name))
-  for (const p of photos) {
-    if (!present.has(`${p.photoId}.jpg`) || !present.has(`${p.photoId}_thumb.jpg`)) {
-      return {
-        ok: false,
-        error: 'Some photos have not finished uploading. Retry them and resubmit.',
-      }
-    }
-  }
+  // Stored-file verification is AUTHORITATIVE inside the RPC: for every
+  // photo it checks the exact server-derived master + thumbnail objects in
+  // storage.objects within the same transaction, and a missing file raises
+  // (SQLSTATE 23514) and rolls back the whole flag + photo set. The former
+  // folder-list pre-check duplicated that and cost 20+ s (storage.search
+  // full scan under RLS), so it was removed (photo perf fix).
 
   // Transactional finalisation (flag + photos in one RPC transaction).
   const { data: rpcResult, error: rpcErr } = await supabase.rpc(
@@ -308,6 +299,11 @@ export async function finalizeFlagWithPhotos(
   )
 
   if (rpcErr) {
+    if (isMissingEvidenceObjectError(rpcErr)) {
+      // A required file is not stored: nothing was created (rolled back).
+      console.error('[flags/finalize] required photo file missing; finalisation rolled back')
+      return { ok: false, error: PHOTOS_NOT_UPLOADED_MESSAGE }
+    }
     console.error('[flags/finalize] rpc error:', rpcErr)
     return { ok: false, error: `Could not finalise flag: ${rpcErr.message}` }
   }
