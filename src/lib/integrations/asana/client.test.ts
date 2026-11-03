@@ -50,9 +50,11 @@ describe('createTaskInProject', () => {
     expect(opts.method).toBe('POST')
     expect(opts.headers.Authorization).toBe('Bearer tok')
     const body = JSON.parse(opts.body)
-    // Stage 0: project AND section in the SAME request — no follow-up call.
+    // Project AND section in the SAME request — no follow-up call. Asana
+    // needs `projects` for the workspace context; `memberships` places the
+    // task in its section.
+    expect(body.data.projects).toEqual(['P1'])
     expect(body.data.memberships).toEqual([{ project: 'P1', section: 'S1' }])
-    expect(body.data.projects).toBeUndefined()
     expect(body.data.name).toBe('Broken pot')
     expect(body.data.due_on).toBeUndefined()
   })
@@ -342,8 +344,59 @@ describe('custom fields in the create request', () => {
     expect(without).toEqual({
       name: 'n',
       notes: base.notes,
+      projects: ['P'],
       memberships: [{ project: 'P', section: 'S' }],
       due_on: '2026-11-02',
     })
+  })
+})
+
+describe('create request: project context + section placement in ONE request (hotfix)', () => {
+  const capture = async (args: Parameters<typeof createTaskInProject>[1]) => {
+    const fetchMock = vi.fn(async () => mockResponse({ data: { gid: 'T1' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await createTaskInProject('tok', args)
+    return fetchMock.mock.calls as unknown as Array<[string, { method: string; body: string }]>
+  }
+
+  it.each([
+    ['without custom fields', undefined],
+    ['with custom fields', { '1220057630679849': '1220057630679850' }],
+  ])('%s: exactly projects:[P] + memberships:[{P, S}], one POST /tasks, no section call', async (_l, customFields) => {
+    const calls = await capture({
+      projectGid: '1216372108028101',
+      sectionGid: '1216372171871349',
+      name: 'n',
+      notes: 'x',
+      ...(customFields ? { customFields } : {}),
+    })
+    expect(calls).toHaveLength(1)
+    const [url, opts] = calls[0]
+    expect(opts.method).toBe('POST')
+    expect(new URL(url).pathname).toBe('/api/1.0/tasks')
+    expect(url).not.toContain('/sections/')
+    expect(url).not.toContain('addTask')
+    const data = JSON.parse(opts.body).data
+    expect(data.projects).toEqual(['1216372108028101'])
+    expect(data.memberships).toEqual([{ project: '1216372108028101', section: '1216372171871349' }])
+    if (customFields) expect(data.custom_fields).toEqual(customFields)
+    else expect(data).not.toHaveProperty('custom_fields')
+  })
+
+  it('REGRESSION: a create request without `projects` is never sent', async () => {
+    const [[, opts]] = await capture({ projectGid: 'P9', sectionGid: 'S9', name: 'n', notes: 'x' })
+    const data = JSON.parse(opts.body).data
+    expect(Array.isArray(data.projects)).toBe(true)
+    expect(data.projects).toHaveLength(1)
+  })
+
+  it('REGRESSION: projects[0] always equals memberships[0].project (same projectGid)', async () => {
+    for (const projectGid of ['P1', '1216372108028101']) {
+      const [[, opts]] = await capture({ projectGid, sectionGid: 'S', name: 'n', notes: 'x' })
+      const data = JSON.parse(opts.body).data
+      expect(data.memberships).toHaveLength(1)
+      expect(data.projects[0]).toBe(projectGid)
+      expect(data.memberships[0].project).toBe(data.projects[0])
+    }
   })
 })
