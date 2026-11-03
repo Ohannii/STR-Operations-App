@@ -14,15 +14,18 @@
  *   - One option missing / disabled            -> only that option is dropped.
  *   - Dependent fields stay coherent: an incident subtype is emitted only
  *     together with its own Category (Inventory / Linen).
- *   - Accountable Party is all-or-nothing; Evidence Received is independent.
+ *   - Accountable Party is all-or-nothing when requested (the current
+ *     mapping never requests it); Evidence Received is independent.
  *   - Unmapped or unusable values are OMITTED with a structured warning that
  *     carries codes, field keys and GIDs only — never a value, guest data or
  *     a token. Nothing is ever guessed.
  *
  * WRITE BOUNDARY: only a validation of WRITABLE configuration (branded, see
  * field-config.ts) can reach resolveCustomFields, and the resolver re-checks
- * the hard project allowlist at runtime. Phase 1 does not write custom
- * fields: nothing in the worker calls this yet.
+ * the hard project allowlist at runtime. The resolver is wired ONLY into the
+ * BETA create-task path (process-outbox, through the per-request writable
+ * loader); its output is sent once, in the create request. Existing tasks
+ * are never updated, and live remains unwritable.
  */
 
 import { assertAllowedProject } from '@/lib/integrations/asana/config'

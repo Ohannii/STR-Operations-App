@@ -1,9 +1,12 @@
 /**
- * Asana custom-field configuration, PER PROJECT (Phase 1 — config only).
+ * Asana custom-field configuration, PER PROJECT.
  *
- * Nothing here writes to Asana, and nothing here is wired into the worker
- * yet: Phase 1 only defines WHICH fields/options the app may one day set and
- * lets field-validation.ts prove them against a project's live schema.
+ * Nothing here writes to Asana. It defines WHICH fields/options the app may
+ * set, and field-validation.ts proves them against a project's live schema.
+ * The verified BETA configuration is used ONLY for validated BETA task
+ * creation (worker -> writable validation -> resolver -> provider BETA
+ * field check). The live configuration remains read-only reference data:
+ * it can be inspected, never made writable.
  *
  * RULES (from the 29–30 Oct audit):
  *   - Fields and options are identified ONLY by GID. Names are comments for
@@ -24,7 +27,11 @@ import { ASANA_TEST_PROJECT_GID, assertAllowedProject } from '@/lib/integrations
 
 export type AsanaFieldType = 'enum' | 'multi_enum' | 'text' | 'date' | 'number'
 
-/** The app-owned incident fields the integration may populate. */
+/**
+ * The app-owned incident fields configured for the integration. Configured
+ * is not emitted: the current mapping (field-mapping.ts) produces only
+ * Category, INVENTORY Incident type and Evidence Received = Yes.
+ */
 export type IncidentFieldKey =
   | 'unit'
   | 'unitNumber'
@@ -39,7 +46,10 @@ export type CategoryOption = 'inventory' | 'maintenance' | 'linen'
 export type InventoryIncidentOption = 'missing_item' | 'physical_damage'
 export type LinenIncidentOption = 'missing' | 'stain' | 'torn_irreparable'
 export type EvidenceOption = 'yes'
-/** Only verified one-to-one reporter selections (D2). */
+/**
+ * Configured for FUTURE use only. The current mapping never emits Accountable
+ * Party: it stays blank until a manager-verified source exists (D3).
+ */
 export type AccountableOption = 'guest' | 'drop_inn' | 'investor'
 
 /**
