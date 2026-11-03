@@ -10,6 +10,9 @@ import {
 import { runNextAttachEvidence } from '@/lib/integrations/worker/attach-evidence'
 import { createAsanaProvider } from '@/lib/integrations/asana/provider'
 import { parseAllowedCompanyIds } from '@/lib/integrations/company-allowlist'
+import { ASANA_TEST_PROJECT_GID } from '@/lib/integrations/asana/config'
+import { configForWrite } from '@/lib/integrations/asana/field-config'
+import { createWritableFieldValidationLoader } from '@/lib/integrations/asana/field-schema'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -21,6 +24,15 @@ function workerDeps(host: string) {
     appBaseUrl: process.env.APP_BASE_URL ?? `${protocol}://${host}`,
     todayIso: new Date().toISOString().slice(0, 10),
   }
+}
+
+/**
+ * ONE lazy, memoised BETA field-schema loader for THIS request (real runs
+ * only). configForWrite asserts the BETA allowlist; the worker calls the
+ * loader only when it is about to create a new task.
+ */
+function fieldValidationLoader(asanaToken: string) {
+  return createWritableFieldValidationLoader(asanaToken, configForWrite(ASANA_TEST_PROJECT_GID))
 }
 
 /**
@@ -45,7 +57,7 @@ export async function GET(request: Request) {
   }
 
   const host = request.headers.get('host') ?? 'localhost:3000'
-  const deps = workerDeps(host)
+  const deps = { ...workerDeps(host), loadFieldValidation: fieldValidationLoader(asanaToken) }
   const batch = Number(process.env.ASANA_WORKER_BATCH ?? '1') || 1
   const supabase = createServiceClient()
   const provider = createAsanaProvider(asanaToken)
@@ -82,7 +94,10 @@ export async function POST() {
       return NextResponse.json({ error: 'ASANA_ACCESS_TOKEN not configured' }, { status: 500 })
     }
     const provider = createAsanaProvider(asanaToken)
-    const result = await runNextAsanaOutbox(supabase, provider, deps)
+    const result = await runNextAsanaOutbox(supabase, provider, {
+      ...deps,
+      loadFieldValidation: fieldValidationLoader(asanaToken),
+    })
     console.log('[asana-worker][manual]', JSON.stringify(result))
     return NextResponse.json({ dryRun: false, ...result })
   }

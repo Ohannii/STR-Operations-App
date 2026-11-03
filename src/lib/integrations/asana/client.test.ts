@@ -308,3 +308,42 @@ describe('Stage 0 request timeout: aborts at 30s and is ALWAYS cleared', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 })
+
+describe('custom fields in the create request', () => {
+  const base = { projectGid: 'P', sectionGid: 'S', name: 'n', notes: 'x\nSTR-APP-REF: flag/abc', dueOn: '2026-11-02' }
+  const bodyOf = async (args: Parameters<typeof createTaskInProject>[1]) => {
+    const fetchMock = vi.fn(async () => mockResponse({ data: { gid: 'T1' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await createTaskInProject('tok', args)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, opts] = fetchMock.mock.calls[0] as unknown as [string, { body: string }]
+    return JSON.parse(opts.body).data as Record<string, unknown>
+  }
+
+  it('sends exact GID-keyed shapes: enum -> option GID string, multi_enum -> array, text -> string', async () => {
+    const data = await bodyOf({
+      ...base,
+      customFields: { '1220057630679849': '1220057630679850', MULTI: ['o1'], TEXT: 'abc' },
+    })
+    expect(data.custom_fields).toEqual({ '1220057630679849': '1220057630679850', MULTI: ['o1'], TEXT: 'abc' })
+  })
+
+  it('absent or EMPTY fields -> no custom_fields key at all', async () => {
+    expect(await bodyOf(base)).not.toHaveProperty('custom_fields')
+    expect(await bodyOf({ ...base, customFields: {} })).not.toHaveProperty('custom_fields')
+  })
+
+  it('name, notes, memberships and due date are identical with and without fields', async () => {
+    const without = await bodyOf(base)
+    const withF = await bodyOf({ ...base, customFields: { A: 'b' } })
+    const rest = { ...withF }
+    delete rest.custom_fields
+    expect(rest).toEqual(without)
+    expect(without).toEqual({
+      name: 'n',
+      notes: base.notes,
+      memberships: [{ project: 'P', section: 'S' }],
+      due_on: '2026-11-02',
+    })
+  })
+})

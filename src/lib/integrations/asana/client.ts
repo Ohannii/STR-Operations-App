@@ -17,6 +17,19 @@ export interface CreateTaskArgs {
   notes: string
   /** YYYY-MM-DD. Only sent when present. */
   dueOn?: string
+  /**
+   * Custom-field values keyed by field GID (enum: option GID; multi_enum:
+   * option GIDs; text: string). Sent as `custom_fields` ONLY when present
+   * and non-empty. The provider guarantees they are BETA-configured GIDs.
+   */
+  customFields?: Record<string, string | string[]>
+}
+
+/** True when there is at least one custom-field value to send. */
+export function hasCustomFields(
+  fields: Record<string, string | string[]> | undefined,
+): fields is Record<string, string | string[]> {
+  return fields !== undefined && fields !== null && Object.keys(fields).length > 0
 }
 
 /** Explicit per-request timeout for the create / reconcile calls (Stage 0). */
@@ -123,6 +136,7 @@ export async function createTaskInProject(
           notes: args.notes,
           memberships: [{ project: args.projectGid, section: args.sectionGid }],
           ...(args.dueOn ? { due_on: args.dueOn } : {}),
+          ...(hasCustomFields(args.customFields) ? { custom_fields: args.customFields } : {}),
         },
       }),
     },
@@ -193,9 +207,15 @@ export async function getProjectCustomFieldSettings(
     )
     if (offset) url.searchParams.set('offset', offset)
 
-    const res = await fetch(url.toString(), { method: 'GET', headers: authHeaders(token) })
-    if (!res.ok) await throwAsana('read project fields', res)
-    const json = (await res.json()) as { data?: unknown; next_page?: unknown }
+    // Bounded: the same per-request timeout as the create / reconcile calls.
+    const json = await fetchWithTimeout(
+      url.toString(),
+      { method: 'GET', headers: authHeaders(token) },
+      async (res) => {
+        if (!res.ok) await throwAsana('read project fields', res)
+        return (await res.json()) as { data?: unknown; next_page?: unknown }
+      },
+    )
     if (!json || !Array.isArray(json.data)) {
       throw new Error('custom field settings page is malformed')
     }

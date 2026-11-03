@@ -39,6 +39,13 @@ export interface TaskPayload {
   notes: string
   /** YYYY-MM-DD. Set only for same-day (safety) items. */
   dueOn?: string
+  /**
+   * BETA custom-field values keyed by field GID, produced ONLY by
+   * resolveCustomFields from a writable BETA validation. Absent or empty =
+   * no `custom_fields` in the request. The provider refuses any GID that is
+   * not a configured BETA field before any network call.
+   */
+  customFields?: Record<string, string | string[]>
 }
 
 /** A task as seen by READ-ONLY reconciliation: identity, notes, projects. */
