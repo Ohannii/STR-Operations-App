@@ -116,10 +116,13 @@ async function safeErrorDetail(res: Response): Promise<string> {
 }
 
 /**
- * Create a task DIRECTLY in its project AND section (one request:
- * `memberships: [{ project, section }]`), so no separate section call can
- * fail after the task exists. Returns its gid + permalink. Throws
- * AsanaApiError (with Retry-After on 429) or a network / timeout error.
+ * Create a task DIRECTLY in its project AND section in ONE request:
+ * `projects: [project]` gives Asana the project (and so the workspace)
+ * context it requires, and `memberships: [{ project, section }]` places the
+ * task in its section — both from the same projectGid. There is no separate
+ * section call that could fail after the task exists. Returns its gid +
+ * permalink. Throws AsanaApiError (with Retry-After on 429) or a network /
+ * timeout error.
  */
 export async function createTaskInProject(
   token: string,
@@ -134,6 +137,7 @@ export async function createTaskInProject(
         data: {
           name: args.name,
           notes: args.notes,
+          projects: [args.projectGid],
           memberships: [{ project: args.projectGid, section: args.sectionGid }],
           ...(args.dueOn ? { due_on: args.dueOn } : {}),
           ...(hasCustomFields(args.customFields) ? { custom_fields: args.customFields } : {}),
