@@ -25,6 +25,7 @@ import {
 } from '@/lib/photos/flag-upload-plan'
 import { isReportConflict } from '@/lib/reports/ensure-report-artifact-core'
 import { verifiedObjectExists } from '@/lib/photos/storage-exists'
+import { exactObjectPresence } from '@/lib/photos/object-presence'
 import { mapBounded } from '@/lib/util/bounded-map'
 import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
@@ -396,9 +397,11 @@ export async function discardStagedPhotoIntent(input: {
 //     object exists — finalised evidence is never overwritable.
 //   * Collision guard (service-role, RLS-bypassing) rejects any existing
 //     flag/photo row, including soft-deleted or cross-company.
-//   * Per-object existence check → partial retries only re-sign the object
-//     still missing; when both exist we return already_uploaded with NO
-//     overwrite URLs. To replace a pre-finalisation photo, delete it first
+//   * Per-object EXACT existence check (two parallel exact-path lookups, not
+//     a folder listing) → partial retries only re-sign the object still
+//     missing; when both exist we return already_uploaded with NO overwrite
+//     URLs. If either answer is not a definite present/missing, NO URLs are
+//     issued (fail closed). To replace a pre-finalisation photo, delete it first
 //     via removeFlagPhotoObjects, then request fresh URLs.
 //   * Storage paths are derived server-side; never accepted from the caller.
 
@@ -477,18 +480,25 @@ export async function requestFlagPhotoUploadSlot(input: {
   const masterPath = masterStoragePath(storageCtx)
   const thumbPath = thumbStoragePath(storageCtx)
 
-  // Exact object-existence check for partial-retry planning.
-  const prefix = `companies/${property.company_id}/flags/${proposedFlagId}`
-  const { data: objects, error: listErr } = await supabase.storage
-    .from(EVIDENCE_BUCKET)
-    .list(prefix, { limit: 100 })
-  if (listErr) {
-    console.error('[photos/sign-flag] storage list error:', listErr)
-    return { ok: false, error: `Could not check existing uploads: ${listErr.message}` }
+  // EXACT per-object existence check for partial-retry planning: two
+  // parallel exact-path lookups (never a folder listing — that is a full
+  // scan of every stored object under RLS, measured 12–14 s). Only a
+  // definite 'present' / 'missing' is acted on; anything else (auth,
+  // permission, rate limit, server, network, unknown) issues NO links.
+  const evidence = supabase.storage.from(EVIDENCE_BUCKET)
+  const [masterPresence, thumbPresence] = await Promise.all([
+    exactObjectPresence(evidence, masterPath),
+    exactObjectPresence(evidence, thumbPath),
+  ])
+  if (masterPresence === 'unknown' || thumbPresence === 'unknown') {
+    console.error('[photos/sign-flag] exact upload check inconclusive', {
+      master: masterPresence,
+      thumb: thumbPresence,
+    })
+    return { ok: false, error: 'Could not check existing uploads. Try again.' }
   }
-  const present = new Set((objects ?? []).map((o) => o.name))
-  const masterExists = present.has(`${photoId}.jpg`)
-  const thumbExists = present.has(`${photoId}_thumb.jpg`)
+  const masterExists = masterPresence === 'present'
+  const thumbExists = thumbPresence === 'present'
 
   // Create-only signer — NO upsert. (The CreateOnlySigner type has no
   // upsert parameter, so overwrite cannot be requested here.)

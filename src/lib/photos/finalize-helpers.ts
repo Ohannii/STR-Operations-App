@@ -23,6 +23,30 @@ export type ValidatePhotosResult =
   | { ok: true; photos: PhotoDescriptor[] }
   | { ok: false; error: string }
 
+/** Shown when the finalize RPC proves a required photo file is not stored. */
+export const PHOTOS_NOT_UPLOADED_MESSAGE =
+  'Some photos have not finished uploading. Retry them and resubmit.'
+
+const MISSING_EVIDENCE_OBJECT_RE =
+  /^evidence (master|thumbnail) object missing for photo [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * True ONLY for finalize_flag_with_photos' own missing-file exceptions:
+ * SQLSTATE 23514 AND the exact message format
+ *   "evidence master object missing for photo <uuid>"
+ *   "evidence thumbnail object missing for photo <uuid>".
+ * Any other 23514 (an unrelated check constraint) is NOT a missing photo.
+ */
+export function isMissingEvidenceObjectError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const e = error as { code?: unknown; message?: unknown }
+  return (
+    e.code === '23514' &&
+    typeof e.message === 'string' &&
+    MISSING_EVIDENCE_OBJECT_RE.test(e.message.trim())
+  )
+}
+
 export const MIN_FLAG_PHOTOS = 1
 export const MAX_FLAG_PHOTOS = 5
 
