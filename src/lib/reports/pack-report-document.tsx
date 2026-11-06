@@ -22,6 +22,8 @@ const s = StyleSheet.create({
   propertyLine: { fontSize: 11, color: '#f1f5f9', marginTop: 8, lineHeight: 1.3 },
   propertySub: { fontSize: 9, color: '#cbd5e1', marginTop: 3, lineHeight: 1.3 },
   headerMeta: { fontSize: 8, color: '#cbd5e1', textAlign: 'right', marginTop: 3 },
+  reportDate: { fontSize: 12, fontFamily: 'Helvetica-Bold', color: '#ffffff', marginTop: 6 },
+  rowValueMuted: { width: '72%', fontSize: 9, color: '#64748b' },
   row: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#e2e8f0', paddingVertical: 5 },
   rowLabel: { width: '28%', fontSize: 8, fontFamily: 'Helvetica-Bold', letterSpacing: 0.5, textTransform: 'uppercase', color: '#64748b' },
   rowValue: { width: '72%', fontSize: 10 },
@@ -45,13 +47,17 @@ const s = StyleSheet.create({
 export function PackReportDocument({ data }: { data: PackReportData }) {
   const generated = formatDateSAST(new Date().toISOString())
   return (
-    <Document title={`${data.title} ${data.reportId}`}>
+    <Document title={`${data.heading} ${data.reportId}`}>
       <Page size="A4" style={s.page}>
         <View style={s.header}>
           <View style={s.headerRow}>
             <View style={s.headerLeft}>
               <Text style={s.company}>{data.companyName}</Text>
               <Text style={s.title}>{data.packTypeLabel}</Text>
+              {/* The report is dated by its SUBMISSION (South Africa time). */}
+              <Text style={s.reportDate}>
+                {data.submittedText ? `Submitted ${data.submittedText}` : 'Submission time not recorded'}
+              </Text>
               <Text style={s.propertyLine}>{data.propertyName}</Text>
               {data.propertySubtitle ? (
                 <Text style={s.propertySub}>{data.propertySubtitle}</Text>
@@ -70,15 +76,19 @@ export function PackReportDocument({ data }: { data: PackReportData }) {
         <Text style={s.sectionTitle}>Pack Summary</Text>
         <View style={s.row}>
           <Text style={s.rowLabel}>Title</Text>
-          <Text style={s.rowValue}>{data.title}</Text>
+          <Text style={s.rowValue}>{data.heading}</Text>
         </View>
-        {data.submittedText ? (
+        <View style={s.row}>
+          <Text style={s.rowLabel}>Submitted</Text>
+          <Text style={s.rowValue}>
+            {data.submittedText || 'Time not recorded'}
+            {data.submittedByName ? ` — by ${data.submittedByName}` : ''}
+          </Text>
+        </View>
+        {data.draftCreatedText ? (
           <View style={s.row}>
-            <Text style={s.rowLabel}>Submitted</Text>
-            <Text style={s.rowValue}>
-              {data.submittedText}
-              {data.submittedByName ? ` — by ${data.submittedByName}` : ''}
-            </Text>
+            <Text style={s.rowLabel}>Draft created</Text>
+            <Text style={s.rowValueMuted}>{data.draftCreatedText}</Text>
           </View>
         ) : null}
 

@@ -3,7 +3,8 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { EVIDENCE_BUCKET } from '@/lib/photos/paths'
 import { getFlagCategoryDisplay } from '@/lib/ui/flag-category'
 import { flagStatusDisplay, chargeablePartyDisplay } from '@/lib/ui/flag-status'
-import { formatDateSAST, formatDateTimeSAST } from '@/lib/ui/datetime'
+import { formatDateTimeSAST } from '@/lib/ui/datetime'
+import { packDateDisplay } from '@/lib/reports/pack-dates'
 import type {
   FlagFingerprintInput,
   PackFingerprintInput,
@@ -51,13 +52,21 @@ export type PackReportData = {
   reportId: string
   propertyName: string
   propertySubtitle: string
+  /** Stored title (kept for reference; display uses `heading`). */
   title: string
+  /** Display title: a custom title, or "Pre-arrival pack — <submission date>". */
+  heading: string
+  /** Main report date, e.g. "3 Nov 2026" (null when not recorded). */
+  mainDate: string | null
   packTypeLabel: string
   /** Property bedroom count (null when unknown → the line is omitted). */
   bedrooms: number | null
+  /** "3 Nov 2026, 16:02" in South Africa time; '' when not recorded. */
   submittedText: string
   submittedByName: string
-  /** Stable report date ISO (submitted_at, falling back to started_at). */
+  /** "29 Oct 2026, 09:20" in South Africa time; '' when unknown. */
+  draftCreatedText: string
+  /** Report date ISO = the SUBMISSION time only (null when not recorded). */
   reportDateIso: string | null
   photos: ReportPhoto[]
   fingerprint: PackFingerprintInput
@@ -285,21 +294,32 @@ export async function loadPackReportData(
   const packTypeLabel = PACK_TYPE_LABEL[pack.pack_type] ?? 'Evidence Pack'
   const bedrooms = property?.bedrooms ?? null
   const title = pack.title?.trim() || packTypeLabel
+  const dates = packDateDisplay({
+    status: pack.status,
+    title: pack.title,
+    startedAt: pack.started_at,
+    submittedAt: pack.submitted_at,
+  })
   return {
     companyName,
     reportId: `PA-${pack.id.slice(0, 8).toUpperCase()}`,
     propertyName: property?.name ?? 'Unknown property',
     propertySubtitle: property ? subtitleOf(property) : '',
     title,
+    heading: dates.heading,
+    mainDate: dates.mainDate,
     packTypeLabel,
     bedrooms,
-    submittedText: pack.submitted_at ? formatDateSAST(pack.submitted_at) : '',
+    submittedText: dates.submittedAtText ?? '',
     submittedByName: pack.submitted_by ? (nameById.get(pack.submitted_by) ?? 'Unknown') : '',
-    reportDateIso: pack.submitted_at ?? pack.started_at ?? null,
+    draftCreatedText: dates.draftCreatedText ?? '',
+    // Never fall back to the draft time: an undated filename is honest.
+    reportDateIso: dates.reportDateIso,
     photos,
     fingerprint: {
       packType: pack.pack_type,
       title,
+      startedAt: pack.started_at,
       submittedAt: pack.submitted_at,
       bedrooms,
       photos: fingerprint,

@@ -8,6 +8,7 @@ import {
   flagShareFilename,
   packShareFilename,
   TEMPLATE_VERSION,
+  PACK_TEMPLATE_VERSION,
   type FlagFingerprintInput,
   type PackFingerprintInput,
 } from '@/lib/reports/report-paths'
@@ -80,7 +81,7 @@ describe('object paths', () => {
   })
   it('pack path embeds template version + content hash', () => {
     expect(packReportObjectPath('co1', 'pk1', 'deadbeefcafef00d')).toBe(
-      `companies/co1/packs/pk1/pack-report-t${TEMPLATE_VERSION}-deadbeefcafef00d.pdf`,
+      `companies/co1/packs/pk1/pack-report-t${PACK_TEMPLATE_VERSION}-deadbeefcafef00d.pdf`,
     )
   })
 })
@@ -143,6 +144,7 @@ function basePack(overrides: Partial<PackFingerprintInput> = {}): PackFingerprin
   return {
     packType: 'pre_arrival',
     title: 'Pre-arrival Evidence Pack',
+    startedAt: '2026-07-18T08:00:00Z',
     submittedAt: '2026-07-18T10:00:00Z',
     bedrooms: 2,
     photos: [
@@ -173,6 +175,25 @@ describe('packContentHash', () => {
           photos: [{ id: 'p1', storagePath: 'a/1.jpg', capturedAt: null, uploadedAt: null, notes: 'changed', width: null, height: null }],
         }),
       ),
+    )
+  })
+})
+
+describe('pack PDF layout version (submission-dated layout)', () => {
+  it('packs moved to template 2 so a fresh Share PDF re-renders; flags stay on 1', () => {
+    expect(PACK_TEMPLATE_VERSION).toBe(2)
+    expect(TEMPLATE_VERSION).toBe(1)
+    expect(packReportObjectPath('co', 'pk', 'h')).toContain('/pack-report-t2-')
+    expect(flagReportObjectPath('co', 'f', 'h')).toContain('/flag-report-t1-')
+  })
+  it('the rendered draft-creation time is part of the fingerprint', () => {
+    expect(packContentHash(basePack({ startedAt: '2026-07-17T08:00:00Z' }))).not.toBe(
+      packContentHash(basePack()),
+    )
+  })
+  it('the submission time is part of the fingerprint', () => {
+    expect(packContentHash(basePack({ submittedAt: '2026-07-19T10:00:00Z' }))).not.toBe(
+      packContentHash(basePack()),
     )
   })
 })

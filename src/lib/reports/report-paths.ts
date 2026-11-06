@@ -19,6 +19,14 @@ import { createHash } from 'crypto'
 export const REPORT_ARTIFACTS_BUCKET = 'report-artifacts'
 export const TEMPLATE_VERSION = 1
 
+/**
+ * Pre-arrival PACK PDF layout version (flags stay on TEMPLATE_VERSION).
+ * 2 = pack dated by its SUBMISSION time, "Draft created" as secondary detail
+ * (Unit 75, Nov 2026). Bumping it gives every pack a new artifact path, so a
+ * fresh Share PDF renders the new layout; older stored PDFs are untouched.
+ */
+export const PACK_TEMPLATE_VERSION = 2
+
 /** Photo identity that affects the rendered PDF (ordered). */
 export type PhotoFingerprint = {
   id: string
@@ -95,6 +103,8 @@ export function flagReportObjectPath(
 export type PackFingerprintInput = {
   packType: string
   title: string
+  /** Draft creation time — rendered as "Draft created" (and decides auto titles). */
+  startedAt: string | null
   submittedAt: string | null
   bedrooms: number | null
   photos: PhotoFingerprint[]
@@ -102,9 +112,10 @@ export type PackFingerprintInput = {
 
 export function packContentHash(input: PackFingerprintInput): string {
   const canonical = JSON.stringify({
-    t: TEMPLATE_VERSION,
+    t: PACK_TEMPLATE_VERSION,
     packType: input.packType,
     title: input.title,
+    startedAt: input.startedAt ?? '',
     submittedAt: input.submittedAt ?? '',
     bedrooms: input.bedrooms ?? -1, // distinguishes null (absent) from 0 (studio)
     photos: input.photos.map((p) => ({
@@ -125,7 +136,7 @@ export function packReportObjectPath(
   packId: string,
   contentHash: string,
 ): string {
-  return `companies/${companyId}/packs/${packId}/pack-report-t${TEMPLATE_VERSION}-${contentHash}.pdf`
+  return `companies/${companyId}/packs/${packId}/pack-report-t${PACK_TEMPLATE_VERSION}-${contentHash}.pdf`
 }
 
 /**

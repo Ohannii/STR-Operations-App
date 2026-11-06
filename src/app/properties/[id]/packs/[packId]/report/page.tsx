@@ -16,6 +16,7 @@ import {
 } from '@/lib/photos/signed-urls'
 import { createClient } from '@/lib/supabase/server'
 import { formatDateSAST, formatDateTimeSAST } from '@/lib/ui/datetime'
+import { packDateDisplay } from '@/lib/reports/pack-dates'
 
 /**
  * GET /properties/[id]/packs/[packId]/report
@@ -179,7 +180,15 @@ export default async function PackReportPage({
     ? (nameById.get(pack.submitted_by) ?? 'Unknown')
     : null
 
-  const shareTitle = pack.title ?? 'Pre-arrival Evidence Pack'
+  // Dated by SUBMISSION (South Africa time); the draft-creation default
+  // title is replaced for display, a custom title is kept. See pack-dates.
+  const dates = packDateDisplay({
+    status: pack.status,
+    title: pack.title,
+    startedAt: pack.started_at,
+    submittedAt: pack.submitted_at,
+  })
+  const shareTitle = dates.heading
 
   // Caption durability (P0, 22 Oct 2026): the editor seeds from these
   // server-confirmed captions and restores any unspent device drafts over
@@ -223,7 +232,7 @@ export default async function PackReportPage({
               </p>
               <div className="flex flex-wrap items-center gap-2 mt-0.5">
                 <h1 className="text-2xl font-semibold tracking-tight break-normal">
-                  {pack.title ?? 'Pre-arrival Evidence Pack'}
+                  {dates.heading}
                 </h1>
                 {isDraft ? (
                   <span className="inline-flex shrink-0 items-center whitespace-nowrap px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-amber-400 text-slate-900">
@@ -234,6 +243,9 @@ export default async function PackReportPage({
               <p className="text-sm text-white/80 mt-1 truncate">
                 {property.name}
                 {subtitle ? <span className="text-white/60"> — {subtitle}</span> : null}
+              </p>
+              <p className="text-sm font-semibold text-white mt-2">
+                {isDraft ? dates.draftCreatedLine ?? 'Draft' : dates.submittedLine}
               </p>
             </div>
             <div className="text-left text-xs text-white/80 shrink-0 sm:text-right">
@@ -300,26 +312,28 @@ export default async function PackReportPage({
                   )}
                 </td>
               </tr>
-              <tr className="border-b border-slate-200">
-                <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider break-normal px-6 py-3 bg-slate-50/60">
-                  Started
-                </th>
-                <td className="px-6 py-3 bg-slate-50/60">
-                  {formatDateTime(pack.started_at)}
-                  <span className="text-slate-500"> — by {startedByName}</span>
-                </td>
-              </tr>
-              {pack.submitted_at ? (
+              {!isDraft ? (
                 <tr className="border-b border-slate-200">
-                  <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider break-normal px-6 py-3 bg-white">
+                  <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider break-normal px-6 py-3 bg-slate-50/60">
                     Submitted
                   </th>
-                  <td className="px-6 py-3 bg-white">
-                    {formatDateTime(pack.submitted_at)}
-                    <span className="text-slate-500"> — by {submittedByName}</span>
+                  <td className="px-6 py-3 bg-slate-50/60 font-medium">
+                    {dates.submittedAtText ?? 'Time not recorded'}
+                    {submittedByName ? (
+                      <span className="text-slate-500 font-normal"> — by {submittedByName}</span>
+                    ) : null}
                   </td>
                 </tr>
               ) : null}
+              <tr className="border-b border-slate-200">
+                <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider break-normal px-6 py-3 bg-white">
+                  Draft created
+                </th>
+                <td className="px-6 py-3 bg-white text-slate-600">
+                  {dates.draftCreatedText ?? '—'}
+                  <span className="text-slate-500"> — by {startedByName}</span>
+                </td>
+              </tr>
               <tr>
                 <th className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider break-normal px-6 py-3 bg-slate-50/60">
                   Photos in pack
