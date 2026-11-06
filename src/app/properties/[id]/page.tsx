@@ -48,6 +48,7 @@ import {
 } from '@/lib/ui/flag-category'
 import { propertyStatusDisplay } from '@/lib/ui/property-status'
 import { relativeTime } from '@/lib/ui/relative-time'
+import { packDateDisplay } from '@/lib/reports/pack-dates'
 import { updateFlagAction } from './flags/[flagId]/actions'
 import { toggleFlagMarkAction } from './flags/[flagId]/marks/actions'
 import { startPreArrivalPackAction } from './packs/actions'
@@ -521,10 +522,23 @@ export default async function PropertyPage({
                 <p className="text-sm font-medium text-slate-900">
                   Pre-arrival pack in progress
                 </p>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {draftPack.title ?? 'Pre-arrival pack'} · started{' '}
-                  {relativeTime(draftPack.started_at)}
-                </p>
+                {(() => {
+                  // Draft-creation default titles are not repeated here (the
+                  // heading above already says what this is); a custom title is.
+                  const d = packDateDisplay({
+                    status: 'draft',
+                    title: draftPack.title,
+                    startedAt: draftPack.started_at,
+                    submittedAt: null,
+                  })
+                  return (
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {d.customTitle ? `${d.customTitle} · ` : ''}
+                      {d.draftCreatedLine ?? 'Draft created'} ·{' '}
+                      {relativeTime(draftPack.started_at)}
+                    </p>
+                  )
+                })()}
 
                 {/* 1. The one authoritative, prominent safety status. */}
                 <PackStatusBanner
@@ -863,7 +877,14 @@ export default async function PropertyPage({
                 <ul className="space-y-2">
                   {(submittedPacks ?? []).map((pack) => {
                     const photoN = packPhotoCountById[pack.id] ?? 0
-                    const when = pack.submitted_at ?? pack.started_at
+                    // Dated by SUBMISSION (South Africa time), never by the
+                    // draft-creation title. See lib/reports/pack-dates.
+                    const dates = packDateDisplay({
+                      status: 'submitted',
+                      title: pack.title,
+                      startedAt: pack.started_at,
+                      submittedAt: pack.submitted_at,
+                    })
                     return (
                       <li key={pack.id}>
                         <Link
@@ -875,12 +896,17 @@ export default async function PropertyPage({
                           </div>
                           <div className="min-w-0 flex-1">
                             <p className="text-sm font-medium text-slate-900 truncate">
-                              {pack.title ?? 'Pre-arrival pack'}
+                              {dates.heading}
                             </p>
-                            <p className="text-xs text-slate-500 mt-0.5">
-                              {photoN} photo{photoN === 1 ? '' : 's'} ·
-                              submitted {relativeTime(when)}
+                            <p className="text-xs text-slate-600 mt-0.5">
+                              {dates.submittedLine} · {photoN} photo
+                              {photoN === 1 ? '' : 's'}
                             </p>
+                            {dates.draftCreatedOnOtherDay && dates.draftCreatedLine ? (
+                              <p className="text-[11px] text-slate-400 mt-0.5">
+                                {dates.draftCreatedLine}
+                              </p>
+                            ) : null}
                           </div>
                           <ChevronRight
                             size={14}
