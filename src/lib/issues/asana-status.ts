@@ -28,7 +28,8 @@ export type CreateJobRow = {
 /** The job fact: a status, `null` = confirmed none, 'unknown' = lookup failed. */
 export type CreateJobFact = { status: string } | null | 'unknown'
 
-const CREATE_EVENT = 'asana.create_task_for_flag'
+/** Create-task jobs of every destination (BETA and the controlled live test). */
+const CREATE_EVENTS: readonly string[] = ['asana.create_task_for_flag', 'asana.live.create_task_for_flag']
 
 /**
  * Pick THE create job for one flag from raw outbox rows, deterministically:
@@ -42,7 +43,7 @@ export function pickCreateJob(rows: readonly CreateJobRow[], flagId: string): { 
       r.entity_id === flagId &&
       (r.deleted_at === null || r.deleted_at === undefined) &&
       (r.provider === undefined || r.provider === 'asana') &&
-      (r.event_type === undefined || r.event_type === CREATE_EVENT) &&
+      (r.event_type === undefined || (typeof r.event_type === 'string' && CREATE_EVENTS.includes(r.event_type))) &&
       (r.entity_type === undefined || r.entity_type === 'flag') &&
       typeof r.status === 'string',
   )

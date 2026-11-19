@@ -5,8 +5,9 @@
  * set, and field-validation.ts proves them against a project's live schema.
  * The verified BETA configuration is used ONLY for validated BETA task
  * creation (worker -> writable validation -> resolver -> provider BETA
- * field check). The live configuration remains read-only reference data:
- * it can be inspected, never made writable.
+ * field check). The live configuration is read-only reference data: it can
+ * be inspected, and it can be made writable ONLY while the controlled live
+ * test is switched on (assertAllowedProject — see config.ts / destinations.ts).
  *
  * RULES (from the 29–30 Oct audit):
  *   - Fields and options are identified ONLY by GID. Names are comments for
@@ -184,7 +185,10 @@ export const BETA_FIELD_CONFIG: ProjectFieldConfig = {
   },
 }
 
-/** Live "Incidents & Damages Reporting" — REFERENCE ONLY, never a write target. */
+/**
+ * Live "Incidents & Damages Reporting". Reference data; a write target ONLY
+ * for the controlled live test (same GIDs as config.ts — a test proves it).
+ */
 export const LIVE_INCIDENTS_PROJECT_GID = '1211426202387126'
 /** Live intake section "New (Intake" (verified read-only 19 Nov 2026). Reference only. */
 export const LIVE_INCIDENTS_INTAKE_SECTION_GID = '1211426202387127'
@@ -192,7 +196,8 @@ export const LIVE_INCIDENTS_INTAKE_SECTION_GID = '1211426202387127'
 /**
  * Live schema captured read-only on 29 Oct 2026; Report-issue fields and
  * options re-verified read-only on 19 Nov 2026. Used to validate the
- * mapping design against the real project; configForWrite() refuses it.
+ * mapping design against the real project; configForWrite() refuses it
+ * unless the controlled live test is switched on.
  */
 export const LIVE_INCIDENTS_FIELD_REFERENCE: ProjectFieldConfig = {
   projectGid: LIVE_INCIDENTS_PROJECT_GID,
@@ -326,8 +331,8 @@ export function isWritableFieldConfig(config: unknown): config is WritableFieldC
 
 /**
  * Mint writable configuration. THROWS (DisallowedAsanaProjectError) for any
- * project other than the pinned BETA project — the live reference can be
- * inspected, never made writable.
+ * project not on the hard allowlist: always the pinned BETA project; the
+ * live Incidents project ONLY while the controlled live test is switched on.
  */
 export function writableFieldConfig(config: ProjectFieldConfig): WritableFieldConfig {
   assertAllowedProject(config.projectGid)

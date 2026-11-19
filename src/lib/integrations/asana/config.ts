@@ -39,25 +39,52 @@ export const ASANA_TEST_SECTION_GIDS: Record<string, string> = {
 /** Where unmapped / unknown category groups land. */
 export const ASANA_FALLBACK_SECTION_GID = '1216372171983792' // Unsorted / Other
 
-/** Thrown when any non-BETA project is targeted. */
+/**
+ * CONTROLLED LIVE TEST (Nov 2026) — the ONE live project that may ever be
+ * targeted, and only while the test switch below is on:
+ * "Incidents & Damages Reporting", section "New (Intake".
+ */
+export const ASANA_LIVE_INCIDENTS_PROJECT_GID = '1211426202387126'
+export const ASANA_LIVE_INCIDENTS_INTAKE_SECTION_GID = '1211426202387127'
+
+/**
+ * The switch for the controlled live test. OFF unless this environment
+ * variable is EXACTLY 'true' — unset, empty, 'TRUE', '1' … all mean off.
+ * It is meant to be set on the Vercel PREVIEW environment only, so a
+ * deployment without it (production / the scheduled worker) keeps the
+ * BETA-only boundary exactly as before.
+ */
+export const ASANA_LIVE_TEST_ENV = 'ASANA_LIVE_INCIDENTS_TEST'
+
+export function liveIncidentsTestEnabled(): boolean {
+  return process.env[ASANA_LIVE_TEST_ENV] === 'true'
+}
+
+/** Thrown when a project outside the allowlist is targeted. */
 export class DisallowedAsanaProjectError extends Error {
   constructor(projectGid: string) {
     super(
-      `Refusing to target Asana project "${projectGid}". Phase 1 is ` +
-        `hard-pinned to the BETA test project ${ASANA_TEST_PROJECT_GID}.`,
+      `Refusing to target Asana project "${projectGid}". Writes are ` +
+        `hard-pinned to the BETA test project ${ASANA_TEST_PROJECT_GID}` +
+        ` (plus the live Incidents project ONLY while the controlled live test is switched on).`,
     )
     this.name = 'DisallowedAsanaProjectError'
   }
 }
 
 /**
- * HARD ALLOWLIST. Throws unless `projectGid` is exactly the pinned
- * BETA test project. Call before any code path that could write.
+ * HARD ALLOWLIST. Throws unless `projectGid` is
+ *   - exactly the pinned BETA test project, or
+ *   - exactly the live Incidents & Damages project AND the controlled live
+ *     test is switched on (liveIncidentsTestEnabled).
+ * Every other project is refused, always. Call before any code path that
+ * could write. (Which of the two a given job may use is decided by its
+ * DESTINATION — see destinations.ts; this is the outer wall.)
  */
 export function assertAllowedProject(projectGid: string): void {
-  if (projectGid !== ASANA_TEST_PROJECT_GID) {
-    throw new DisallowedAsanaProjectError(projectGid)
-  }
+  if (projectGid === ASANA_TEST_PROJECT_GID) return
+  if (projectGid === ASANA_LIVE_INCIDENTS_PROJECT_GID && liveIncidentsTestEnabled()) return
+  throw new DisallowedAsanaProjectError(projectGid)
 }
 
 /**

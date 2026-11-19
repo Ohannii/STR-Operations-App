@@ -305,3 +305,46 @@ describe('Report issue from a pack photo (issue mode)', () => {
     expect(rpcCalls[0].args).not.toHaveProperty('p_selections')
   })
 })
+
+describe('CONTROLLED LIVE TEST: the destination is chosen once, at enqueue', () => {
+  // CO and PROP in this file ARE the live-test company and "Test 1" property.
+  const PACK_PHOTO = 'c5b1a2e4-1f7d-4c2b-9a8e-3d6f5e4c2b1a'
+  const issue = (propertyId = PROP) =>
+    finalizeFlagWithPhotos({
+      propertyId,
+      proposedFlagId: FLAG,
+      categoryKey: 'inventory_damaged',
+      severity: 'med',
+      description: 'LIVE TEST',
+      photos: [{ photoId: PHOTO, width: 100, height: 100, sizeBytes: 1000 }],
+      issue: { sourcePackPhotoId: PACK_PHOTO, selections: { category: 'inventory' } },
+    })
+  const destinationArg = () => (enqueue.mock.calls[0] as unknown as unknown[])[2]
+
+  it('switch OFF: a pack-photo issue on Test 1 still goes to BETA', async () => {
+    await issue()
+    expect(destinationArg()).toBe('beta')
+  })
+
+  it('switch ON: a NEW pack-photo issue on Test 1 is pinned to live', async () => {
+    vi.stubEnv('ASANA_LIVE_INCIDENTS_TEST', 'true')
+    expect(await issue()).toMatchObject({ ok: true, asanaStatus: 'queued' })
+    expect(destinationArg()).toBe('live_incidents')
+    expect(enqueue).toHaveBeenCalledTimes(1)
+    vi.unstubAllEnvs()
+  })
+
+  it('switch ON: an ORDINARY flag on Test 1 keeps BETA', async () => {
+    vi.stubEnv('ASANA_LIVE_INCIDENTS_TEST', 'true')
+    await finalize()
+    expect(destinationArg()).toBe('beta')
+    vi.unstubAllEnvs()
+  })
+
+  it('switch ON: the destination uses the SERVER-verified company, never a client value', async () => {
+    vi.stubEnv('ASANA_LIVE_INCIDENTS_TEST', 'true')
+    await issue()
+    expect((enqueue.mock.calls[0] as unknown as [unknown, { companyId: string }])[1].companyId).toBe(CO)
+    vi.unstubAllEnvs()
+  })
+})

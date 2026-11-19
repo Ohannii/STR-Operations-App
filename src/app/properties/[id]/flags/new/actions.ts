@@ -14,6 +14,7 @@ import {
 } from '@/lib/photos/finalize-helpers'
 import { parseIssueSelections, selectionsToRpc } from '@/lib/issues/issue-selections'
 import type { AsanaIssueStatus } from '@/lib/issues/asana-status'
+import { chooseDestinationForNewFlag } from '@/lib/integrations/asana/destinations'
 import { loadFlagAsanaStatuses } from '@/lib/issues/load-pack-photo-issues'
 import { finalizeIssueErrorMessage } from '@/lib/issues/finalize-issue-errors'
 
@@ -354,12 +355,24 @@ export async function finalizeFlagWithPhotos(
   // Enqueue Asana ONLY after the flag + all photos are finalised (create OR
   // valid idempotent replay). Enqueues BOTH the create-task and the
   // attach-evidence events. Failure-isolated: never throws, never blocks.
-  const { create } = await maybeEnqueueFlagEvents(supabase, {
+  // DESTINATION — decided ONCE, here, before any create attempt, and pinned
+  // by the job's event type. BETA for everything, except a pack-photo issue
+  // of the controlled live test's company + property while its switch is on.
+  const destination = chooseDestinationForNewFlag({
     companyId: ctx.company.id,
-    flagId: proposedFlagId,
-    createdBy: ctx.user.id,
-    payload: { property_id: propertyId, category_key: categoryKey },
+    propertyId,
+    isPackPhotoIssue: issueArgs !== null,
   })
+  const { create } = await maybeEnqueueFlagEvents(
+    supabase,
+    {
+      companyId: ctx.company.id,
+      flagId: proposedFlagId,
+      createdBy: ctx.user.id,
+      payload: { property_id: propertyId, category_key: categoryKey },
+    },
+    destination,
+  )
 
   // Honest Asana status. A job inserted just now is queued. EVERY other
   // outcome (a job already existed, the insert failed, or Asana looked

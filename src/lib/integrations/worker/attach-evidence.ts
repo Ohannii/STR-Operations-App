@@ -13,6 +13,9 @@ import { loadFlagReportData } from '@/lib/reports/report-data'
 import { ensureFlagReportBytes } from '@/lib/reports/ensure-report-artifact'
 import { formatDateDMY } from '@/lib/ui/datetime'
 import { EVIDENCE_BUCKET } from '@/lib/photos/paths'
+import { assertAllowedProject, liveIncidentsTestEnabled } from '@/lib/integrations/asana/config'
+import { ASANA_DESTINATIONS } from '@/lib/integrations/asana/destinations'
+import { LIVE_TEST_CODES, liveTestRefusal } from '@/lib/integrations/worker/live-test-gate'
 
 const MAX_ATTEMPTS = 8
 const RETRY_BACKOFF_MINUTES = 5
@@ -24,7 +27,17 @@ const RETRY_BACKOFF_MINUTES = 5
  * beyond the verified company/flag prefix. The Asana token is passed in
  * and never logged.
  */
-export function createAttachIO(supabase: SupabaseClient, token: string): AttachIO {
+export function createAttachIO(
+  supabase: SupabaseClient,
+  token: string,
+  /**
+   * The destination project of the attach job being processed. The task is
+   * resolved ONLY from a link recorded for exactly this project, so a job
+   * pinned to one destination can never upload to a task in another.
+   */
+  projectGid: string = ASANA_DESTINATIONS.beta.projectGid,
+): AttachIO {
+  assertAllowedProject(projectGid)
   const outbox = () => supabase.from('integration_outbox')
 
   return {
@@ -115,6 +128,7 @@ export function createAttachIO(supabase: SupabaseClient, token: string): AttachI
         .eq('provider', 'asana')
         .eq('internal_entity_type', 'flag')
         .eq('internal_entity_id', flagId)
+        .eq('external_project_gid', projectGid)
         .is('deleted_at', null)
         .maybeSingle<{ external_task_gid: string }>()
       return data?.external_task_gid ?? null
@@ -186,8 +200,45 @@ export async function runNextAttachEvidence(
   deps: DryRunDeps,
   token: string,
 ): Promise<AttachResult | { status: 'no_pending' }> {
-  const g = await readAndGuardOutbox(supabase, deps, 'asana.attach_flag_evidence')
+  const dest = ASANA_DESTINATIONS[deps.destination ?? 'beta']
+  if (dest.key !== 'beta' && !liveIncidentsTestEnabled()) {
+    // Controlled live test switched off: the live attach queue is not read.
+    return { status: 'refused', outboxId: '', reason: LIVE_TEST_CODES.switchedOff }
+  }
+  const g = await readAndGuardOutbox(supabase, deps, dest.attachEvent)
   if (g.kind === 'no_pending') return { status: 'no_pending' }
+  if (g.kind === 'ok' && dest.key !== 'beta') {
+    // CONTROLLED LIVE TEST: the SAME eligibility rule as task creation
+    // (pin, company, Test 1 property, pack-photo issue, no other-destination
+    // job), re-proven from the database BEFORE the job is claimed — so before
+    // any task link is looked up and before anything is listed or uploaded.
+    const refusal = await liveTestRefusal(supabase, dest, g)
+    if (refusal?.permanent) {
+      await supabase
+        .from('integration_outbox')
+        .update({ status: 'dead', last_error: refusal.code, locked_at: null })
+        .eq('id', g.outboxId)
+        .eq('status', 'pending')
+      return { status: 'refused', outboxId: g.outboxId, reason: refusal.code }
+    }
+    if (refusal) {
+      // A scope read failed: never proceed on an unknown. Try again later.
+      const attempts = g.attemptCount + 1
+      const dead = attempts >= MAX_ATTEMPTS
+      await supabase
+        .from('integration_outbox')
+        .update({
+          status: dead ? 'dead' : 'pending',
+          attempt_count: attempts,
+          last_error: refusal.code,
+          locked_at: null,
+          ...(dead ? {} : { available_at: new Date(Date.now() + RETRY_BACKOFF_MINUTES * 60_000).toISOString() }),
+        })
+        .eq('id', g.outboxId)
+        .eq('status', 'pending')
+      return { status: 'error', outboxId: g.outboxId, error: refusal.code }
+    }
+  }
   if (g.kind === 'refused') {
     await supabase
       .from('integration_outbox')
@@ -195,7 +246,7 @@ export async function runNextAttachEvidence(
       .eq('id', g.outboxId)
     return { status: 'refused', outboxId: g.outboxId, reason: g.reason }
   }
-  const io = createAttachIO(supabase, token)
+  const io = createAttachIO(supabase, token, dest.projectGid)
   return runAttachEvidence(io, {
     outboxId: g.outboxId,
     companyId: g.companyId,

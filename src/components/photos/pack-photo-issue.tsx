@@ -1,10 +1,17 @@
 'use client'
 
-import { useState, type ComponentType } from 'react'
+import { useEffect, useState, type ComponentType } from 'react'
 import Link from 'next/link'
 import { Check, Flag } from 'lucide-react'
 import { usePackPhotoCaption } from '@/components/photos/pack-caption-editor'
 import { ASANA_STATUS_LABEL, type AsanaIssueStatus } from '@/lib/issues/asana-status'
+import {
+  ASANA_STATUS_MAX_POLLS,
+  isAsanaStatusPending,
+  mergeIssueStatuses,
+  nextAsanaStatusPollDelayMs,
+  parseStatusResponse,
+} from '@/lib/issues/asana-status-poll'
 
 /**
  * "Report issue" for ONE photo of a DRAFT pre-arrival pack.
@@ -90,6 +97,51 @@ export function PackPhotoIssue({
     }
     setOpen(true)
   }
+
+  // Asana status keeps itself up to date: while an issue is still on its
+  // way ("Sending to Asana" / status unavailable) a small read-only request
+  // checks it and updates ONLY that label. No page refresh — captions, an
+  // open form and the scroll position are untouched. Paused while the tab
+  // is hidden; stops once every status is final or after a bounded number
+  // of checks.
+  const pendingKey = saved
+    .filter((i) => isAsanaStatusPending(i.asanaStatus))
+    .map((i) => i.flagId)
+    .join(',')
+  useEffect(() => {
+    if (!pendingKey) return
+    let cancelled = false
+    let attempt = 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const schedule = () => {
+      if (cancelled || attempt >= ASANA_STATUS_MAX_POLLS) return
+      timer = setTimeout(tick, nextAsanaStatusPollDelayMs(attempt))
+    }
+    const tick = async () => {
+      if (cancelled) return
+      if (document.visibilityState === 'visible') {
+        attempt += 1
+        try {
+          const res = await fetch(`/api/issues/asana-status?ids=${encodeURIComponent(pendingKey)}`, {
+            cache: 'no-store',
+            credentials: 'same-origin',
+          })
+          if (res.ok && !cancelled) {
+            const fresh = parseStatusResponse(await res.json())
+            setSaved((list) => mergeIssueStatuses(list, fresh))
+          }
+        } catch {
+          // Offline / interrupted: keep the current label and try again later.
+        }
+      }
+      schedule()
+    }
+    schedule()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [pendingKey])
 
   const label = saved.length ? 'Report another issue' : 'Report issue'
 

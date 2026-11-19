@@ -58,7 +58,16 @@ import {
   assertAllowedCompany,
   DisallowedCompanyError,
 } from '@/lib/integrations/company-allowlist'
-import { assertAllowedProject } from '@/lib/integrations/asana/config'
+import {
+  assertAllowedProject,
+  liveIncidentsTestEnabled,
+} from '@/lib/integrations/asana/config'
+import {
+  ASANA_DESTINATIONS,
+  type AsanaDestination,
+  type AsanaDestinationKey,
+} from '@/lib/integrations/asana/destinations'
+import { LIVE_TEST_CODES, liveTestRefusal } from '@/lib/integrations/worker/live-test-gate'
 import { mapFlagToTaskPayload } from '@/lib/integrations/asana/mapping'
 import { hasCustomFields, taskUrlForGid } from '@/lib/integrations/asana/client'
 import { desiredFieldValuesForFlag } from '@/lib/integrations/asana/field-mapping'
@@ -120,6 +129,18 @@ export interface DryRunDeps {
    * path that is about to POST a new task. Absent = no custom fields.
    */
   loadFieldValidation?: () => Promise<WritableFieldValidation>
+  /**
+   * Which destination's queue this run drains. Default 'beta' (unchanged).
+   * 'live_incidents' = the controlled live test; its jobs have their own
+   * event types, so the two queues never mix.
+   */
+  destination?: AsanaDestinationKey
+  /** Targeted run: only this flag's job may be read / claimed. */
+  onlyFlagId?: string
+}
+
+function destinationOf(deps: DryRunDeps): AsanaDestination {
+  return ASANA_DESTINATIONS[deps.destination ?? 'beta']
 }
 
 export type DryRunResult =
@@ -169,15 +190,18 @@ export type GuardOutcome =
 export async function readAndGuardOutbox(
   supabase: SupabaseClient,
   deps: DryRunDeps,
-  eventType: OutboxEventType = 'asana.create_task_for_flag',
+  eventType: OutboxEventType = destinationOf(deps).createEvent,
 ): Promise<GuardOutcome> {
   const nowIso = new Date((deps.now ?? Date.now)()).toISOString()
-  const { data: rows, error } = await supabase
+  let query = supabase
     .from('integration_outbox')
     .select('id, company_id, entity_type, entity_id, status, attempt_count, payload, created_at')
     .eq('provider', 'asana')
     .eq('event_type', eventType)
     .eq('status', 'pending')
+  // Targeted run: no other flag's job can be read, so none can be claimed.
+  if (deps.onlyFlagId) query = query.eq('entity_type', 'flag').eq('entity_id', deps.onlyFlagId)
+  const { data: rows, error } = await query
     .is('deleted_at', null)
     .lte('available_at', nowIso)
     .order('available_at', { ascending: true })
@@ -258,9 +282,27 @@ async function buildPayloadForFlag(
     appBaseUrl: deps.appBaseUrl,
     todayIso: deps.todayIso,
   })
-  const payload = mapFlagToTaskPayload(forMapping)
-  assertAllowedProject(payload.projectGid)
+  const payload = applyDestination(mapFlagToTaskPayload(forMapping), destinationOf(deps))
   return { payload, propertyId: dbRow.propertyId, categoryKey: dbRow.categoryKey }
+}
+
+/**
+ * Point the mapped payload at the run's destination. BETA: untouched (the
+ * mapper already targets BETA with its category-group section). A
+ * destination with a fixed section (live: "New (Intake") gets that project
+ * and EXACTLY that section, whatever the category. The result must be on
+ * the hard allowlist AND be exactly the destination's project.
+ */
+export function applyDestination(mapped: TaskPayload, dest: AsanaDestination): TaskPayload {
+  const payload: TaskPayload =
+    dest.fixedSectionGid === null
+      ? mapped
+      : { ...mapped, projectGid: dest.projectGid, sectionGid: dest.fixedSectionGid }
+  assertAllowedProject(payload.projectGid)
+  if (payload.projectGid !== dest.projectGid) {
+    throw new Error('task payload does not target the run destination')
+  }
+  return payload
 }
 
 /**
@@ -317,6 +359,8 @@ function isRow(data: unknown, outboxId: string): boolean {
 
 /** Recover rows whose worker crashed mid-run (stuck in 'processing'). */
 async function resetStaleProcessing(supabase: SupabaseClient, nowMs: number): Promise<void> {
+  // (All Asana event types, both destinations: this only un-sticks a row;
+  // its event type — and so its destination — is never changed.)
   const staleIso = new Date(nowMs - STALE_PROCESSING_MINUTES * 60_000).toISOString()
   await supabase
     .from('integration_outbox')
@@ -330,15 +374,34 @@ export async function dryRunNextAsanaOutbox(
   supabase: SupabaseClient,
   deps: DryRunDeps,
 ): Promise<DryRunResult> {
+  const dest = destinationOf(deps)
+  if (dest.key !== 'beta' && !liveIncidentsTestEnabled()) {
+    // Switch off: the live queue is not even read.
+    return { status: 'refused', outboxId: '', reason: LIVE_TEST_CODES.switchedOff }
+  }
   const g = await readAndGuardOutbox(supabase, deps)
   if (g.kind === 'no_pending') return { status: 'no_pending' }
   if (g.kind === 'refused') return { status: 'refused', outboxId: g.outboxId, reason: g.reason }
+
+  if (dest.key !== 'beta') {
+    const refusal = await liveTestRefusal(supabase, dest, g)
+    if (refusal) return { status: 'refused', outboxId: g.outboxId, flagId: g.flagId, reason: refusal.code }
+  }
 
   const built = await buildPayloadForFlag(supabase, g.flagId, deps)
   if (!built) {
     return { status: 'refused', outboxId: g.outboxId, flagId: g.flagId, reason: 'flag not found' }
   }
-  return { status: 'dry_run_ok', outboxId: g.outboxId, flagId: g.flagId, payload: built.payload }
+  // Live-test dry run only: with a schema loader (one read-only GET), show
+  // the custom fields a real run would send. Nothing is written and no task
+  // is created. (A BETA dry run never loads the schema — unchanged.)
+  const customFields = dest.key !== 'beta' && deps.loadFieldValidation
+    ? await customFieldsForCreate(
+        supabase, deps.loadFieldValidation, g.companyId, g.flagId, built.categoryKey, built.payload.projectGid,
+      )
+    : undefined
+  const payload = customFields ? { ...built.payload, customFields } : built.payload
+  return { status: 'dry_run_ok', outboxId: g.outboxId, flagId: g.flagId, payload }
 }
 
 /**
@@ -427,9 +490,16 @@ async function customFieldsForCreate(
   companyId: string,
   flagId: string,
   categoryKey: string,
+  expectedProjectGid: string,
 ): Promise<Record<string, string | string[]> | undefined> {
   try {
     const validation = await load()
+    // Project-specific: a schema validated for another project is never
+    // used to build this task's fields.
+    if (validation.projectGid !== expectedProjectGid) {
+      console.warn('[asana-fields]', JSON.stringify({ flagId, code: 'field_schema_project_mismatch' }))
+      return undefined
+    }
     const durableEvidence = await hasDurableEvidence(supabase, companyId, flagId)
     const selections = await loadIssueSelections(supabase, companyId, flagId)
     const mapped =
@@ -672,6 +742,11 @@ export async function runNextAsanaOutbox(
   deps: DryRunDeps,
 ): Promise<RealRunResult> {
   const now = deps.now ?? Date.now
+  const dest = destinationOf(deps)
+  if (dest.key !== 'beta' && !liveIncidentsTestEnabled()) {
+    // Switch off: the live queue is not read, nothing is claimed or written.
+    return { status: 'refused', outboxId: '', reason: LIVE_TEST_CODES.switchedOff }
+  }
   const g = await readAndGuardOutbox(supabase, deps)
   if (g.kind === 'no_pending') return { status: 'no_pending' }
   const runId = (deps.newRunId ?? defaultRunId)()
@@ -704,6 +779,23 @@ export async function runNextAsanaOutbox(
   const row = new OwnedRow(supabase, outboxId, flagId, runId, attemptCount, g.payload, now)
   let state = readCreateState(g.payload)
 
+  // CONTROLLED LIVE TEST: prove scope + pin from the database BEFORE anything
+  // else (no link is read, no payload built, no Asana call made otherwise).
+  if (dest.key !== 'beta') {
+    const refusal = await liveTestRefusal(supabase, dest, g)
+    if (refusal && !refusal.permanent) return row.failRetry(refusal.code, state)
+    if (refusal) {
+      const ok = await row.write({
+        status: 'dead',
+        last_error: refusal.code,
+        locked_at: null,
+        locked_by: null,
+      })
+      if (!ok) return { status: 'lost_lock', outboxId, flagId }
+      return { status: 'refused', outboxId, flagId, reason: refusal.code }
+    }
+  }
+
   // Idempotency pre-check: an active link for THIS company + flag means the
   // task already exists. Restore the flag URL from it (a crash may have hit
   // between the link insert and the flag update), THEN done. Never creates.
@@ -732,6 +824,9 @@ export async function runNextAsanaOutbox(
   }
   const { payload } = built
   assertAllowedProject(payload.projectGid)
+  if (payload.projectGid !== dest.projectGid) {
+    throw new Error('task payload does not target the run destination')
+  }
   // How this flag's task is recognised (built from authoritative IDs).
   let matcher = resolveMatcher(state, flagId, built.propertyId)
 
@@ -812,7 +907,7 @@ export async function runNextAsanaOutbox(
   const customFields =
     !state.customFieldsRejected && deps.loadFieldValidation
       ? await customFieldsForCreate(
-          supabase, deps.loadFieldValidation, companyId, flagId, built.categoryKey,
+          supabase, deps.loadFieldValidation, companyId, flagId, built.categoryKey, payload.projectGid,
         )
       : undefined
   const createPayload: TaskPayload = customFields ? { ...payload, customFields } : payload

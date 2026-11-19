@@ -5,6 +5,7 @@ import {
   type AsanaIssueStatus,
   type CreateJobRow,
 } from '@/lib/issues/asana-status'
+import { ALL_CREATE_EVENTS } from '@/lib/integrations/asana/destinations'
 
 export type PackPhotoIssue = { flagId: string; asanaStatus: AsanaIssueStatus }
 
@@ -43,7 +44,8 @@ export async function loadFlagAsanaStatuses(
         .select('id, entity_id, status, created_at, deleted_at, provider, event_type, entity_type')
         .eq('company_id', companyId)
         .eq('provider', 'asana')
-        .eq('event_type', 'asana.create_task_for_flag')
+        // The flag's create job, whichever destination it is pinned to.
+        .in('event_type', [...ALL_CREATE_EVENTS])
         .eq('entity_type', 'flag')
         .is('deleted_at', null)
         .in('entity_id', flagIds),

@@ -20,6 +20,11 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { CREATE_PROTOCOL } from '@/lib/integrations/worker/create-idempotency'
+import {
+  ASANA_DESTINATIONS,
+  destinationPin,
+  type AsanaDestinationKey,
+} from '@/lib/integrations/asana/destinations'
 import type {
   IntegrationEntityType,
   IntegrationProvider,
@@ -60,18 +65,29 @@ export interface EnqueueResult {
  * event. `flag_id` is spread LAST so a caller-supplied payload hint can
  * never overwrite it.
  */
-export function buildFlagOutboxEvent(input: FlagCreatedOutboxInput): OutboxInsertRow {
+export function buildFlagOutboxEvent(
+  input: FlagCreatedOutboxInput,
+  destination: AsanaDestinationKey = 'beta',
+): OutboxInsertRow {
   return {
     company_id: input.companyId,
     provider: 'asana',
-    event_type: 'asana.create_task_for_flag',
+    // The event type PINS the destination for the life of the job.
+    event_type: ASANA_DESTINATIONS[destination].createEvent,
     entity_type: 'flag',
     entity_id: input.flagId,
     // create_protocol (Stage 0): rows carrying it ALWAYS record an attempt
     // before any create request, so "no attempt recorded" provably means
     // untouched. Rows without it are legacy and are reconciled first.
-    // Spread LAST so a caller hint can never forge or remove it.
-    payload: { ...(input.payload ?? {}), flag_id: input.flagId, create_protocol: CREATE_PROTOCOL },
+    // Spread LAST so a caller hint can never forge or remove it — the same
+    // goes for the destination record (written for the live test only, so a
+    // BETA row is byte-for-byte what it has always been).
+    payload: {
+      ...(input.payload ?? {}),
+      flag_id: input.flagId,
+      create_protocol: CREATE_PROTOCOL,
+      ...(destination === 'beta' ? {} : destinationPin(destination)),
+    },
     created_by: input.createdBy,
   }
 }
@@ -111,9 +127,10 @@ export async function isAsanaEnabled(
 export async function enqueueFlagCreatedEvent(
   supabase: SupabaseClient,
   input: FlagCreatedOutboxInput,
+  destination: AsanaDestinationKey = 'beta',
 ): Promise<EnqueueResult> {
   try {
-    const row = buildFlagOutboxEvent(input)
+    const row = buildFlagOutboxEvent(input, destination)
     const { error } = await supabase.from('integration_outbox').insert(row)
 
     if (error) {
@@ -159,14 +176,22 @@ export async function maybeEnqueueFlagCreated(
  * starts at 1 and is bumped on every re-arm; the worker uses it as a
  * compare-and-set token so a change during processing is never lost.
  */
-export function buildAttachEvidenceEvent(input: FlagCreatedOutboxInput): OutboxInsertRow {
+export function buildAttachEvidenceEvent(
+  input: FlagCreatedOutboxInput,
+  destination: AsanaDestinationKey = 'beta',
+): OutboxInsertRow {
   return {
     company_id: input.companyId,
     provider: 'asana',
-    event_type: 'asana.attach_flag_evidence',
+    event_type: ASANA_DESTINATIONS[destination].attachEvent,
     entity_type: 'flag',
     entity_id: input.flagId,
-    payload: { ...(input.payload ?? {}), flag_id: input.flagId, content_generation: 1 },
+    payload: {
+      ...(input.payload ?? {}),
+      flag_id: input.flagId,
+      content_generation: 1,
+      ...(destination === 'beta' ? {} : destinationPin(destination)),
+    },
     created_by: input.createdBy,
   }
 }
@@ -175,11 +200,12 @@ export function buildAttachEvidenceEvent(input: FlagCreatedOutboxInput): OutboxI
 export async function enqueueAttachEvidenceEvent(
   supabase: SupabaseClient,
   input: FlagCreatedOutboxInput,
+  destination: AsanaDestinationKey = 'beta',
 ): Promise<EnqueueResult> {
   try {
     const { error } = await supabase
       .from('integration_outbox')
-      .insert(buildAttachEvidenceEvent(input))
+      .insert(buildAttachEvidenceEvent(input, destination))
     if (error) {
       if (error.code === '23505') return { enqueued: false, skipped: 'duplicate' }
       return { enqueued: false, error: error.message }
@@ -204,16 +230,106 @@ export async function enqueueAttachEvidenceEvent(
  */
 export type FlagCreateEnqueueOutcome = 'enqueued' | 'duplicate' | 'failed' | 'disabled'
 
+/**
+ * Does this flag already have an active (not soft-deleted) job of the
+ * given event type? true / false, or 'unknown' when the read failed.
+ */
+async function hasCreateJob(
+  supabase: SupabaseClient,
+  input: FlagCreatedOutboxInput,
+  eventType: string,
+): Promise<boolean | 'unknown'> {
+  try {
+    const { data, error } = await supabase
+      .from('integration_outbox')
+      .select('id')
+      .eq('company_id', input.companyId)
+      .eq('provider', 'asana')
+      .eq('event_type', eventType)
+      .eq('entity_type', 'flag')
+      .eq('entity_id', input.flagId)
+      .is('deleted_at', null)
+      .limit(1)
+      .maybeSingle()
+    if (error) return 'unknown'
+    return data != null
+  } catch {
+    return 'unknown'
+  }
+}
+
+/**
+ * The destination this flag is ALREADY pinned to, from ANY of its existing
+ * Asana jobs — create or attach, either destination:
+ * a destination, null (confirmed: no job at all), or 'unknown' (a read
+ * failed and no job was found).
+ */
+export async function existingFlagDestination(
+  supabase: SupabaseClient,
+  input: FlagCreatedOutboxInput,
+): Promise<AsanaDestinationKey | null | 'unknown'> {
+  let unknown = false
+  for (const kind of ['createEvent', 'attachEvent'] as const) {
+    for (const key of ['beta', 'live_incidents'] as const) {
+      const has = await hasCreateJob(supabase, input, ASANA_DESTINATIONS[key][kind])
+      if (has === true) return key
+      if (has === 'unknown') unknown = true
+    }
+  }
+  return unknown ? 'unknown' : null
+}
+
+/**
+ * ONE DESTINATION PER FLAG, FOR LIFE — across BOTH job kinds.
+ *
+ * `requested` is only what a brand-new flag would get. A flag that already
+ * has ANY Asana job (create or attach) keeps THAT job's destination on
+ * every replay — whatever the live-test switch says now. Both jobs are then
+ * (re-)ensured for that one destination, so a replay can never add a job
+ * for the other destination, and an attach job left without its create job
+ * gets a create job of the SAME destination.
+ *
+ * Atomic backstop: migration 20261119110000 refuses, for EVERY writer
+ * (concurrent requests and the older production code included), a second
+ * create / attach job AND any job whose destination differs from the
+ * flag's existing jobs. Such a refusal arrives as a unique violation; the
+ * destination is then re-read and the attach job follows the job that won.
+ *
+ * A live job is never inserted on an unknown: if the existing-job read
+ * fails, a live request enqueues nothing. (A BETA request proceeds as it
+ * always has; the database rule is what protects a live-pinned flag then.)
+ */
 export async function maybeEnqueueFlagEvents(
   supabase: SupabaseClient,
   input: FlagCreatedOutboxInput,
+  requested: AsanaDestinationKey = 'beta',
 ): Promise<{ create: FlagCreateEnqueueOutcome }> {
   try {
     if (await isAsanaEnabled(supabase, input.companyId)) {
-      const created = await enqueueFlagCreatedEvent(supabase, input)
-      await enqueueAttachEvidenceEvent(supabase, input)
-      if (created.enqueued) return { create: 'enqueued' }
-      return { create: created.skipped === 'duplicate' ? 'duplicate' : 'failed' }
+      const existing = await existingFlagDestination(supabase, input)
+      if (existing === 'unknown' && requested !== 'beta') return { create: 'failed' }
+      const destination = existing === 'beta' || existing === 'live_incidents' ? existing : requested
+
+      const created = await enqueueFlagCreatedEvent(supabase, input, destination)
+      if (created.enqueued) {
+        await enqueueAttachEvidenceEvent(supabase, input, destination)
+        return { create: 'enqueued' }
+      }
+      if (created.skipped === 'duplicate') {
+        // A create job already exists, or the database refused ours (lost
+        // race / other destination). The attach job follows whatever the
+        // flag is ACTUALLY pinned to now — never our own request.
+        const winner = await existingFlagDestination(supabase, input)
+        if (winner === 'beta' || winner === 'live_incidents') {
+          await enqueueAttachEvidenceEvent(supabase, input, winner)
+        }
+        return { create: 'duplicate' }
+      }
+      // The create insert failed: no create job, so no attach job either
+      // for a live destination (never leave a live attach job without its
+      // create job). BETA keeps its previous behaviour.
+      if (destination === 'beta') await enqueueAttachEvidenceEvent(supabase, input, destination)
+      return { create: 'failed' }
     }
   } catch (err) {
     console.error('[outbox] flag events enqueue skipped:', err)
@@ -232,27 +348,45 @@ export async function maybeEnqueueFlagEvents(
  * reschedules. Otherwise we reset it to `pending` (fresh dependency-wait
  * window, attempts cleared). If no attach event exists yet (e.g. a flag
  * created before this slice), we insert one.
+ *
+ * DESTINATION: the flag's EXISTING attach event is re-armed, whichever
+ * destination it is pinned to (BETA is looked up first, exactly as before).
+ * Its event type is never changed. When none exists, the new one follows
+ * the flag's existing create job (a live-pinned flag gets a live attach
+ * event); with neither, BETA — the previous behaviour.
  */
 export async function maybeReArmAttachEvidence(
   supabase: SupabaseClient,
   input: FlagCreatedOutboxInput,
 ): Promise<void> {
-  try {
-    if (!(await isAsanaEnabled(supabase, input.companyId))) return
-
-    const { data: existing } = await supabase
+  type Existing = { id: string; status: string; payload: Record<string, unknown> | null }
+  const findAttach = async (eventType: string) => {
+    const { data } = await supabase
       .from('integration_outbox')
       .select('id, status, payload')
       .eq('company_id', input.companyId)
       .eq('provider', 'asana')
-      .eq('event_type', 'asana.attach_flag_evidence')
+      .eq('event_type', eventType)
       .eq('entity_type', 'flag')
       .eq('entity_id', input.flagId)
       .is('deleted_at', null)
-      .maybeSingle<{ id: string; status: string; payload: Record<string, unknown> | null }>()
+      .maybeSingle<Existing>()
+    return data ?? null
+  }
+
+  try {
+    if (!(await isAsanaEnabled(supabase, input.companyId))) return
+
+    const existing =
+      (await findAttach(ASANA_DESTINATIONS.beta.attachEvent)) ??
+      (await findAttach(ASANA_DESTINATIONS.live_incidents.attachEvent))
 
     if (!existing) {
-      await enqueueAttachEvidenceEvent(supabase, input)
+      const pinned = await existingFlagDestination(supabase, input)
+      // Cannot tell which destination the flag is pinned to: insert nothing
+      // (the next report-relevant change re-arms again).
+      if (pinned === 'unknown') return
+      await enqueueAttachEvidenceEvent(supabase, input, pinned ?? 'beta')
       return
     }
 

@@ -420,7 +420,7 @@ describe('loadFlagAsanaStatuses (the REAL job state + task link; a failed read i
       expect.arrayContaining([
         ['eq', 'company_id', CO],
         ['eq', 'provider', 'asana'],
-        ['eq', 'event_type', 'asana.create_task_for_flag'],
+        ['in', 'event_type', ['asana.create_task_for_flag', 'asana.live.create_task_for_flag']],
         ['eq', 'entity_type', 'flag'],
         ['is', 'deleted_at', null],
       ]),

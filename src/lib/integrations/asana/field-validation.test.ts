@@ -346,18 +346,37 @@ describe('source contracts — read-only, by GID, wired ONLY through the writabl
     // The validation comes ONLY from the injected writable loader.
     expect(worker).toMatch(/load: \(\) => Promise<WritableFieldValidation>/)
     expect(worker).not.toMatch(/validateFieldConfig|inspectFieldConfig|LIVE_INCIDENTS/)
-    // The route builds that loader from configForWrite(ASANA_TEST_PROJECT_GID) only.
+    // The route builds the BETA loader from configForWrite(ASANA_TEST_PROJECT_GID).
     const route = code(read('src/app/api/integrations/asana/worker/route.ts'))
     expect(route).toContain('createWritableFieldValidationLoader(asanaToken, configForWrite(ASANA_TEST_PROJECT_GID))')
-    expect(route).not.toMatch(/LIVE_INCIDENTS|inspectFieldConfig/)
+    expect(route).not.toMatch(/inspectFieldConfig|LIVE_INCIDENTS_FIELD_REFERENCE/)
+    // CONTROLLED LIVE TEST (Nov 2026): the ONLY other writable config the
+    // route may build is the live destination's, through configForWrite
+    // (which refuses it unless the switch is on), and only AFTER the route
+    // itself has checked the switch. The scheduled GET never mentions it.
+    expect(route.match(/configForWrite\(/g)).toHaveLength(2)
+    expect(route).toContain('configForWrite(ASANA_DESTINATIONS.live_incidents.projectGid)')
+    expect(route.indexOf('if (!liveIncidentsTestEnabled())')).toBeGreaterThan(-1)
+    expect(route.indexOf('if (!liveIncidentsTestEnabled())')).toBeLessThan(
+      route.indexOf('configForWrite(ASANA_DESTINATIONS.live_incidents.projectGid)'),
+    )
+    const cronHandler = route.slice(route.indexOf('export async function GET'), route.indexOf('export async function POST'))
+    expect(cronHandler.length).toBeGreaterThan(200)
+    expect(cronHandler).not.toMatch(/live_incidents|destination|target/)
     // The client sends custom_fields only behind the non-empty guard; no update endpoint.
     const client = code(read('src/lib/integrations/asana/client.ts'))
     expect(client.match(/custom_fields:/g)).toHaveLength(1)
     expect(client).toContain('...(hasCustomFields(args.customFields) ? { custom_fields: args.customFields } : {})')
     expect(client).not.toMatch(/method:\s*'(PUT|PATCH|DELETE)'/)
-    // The provider checks project, then BETA field GIDs, before the request.
+    // The provider checks project (hard allowlist AND its own destination),
+    // then the project's field GIDs, before the request.
     const provider = code(read('src/lib/integrations/asana/provider.ts'))
-    expect(provider.indexOf('assertAllowedProject(payload.projectGid)')).toBeLessThan(
+    expect(provider).toMatch(
+      /const assertTarget = \(projectGid: string\) => \{\s*assertAllowedProject\(projectGid\)\s*if \(projectGid !== dest\.projectGid\) throw new DisallowedAsanaProjectError\(projectGid\)\s*\}/,
+    )
+    expect(provider.indexOf('assertTarget(payload.projectGid)')).toBeGreaterThan(-1)
+    expect(provider.indexOf('assertBetaCustomFields(payload.projectGid, customFields)')).toBeGreaterThan(-1)
+    expect(provider.indexOf('assertTarget(payload.projectGid)')).toBeLessThan(
       provider.indexOf('assertBetaCustomFields(payload.projectGid, customFields)'),
     )
     expect(provider.indexOf('assertBetaCustomFields(payload.projectGid, customFields)')).toBeLessThan(
