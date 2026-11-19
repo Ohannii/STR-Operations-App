@@ -193,19 +193,33 @@ export async function enqueueAttachEvidenceEvent(
 /**
  * At finalisation: enqueue BOTH the create-task and attach-evidence events
  * (each ON CONFLICT DO NOTHING). NEVER throws. Only when Asana is enabled.
+ *
+ * Reports what happened to the CREATE event, without interpreting it:
+ *   - 'enqueued'  a new create job was inserted just now;
+ *   - 'duplicate' a create job for this flag ALREADY existed. That says
+ *                 nothing about its state (it may be pending, done or
+ *                 dead) — the caller must read the real job / task link;
+ *   - 'failed'    the insert failed: no job was added;
+ *   - 'disabled'  Asana is not enabled (or that could not be confirmed).
  */
+export type FlagCreateEnqueueOutcome = 'enqueued' | 'duplicate' | 'failed' | 'disabled'
+
 export async function maybeEnqueueFlagEvents(
   supabase: SupabaseClient,
   input: FlagCreatedOutboxInput,
-): Promise<void> {
+): Promise<{ create: FlagCreateEnqueueOutcome }> {
   try {
     if (await isAsanaEnabled(supabase, input.companyId)) {
-      await enqueueFlagCreatedEvent(supabase, input)
+      const created = await enqueueFlagCreatedEvent(supabase, input)
       await enqueueAttachEvidenceEvent(supabase, input)
+      if (created.enqueued) return { create: 'enqueued' }
+      return { create: created.skipped === 'duplicate' ? 'duplicate' : 'failed' }
     }
   } catch (err) {
     console.error('[outbox] flag events enqueue skipped:', err)
+    return { create: 'failed' }
   }
+  return { create: 'disabled' }
 }
 
 /**

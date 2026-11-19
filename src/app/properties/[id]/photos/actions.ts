@@ -26,6 +26,13 @@ import {
 import { isReportConflict } from '@/lib/reports/ensure-report-artifact-core'
 import { verifiedObjectExists } from '@/lib/photos/storage-exists'
 import { exactObjectPresence } from '@/lib/photos/object-presence'
+import {
+  PREPARE_PHOTO_FAILED,
+  isCopyConflict,
+  prepareIssuePhotoFromPack,
+  type PackPhotoRow,
+  type PrepareIssuePhotoResult,
+} from '@/lib/issues/prepare-issue-photo'
 import { mapBounded } from '@/lib/util/bounded-map'
 import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
@@ -1113,3 +1120,77 @@ export async function softDeleteEvidencePhoto(formData: FormData) {
 // job — only genuine orphans are eligible. No worker is required for
 // the beta; orphan storage cost is negligible next to retained
 // evidence.
+
+// ----------------------------------------------------------------
+// preparePackPhotoForIssueAction — "Report issue" from a pack photo
+// ----------------------------------------------------------------
+//
+// Gives a new issue (client-generated proposedFlagId + newPhotoId) its own
+// copy of a pre-arrival pack photo, server-side (Storage copy — nothing is
+// downloaded to or re-uploaded from the phone). The pack photo, its file
+// and its caption are never modified. Retry-safe: the same ids land on the
+// same derived paths and are verified exactly. Ownership: the company comes
+// from the session, the pack photo must be visible under RLS and belong to
+// this company AND property, and the collision guard proves both new ids
+// are unused. finalize_flag_issue_with_photos re-checks all of it in SQL.
+export async function preparePackPhotoForIssueAction(input: {
+  propertyId: string
+  proposedFlagId: string
+  packPhotoId: string
+  newPhotoId: string
+}): Promise<PrepareIssuePhotoResult> {
+  const ctx = await getUserContext()
+  if (!ctx || !ctx.company) return { ok: false, error: 'Not authenticated.' }
+  const companyId = ctx.company.id
+
+  const propertyId = String(input.propertyId ?? '').trim()
+  const proposedFlagId = String(input.proposedFlagId ?? '').trim()
+  const packPhotoId = String(input.packPhotoId ?? '').trim()
+  const newPhotoId = String(input.newPhotoId ?? '').trim()
+  if (!isUuid(propertyId) || !isUuid(proposedFlagId) || !isUuid(packPhotoId) || !isUuid(newPhotoId)) {
+    return { ok: false, error: 'Invalid issue or photo reference.' }
+  }
+
+  const supabase = await createClient()
+  const evidence = supabase.storage.from(EVIDENCE_BUCKET)
+
+  let admin: ReturnType<typeof createServiceClient>
+  try {
+    admin = createServiceClient()
+  } catch (err) {
+    console.error('[photos/issue-photo] collision guard unavailable:', err)
+    return { ok: false, error: PREPARE_PHOTO_FAILED }
+  }
+
+  return prepareIssuePhotoFromPack(
+    {
+      async loadPackPhoto(id) {
+        const { data, error } = await supabase
+          .from('photos')
+          .select(
+            'id, company_id, property_id, evidence_pack_id, storage_path, thumbnail_path, width, height, size_bytes, sync_status, deleted_at, bytes_deleted_at',
+          )
+          .eq('id', id)
+          .maybeSingle<PackPhotoRow>()
+        if (error) {
+          console.error('[photos/issue-photo] pack photo read failed')
+          return 'error'
+        }
+        return data ?? null
+      },
+      collision: (flagId, photoId) =>
+        checkFlagPhotoCollision(admin, { proposedFlagId: flagId, photoId }),
+      async copy(from, to) {
+        try {
+          const { error } = await evidence.copy(from, to)
+          if (!error) return { ok: true }
+          return { ok: false, conflict: isCopyConflict(error) }
+        } catch {
+          return { ok: false, conflict: false }
+        }
+      },
+      presence: (path) => exactObjectPresence(evidence, path),
+    },
+    { companyId, propertyId, proposedFlagId, packPhotoId, newPhotoId },
+  )
+}

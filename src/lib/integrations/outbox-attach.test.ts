@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   buildAttachEvidenceEvent,
@@ -18,6 +18,7 @@ type Sink = { inserts: { table: string; rows: unknown[] }[]; updates: { table: s
 function fakeClient(opts: {
   asanaEnabled?: boolean
   existingRow?: { id: string; status: string; payload: Record<string, unknown> } | null
+  insertError?: { code: string; message: string }
 }): { client: SupabaseClient; sink: Sink } {
   const sink: Sink = { inserts: [], updates: [] }
   const makeQ = (table: string) => {
@@ -35,7 +36,7 @@ function fakeClient(opts: {
       },
       insert: async (row: unknown) => {
         sink.inserts.push({ table, rows: Array.isArray(row) ? row : [row] })
-        return { error: null }
+        return { error: opts.insertError ?? null }
       },
       update: (patch: Record<string, unknown>) => {
         sink.updates.push({ table, patch })
@@ -62,15 +63,26 @@ describe('buildAttachEvidenceEvent', () => {
 describe('maybeEnqueueFlagEvents', () => {
   it('enqueues BOTH create-task and attach-evidence when Asana is enabled', async () => {
     const { client, sink } = fakeClient({ asanaEnabled: true })
-    await maybeEnqueueFlagEvents(client, input)
+    expect(await maybeEnqueueFlagEvents(client, input)).toEqual({ create: 'enqueued' })
     const eventTypes = sink.inserts.flatMap((i) => i.rows).map((r) => (r as { event_type: string }).event_type)
     expect(eventTypes).toContain('asana.create_task_for_flag')
     expect(eventTypes).toContain('asana.attach_flag_evidence')
   })
 
+  it('a failed create enqueue -> failed (the UI never claims it is on its way)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { client } = fakeClient({ asanaEnabled: true, insertError: { code: 'XX000', message: 'down' } })
+    expect(await maybeEnqueueFlagEvents(client, input)).toEqual({ create: 'failed' })
+  })
+
+  it('an existing create job -> duplicate (says NOTHING about its state: the caller must read it)', async () => {
+    const { client } = fakeClient({ asanaEnabled: true, insertError: { code: '23505', message: 'duplicate' } })
+    expect(await maybeEnqueueFlagEvents(client, input)).toEqual({ create: 'duplicate' })
+  })
+
   it('enqueues nothing when Asana is disabled', async () => {
     const { client, sink } = fakeClient({ asanaEnabled: false })
-    await maybeEnqueueFlagEvents(client, input)
+    expect(await maybeEnqueueFlagEvents(client, input)).toEqual({ create: 'disabled' })
     expect(sink.inserts).toHaveLength(0)
   })
 })

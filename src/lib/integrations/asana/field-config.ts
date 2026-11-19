@@ -15,9 +15,12 @@
  *   - Configuration is per project. BETA and live are configured separately;
  *     a BETA GID is never assumed to equal a live GID (most live fields are
  *     project-local and cannot be attached to BETA as-is).
- *   - Only DETERMINISTIC, app-owned fields are declared. Severity, Severity
- *     Status, Replacement Required (a routing trigger), Month (ambiguous),
- *     costs and recovery are deliberately ABSENT — they are manager triage.
+ *   - Only DETERMINISTIC, app-owned fields are declared. Severity Status,
+ *     Month (ambiguous), costs and recovery are deliberately ABSENT — they
+ *     are manager triage. Replacement Required (a routing trigger), Severity
+ *     and Fix Owner are declared (Nov 2026) but are ONLY ever sent when the
+ *     reporter explicitly chose them in "Report issue" (field-issue-mapping);
+ *     the automatic flag mapping never produces them.
  *   - The write target remains the hard-pinned BETA project. The live
  *     configuration is a reference for validation only and can never be
  *     selected for a write (configForWrite asserts the project allowlist).
@@ -40,11 +43,42 @@ export type IncidentFieldKey =
   | 'linenIncidentType'
   | 'evidenceReceived'
   | 'accountableParty'
+  // Nov 2026 "Report issue" selections (explicit reporter choices only).
+  | 'hoaIncidentType'
+  | 'replacementRequired'
+  | 'severity'
+  | 'fixOwner'
 
 /** Semantic option keys the app may ever select, per enum field. */
-export type CategoryOption = 'inventory' | 'maintenance' | 'linen'
-export type InventoryIncidentOption = 'missing_item' | 'physical_damage'
-export type LinenIncidentOption = 'missing' | 'stain' | 'torn_irreparable'
+export type CategoryOption =
+  | 'inventory'
+  | 'maintenance'
+  | 'linen'
+  | 'hoa'
+  | 'amenity'
+  | 'permanent_fixtures'
+export type InventoryIncidentOption =
+  | 'missing_item'
+  | 'physical_damage'
+  | 'appliance_failure'
+  | 'stain_to_furniture'
+  | 'lost_keys'
+  | 'lost_remote'
+  | 'old_damage'
+  | 'wear_and_tear'
+  | 'irrecoverable'
+  | 'other'
+export type LinenIncidentOption = 'missing' | 'stain' | 'torn_irreparable' | 'wear_and_tear' | 'other'
+export type HoaIncidentOption =
+  | 'noise_complaint'
+  | 'facilities'
+  | 'warning_1'
+  | 'warning_2'
+  | 'warning_3_fine'
+/** "What needs to happen?" → Replacement Required (routing trigger). */
+export type ReplacementRequiredOption = 'fix' | 'clean' | 'replace' | 'na' | 'record_keeping'
+export type SeverityOption = 'minor' | 'moderate' | 'major' | 'write_off'
+export type FixOwnerOption = 'maintenance' | 'housekeeping' | 'vendor' | 'drop_inn'
 export type EvidenceOption = 'yes'
 /**
  * Configured for FUTURE use only. The current mapping never emits Accountable
@@ -66,6 +100,10 @@ export const EXPECTED_FIELD_TYPES: Readonly<Record<IncidentFieldKey, AsanaFieldT
   linenIncidentType: 'enum',
   evidenceReceived: 'enum',
   accountableParty: 'multi_enum',
+  hoaIncidentType: 'multi_enum',
+  replacementRequired: 'multi_enum',
+  severity: 'enum',
+  fixOwner: 'enum',
 }
 
 export type FieldSpec = {
@@ -148,9 +186,12 @@ export const BETA_FIELD_CONFIG: ProjectFieldConfig = {
 
 /** Live "Incidents & Damages Reporting" — REFERENCE ONLY, never a write target. */
 export const LIVE_INCIDENTS_PROJECT_GID = '1211426202387126'
+/** Live intake section "New (Intake" (verified read-only 19 Nov 2026). Reference only. */
+export const LIVE_INCIDENTS_INTAKE_SECTION_GID = '1211426202387127'
 
 /**
- * Live schema captured read-only on 29 Oct 2026. Used to validate the
+ * Live schema captured read-only on 29 Oct 2026; Report-issue fields and
+ * options re-verified read-only on 19 Nov 2026. Used to validate the
  * mapping design against the real project; configForWrite() refuses it.
  */
 export const LIVE_INCIDENTS_FIELD_REFERENCE: ProjectFieldConfig = {
@@ -166,6 +207,9 @@ export const LIVE_INCIDENTS_FIELD_REFERENCE: ProjectFieldConfig = {
         inventory: '1211490712226253', // "Inventory"
         maintenance: '1219255393409321', // "Maintenance " (trailing space in Asana)
         linen: '1211490712226252', // "Linen"
+        hoa: '1211554777729559', // "HOA"
+        amenity: '1212912013664286', // "Amenity"
+        permanent_fixtures: '1213885141063282', // "Permanent Fixtures"
       },
     },
     inventoryIncidentType: {
@@ -174,6 +218,14 @@ export const LIVE_INCIDENTS_FIELD_REFERENCE: ProjectFieldConfig = {
       options: {
         missing_item: '1211490712226263', // "Missing Item"
         physical_damage: '1211490712226262', // "Physical Damage"
+        appliance_failure: '1211490712226264', // "Appliance failure"
+        stain_to_furniture: '1211490712226265', // "Stain to furniture"
+        other: '1211490712226266', // "Other"
+        lost_keys: '1211572538971567', // "Lost Keys"
+        lost_remote: '1211572538971568', // "Lost Remote"
+        old_damage: '1211845256811346', // "Old Damage"
+        wear_and_tear: '1211845256811347', // "Wear & Tear"
+        irrecoverable: '1213006046000158', // "Irrecoverable"
       },
     },
     linenIncidentType: {
@@ -183,6 +235,50 @@ export const LIVE_INCIDENTS_FIELD_REFERENCE: ProjectFieldConfig = {
         missing: '1211490712226258', // "Missing"
         stain: '1211490712226256', // "Stain"
         torn_irreparable: '1211490712226257', // "Torn/Irreparable"
+        other: '1211490712226259', // "Other"
+        wear_and_tear: '1213006046000157', // "WEAR & TEAR"
+      },
+    },
+    hoaIncidentType: {
+      gid: '1211554777729562', // "HOA Incident Type"
+      type: 'multi_enum',
+      options: {
+        noise_complaint: '1211554777729563', // "Noise Complaint"
+        facilities: '1211554777729564', // "Facilities"
+        warning_1: '1213006046000159', // "Warning 1"
+        warning_2: '1213006046000160', // "Warning 2"
+        warning_3_fine: '1213006046000161', // "Warning 3 - Fine"
+      },
+    },
+    replacementRequired: {
+      gid: '1214079196883375', // "Replacement Required" — drives the live routing rules
+      type: 'multi_enum',
+      options: {
+        fix: '1219681415359283', // "Fix"     → also added to Maintenance Control
+        replace: '1219681415359284', // "Replace" → also added to STR Operations - Movement log
+        clean: '1219681415359285', // "Clean"   → also added to DropInn Cleaning Control
+        na: '1219681415359286', // "N/A"
+        record_keeping: '1219931708456277', // "Record Keeping"
+      },
+    },
+    severity: {
+      gid: '1211426204541396', // "Severity"
+      type: 'enum',
+      options: {
+        minor: '1211426204541397', // "Minor"
+        moderate: '1211426204541398', // "Moderate"
+        major: '1211426204541399', // "Major"
+        write_off: '1211760099838569', // "Write Off"
+      },
+    },
+    fixOwner: {
+      gid: '1211426204541419', // "Fix Owner"
+      type: 'enum',
+      options: {
+        maintenance: '1211426204541420', // "Maintenance"
+        housekeeping: '1211426204541421', // "Housekeeping"
+        vendor: '1211426204541422', // "Vendor"
+        drop_inn: '1212001243165621', // "Drop-Inn"
       },
     },
     evidenceReceived: {

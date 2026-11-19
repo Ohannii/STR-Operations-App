@@ -46,11 +46,21 @@ function makeDb(opts: { outbox: Row }) {
   /** The flag's write-back target (company 'co'). */
   const flag: Row = { id: FLAG, company_id: 'co', asana_task_url: null }
   /** Custom-field facts: the flag's category key and its photo rows. */
-  const fixtures: { categoryKey: string | null; photos: Row[]; photosError: boolean; photoSelects: string[] } = {
+  const fixtures: {
+    categoryKey: string | null
+    photos: Row[]
+    photosError: boolean
+    photoSelects: string[]
+    /** Report-issue selections row: absent (null), a row, a read error, or the table missing. */
+    issueSelections: Row | null | 'error' | 'missing_table'
+    issueSelectionFilters: Filter[][]
+  } = {
     categoryKey: 'inventory_missing',
     photos: [],
     photosError: false,
     photoSelects: [],
+    issueSelections: null,
+    issueSelectionFilters: [],
   }
   const outboxUpdates: Array<{ patch: Row; filters: Filter[]; matched: boolean }> = []
   const hooks: {
@@ -181,6 +191,13 @@ function makeDb(opts: { outbox: Row }) {
             raised_by: 'user-1',
           },
         }
+      }
+      if (table === 'flag_issue_selections') {
+        fixtures.issueSelectionFilters.push([...filters])
+        const sel = fixtures.issueSelections
+        if (sel === 'error') return { data: null, error: { code: 'XX000', message: 'down' } }
+        if (sel === 'missing_table') return { data: null, error: { code: '42P01', message: 'relation does not exist' } }
+        return { data: sel && matches({ flag_id: FLAG, company_id: 'co' }, filters) ? sel : null }
       }
       if (table === 'properties') return { data: { name: 'Unit 50' } }
       if (table === 'flag_categories') return { data: { key: fixtures.categoryKey, display_label: 'Item missing' } }
@@ -1294,5 +1311,76 @@ describe('warning privacy', () => {
       expect(out).not.toContain(leak)
     }
     warn.mockRestore()
+  })
+})
+
+describe('Report issue (pack photo): the reporter\'s saved selections drive the fields', () => {
+  const sel = (over: Row = {}): Row => ({
+    category: null, incident_type: null, actions: [], severity: null, fix_owner: null, ...over,
+  })
+  const issueSetup = (selections: Row | null | 'error' | 'missing_table', appCategory = 'condition_note') => {
+    const h = fieldsSetup(appCategory)
+    h.db.fixtures.issueSelections = selections
+    return h
+  }
+
+  it('selections row -> its Category + incident type (NOT the app issue type mapping)', async () => {
+    const h = issueSetup(sel({ category: 'linen', incident_type: 'stain' }), 'inventory_missing')
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    expect(posts(h.asana)).toBe(1)
+    expect(sent(h).customFields).toEqual({ [F.category]: '1220057630679852', [F.linenType]: '1220057561518789', [F.evidence]: O.yes })
+    // read scoped to THIS flag and company
+    expect(h.db.fixtures.issueSelectionFilters[0]).toEqual(
+      expect.arrayContaining([
+        { op: 'eq', col: 'flag_id', val: FLAG },
+        { op: 'eq', col: 'company_id', val: 'co' },
+      ]),
+    )
+  })
+
+  it('BETA today: actions / severity / fix owner are omitted safely (fields not in BETA yet); task still created once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = issueSetup(sel({ category: 'inventory', incident_type: 'missing_item', actions: ['fix', 'replace'], severity: 'major', fix_owner: 'vendor' }))
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    expect(posts(h.asana)).toBe(1)
+    expect(sent(h).customFields).toEqual({ [F.category]: O.inventory, [F.inventoryType]: O.missing, [F.evidence]: O.yes })
+    const out = warn.mock.calls.map((c) => c.map(String).join(' ')).join('\n')
+    for (const f of ['replacementRequired', 'severity', 'fixOwner']) expect(out).toContain(f)
+    warn.mockRestore()
+  })
+
+  it('an option BETA lacks (HOA) -> Category omitted with a warning; Evidence still sent', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = issueSetup(sel({ category: 'hoa', incident_type: 'noise_complaint' }))
+    await h.run()
+    expect(sent(h).customFields).toEqual({ [F.evidence]: O.yes })
+  })
+
+  it('no selections row -> the existing app issue-type mapping (normal flags unchanged)', async () => {
+    const h = issueSetup(null, 'inventory_damaged')
+    await h.run()
+    expect(sent(h).customFields).toEqual({ [F.category]: O.inventory, [F.inventoryType]: O.damage, [F.evidence]: O.yes })
+  })
+
+  it('table not there yet (migration pending) -> treated as no row (existing mapping)', async () => {
+    const h = issueSetup('missing_table', 'maintenance_issue')
+    await h.run()
+    expect(sent(h).customFields).toEqual({ [F.category]: O.maintenance, [F.evidence]: O.yes })
+  })
+
+  it('read ERROR -> nothing guessed: Evidence only, never the app mapping; task still created once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = issueSetup('error', 'inventory_missing')
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    expect(posts(h.asana)).toBe(1)
+    expect(sent(h).customFields).toEqual({ [F.evidence]: O.yes })
+    expect(warn.mock.calls.map((c) => c.map(String).join(' ')).join('\n')).toContain('source_unavailable')
+    warn.mockRestore()
+  })
+
+  it('a stored value the app no longer knows -> no selections are guessed (Evidence only)', async () => {
+    const h = issueSetup(sel({ category: 'inventory', incident_type: 'stain' })) // stain is a LINEN type
+    await h.run()
+    expect(sent(h).customFields).toEqual({ [F.evidence]: O.yes })
   })
 })

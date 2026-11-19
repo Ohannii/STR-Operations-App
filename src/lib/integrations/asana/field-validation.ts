@@ -36,10 +36,14 @@ import {
   type AsanaFieldType,
   type CategoryOption,
   type EvidenceOption,
+  type FixOwnerOption,
+  type HoaIncidentOption,
   type IncidentFieldKey,
   type InventoryIncidentOption,
   type LinenIncidentOption,
   type ProjectFieldConfig,
+  type ReplacementRequiredOption,
+  type SeverityOption,
   type WritableFieldConfig,
 } from '@/lib/integrations/asana/field-config'
 
@@ -332,6 +336,11 @@ export type DesiredFieldValues = {
   linenIncidentType?: LinenIncidentOption
   evidenceReceived?: EvidenceOption
   accountableParty?: AccountableOption[]
+  /** Report-issue selections (explicit reporter choices only). */
+  hoaIncidentType?: HoaIncidentOption
+  replacementRequired?: ReplacementRequiredOption[]
+  severity?: SeverityOption
+  fixOwner?: FixOwnerOption
 }
 
 /** Asana create-task `custom_fields` values. */
@@ -459,8 +468,58 @@ export function resolveCustomFields(
     enumOption(field, key)
   }
 
+  // HOA incident type (a multi_enum in Asana; one choice from the app):
+  // emitted only together with Category = HOA, like the other subtypes.
+  if (desired.hoaIncidentType !== undefined) {
+    if (emittedCategory !== 'hoa') {
+      warnings.push({
+        code: 'dependency_unmet',
+        field: 'hoaIncidentType',
+        detail: 'hoaIncidentType requires Category = hoa to be emitted; omitted.',
+      })
+    } else {
+      const u = usable('hoaIncidentType')
+      if (u) {
+        const gid = u.options[desired.hoaIncidentType]
+        if (!gid) {
+          warnings.push({
+            code: 'unmapped_value',
+            field: 'hoaIncidentType',
+            detail: 'No usable option is configured for the requested hoaIncidentType value.',
+          })
+        } else {
+          customFields[u.gid] = [gid]
+        }
+      }
+    }
+  }
+
   // Evidence Received: independent of everything else.
   enumOption('evidenceReceived', desired.evidenceReceived)
+
+  // Severity / Fix Owner: optional triage hints, independent.
+  enumOption('severity', desired.severity)
+  enumOption('fixOwner', desired.fixOwner)
+
+  // "What needs to happen?" (Replacement Required): ALL selections must map,
+  // or the field is omitted — it drives the routing rules, and a partial
+  // set would route the task incompletely.
+  if (desired.replacementRequired !== undefined && desired.replacementRequired.length > 0) {
+    const u = usable('replacementRequired')
+    if (u) {
+      const keys = [...new Set(desired.replacementRequired)]
+      const gids = keys.map((k) => u.options[k])
+      if (gids.some((g) => !g)) {
+        warnings.push({
+          code: 'unmapped_value',
+          field: 'replacementRequired',
+          detail: 'At least one action has no usable option; the field is omitted.',
+        })
+      } else {
+        customFields[u.gid] = gids as string[]
+      }
+    }
+  }
 
   // Accountable Party: ALL selections must map, or the field is omitted
   // entirely — a partial "who pays" would be worse than none.

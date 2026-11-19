@@ -59,15 +59,51 @@ const LIVE_FIELDS: Field[] = [
     { gid: '1211490712226252', name: 'Linen', enabled: true },
     { gid: '1211490712226253', name: 'Inventory', enabled: true },
     { gid: '1219255393409321', name: 'Maintenance ', enabled: true },
+    { gid: '1211554777729559', name: 'HOA', enabled: true },
+    { gid: '1212912013664286', name: 'Amenity', enabled: true },
+    { gid: '1213885141063282', name: 'Permanent Fixtures', enabled: true },
   ] },
   { gid: '1211490712226261', name: 'INVENTORY Incident type', resource_subtype: 'enum', enum_options: [
     { gid: '1211490712226262', name: 'Physical Damage', enabled: true },
     { gid: '1211490712226263', name: 'Missing Item', enabled: true },
+    { gid: '1211490712226264', name: 'Appliance failure', enabled: true },
+    { gid: '1211490712226265', name: 'Stain to furniture', enabled: true },
+    { gid: '1211490712226266', name: 'Other', enabled: true },
+    { gid: '1211572538971567', name: 'Lost Keys', enabled: true },
+    { gid: '1211572538971568', name: 'Lost Remote', enabled: true },
+    { gid: '1211845256811346', name: 'Old Damage', enabled: true },
+    { gid: '1211845256811347', name: 'Wear & Tear', enabled: true },
+    { gid: '1213006046000158', name: 'Irrecoverable', enabled: true },
   ] },
   { gid: '1211490712226255', name: 'Linen Incident type', resource_subtype: 'enum', enum_options: [
     { gid: '1211490712226256', name: 'Stain', enabled: true },
     { gid: '1211490712226257', name: 'Torn/Irreparable', enabled: true },
     { gid: '1211490712226258', name: 'Missing', enabled: true },
+    { gid: '1211490712226259', name: 'Other', enabled: true },
+    { gid: '1213006046000157', name: 'WEAR & TEAR', enabled: true },
+  ] },
+  { gid: '1211554777729562', name: 'HOA Incident Type', resource_subtype: 'multi_enum', enum_options: [
+    { gid: '1211554777729563', name: 'Noise Complaint', enabled: true },
+    { gid: '1211554777729564', name: 'Facilities', enabled: true },
+    { gid: '1213006046000159', name: 'Warning 1', enabled: true },
+    { gid: '1213006046000160', name: 'Warning 2', enabled: true },
+    { gid: '1213006046000161', name: 'Warning 3 - Fine', enabled: true },
+  ] },
+  { gid: '1214079196883375', name: 'Replacement Required', resource_subtype: 'multi_enum', enum_options: [
+    { gid: '1214079196883376', name: 'Yes', enabled: false },
+    { gid: '1219681415359283', name: 'Fix', enabled: true },
+    { gid: '1214079196883377', name: 'No', enabled: false },
+    { gid: '1219681415359284', name: 'Replace', enabled: true },
+    { gid: '1219681415359285', name: 'Clean', enabled: true },
+    { gid: '1219681415359286', name: 'N/A', enabled: true },
+    { gid: '1219931708456277', name: 'Record Keeping', enabled: true },
+  ] },
+  { gid: '1211426204541419', name: 'Fix Owner', resource_subtype: 'enum', enum_options: [
+    { gid: '1211426204541420', name: 'Maintenance', enabled: true },
+    { gid: '1211426204541421', name: 'Housekeeping', enabled: true },
+    { gid: '1211426204541422', name: 'Vendor', enabled: true },
+    { gid: '1212001243165621', name: 'Drop-Inn', enabled: true },
+    { gid: '1213006046000162', name: 'Investor Recovery', enabled: false },
   ] },
   { gid: '1211426871181279', name: 'Evidence Received', resource_subtype: 'enum', enum_options: [
     { gid: '1211426871181280', name: 'Yes', enabled: true },
@@ -79,9 +115,16 @@ const LIVE_FIELDS: Field[] = [
     { gid: '1213006046000163', name: 'Investor', enabled: true },
     { gid: '1211505775360954', name: 'Undetermined', enabled: true },
   ] },
-  // On the live project but deliberately NOT configured (manager triage).
+  // Configured since Nov 2026 (only ever sent when the reporter chose it).
   { gid: '1211426204541396', name: 'Severity', resource_subtype: 'enum', enum_options: [
     { gid: '1211426204541397', name: 'Minor', enabled: true },
+    { gid: '1211426204541398', name: 'Moderate', enabled: true },
+    { gid: '1211426204541399', name: 'Major', enabled: true },
+    { gid: '1211760099838569', name: 'Write Off', enabled: true },
+  ] },
+  // On the live project but deliberately NOT configured (manager triage).
+  { gid: '1211899401497849', name: 'Severity Status', resource_subtype: 'multi_enum', enum_options: [
+    { gid: '1211899401497850', name: 'Minor - Salvageable', enabled: true },
   ] },
 ]
 
@@ -131,11 +174,9 @@ describe('field configuration', () => {
     expect(configTypeErrors(LIVE_INCIDENTS_FIELD_REFERENCE)).toEqual([])
   })
 
-  it('triage-owned fields are NOT configured anywhere (Severity, Severity Status, Replacement Required, Month, costs)', () => {
+  it('triage-owned fields are NOT configured anywhere (Severity Status, Month, costs)', () => {
     const triageGids = [
-      '1211426204541396', // Severity
       '1211899401497849', // Severity Status
-      '1214079196883375', // Replacement Required
       '1219298110836965', // Month
       '1211426204541403', // Actual Cost INCL VAT
       '1211426204541401', // Guest Cost Recovered
@@ -147,9 +188,31 @@ describe('field configuration', () => {
       for (const g of triageGids) expect(gids).not.toContain(g)
     }
     expect(Object.keys(EXPECTED_FIELD_TYPES).sort()).toEqual([
-      'accountableParty', 'category', 'evidenceReceived', 'inventoryIncidentType',
-      'linenIncidentType', 'unit', 'unitNumber',
+      'accountableParty', 'category', 'evidenceReceived', 'fixOwner', 'hoaIncidentType',
+      'inventoryIncidentType', 'linenIncidentType', 'replacementRequired', 'severity', 'unit', 'unitNumber',
     ])
+  })
+
+  it('(Nov 2026) Report-issue fields are in the LIVE reference by verified GID, and NOT in BETA until mirrored', () => {
+    const live = LIVE_INCIDENTS_FIELD_REFERENCE.fields
+    expect(live.replacementRequired).toEqual({
+      gid: '1214079196883375',
+      type: 'multi_enum',
+      options: {
+        fix: '1219681415359283', replace: '1219681415359284', clean: '1219681415359285',
+        na: '1219681415359286', record_keeping: '1219931708456277',
+      },
+    })
+    // Disabled legacy "Yes"/"No" are never mapped.
+    expect(Object.values(live.replacementRequired?.options ?? {})).not.toContain('1214079196883376')
+    expect(Object.values(live.replacementRequired?.options ?? {})).not.toContain('1214079196883377')
+    expect(live.severity?.gid).toBe('1211426204541396')
+    expect(live.fixOwner?.gid).toBe('1211426204541419')
+    expect(Object.values(live.fixOwner?.options ?? {})).not.toContain('1213006046000162') // disabled Investor Recovery
+    expect(live.hoaIncidentType?.gid).toBe('1211554777729562')
+    for (const k of ['replacementRequired', 'severity', 'fixOwner', 'hoaIncidentType'] as const) {
+      expect(BETA_FIELD_CONFIG.fields[k]).toBeUndefined()
+    }
   })
 
   it('(2B-1) BETA config holds EXACTLY the verified field and option GIDs (2 Nov 2026)', () => {
@@ -398,7 +461,8 @@ describe('validateFieldConfig — read-only schema check by GID', () => {
       (f: Record<string, unknown>) => delete f.gid,
     ]) {
       const m = liveMetadata()
-      mutate(m.custom_field_settings[7].custom_field as unknown as Record<string, unknown>) // Severity: not configured
+      const unconfigured = m.custom_field_settings.find((x) => x.custom_field.gid === '1211899401497849')!
+      mutate(unconfigured.custom_field as unknown as Record<string, unknown>) // Severity Status: not configured
       const v = validateFieldConfig(LIVE_INCIDENTS_FIELD_REFERENCE, m)
       expect(v.issues).toEqual([])
       expect(v.ok).toBe(true)
@@ -458,7 +522,13 @@ describe('validateFieldConfig — read-only schema check by GID', () => {
   it('DISABLED / MISSING OPTIONS withdraw only that option', () => {
     const v = validateFieldConfig(LIVE_INCIDENTS_FIELD_REFERENCE, liveMetadata({ disable: ['1211490712226252'] }))
     expect(v.issues).toContainEqual(expect.objectContaining({ code: 'option_disabled', field: 'category', option: 'linen' }))
-    expect(v.usable.category?.options).toEqual({ inventory: '1211490712226253', maintenance: '1219255393409321' })
+    expect(v.usable.category?.options).toEqual({
+      inventory: '1211490712226253',
+      maintenance: '1219255393409321',
+      hoa: '1211554777729559',
+      amenity: '1212912013664286',
+      permanent_fixtures: '1213885141063282',
+    })
     const meta = liveMetadata()
     const ev = meta.custom_field_settings.find((s) => s.custom_field.gid === '1211426871181279')!
     ev.custom_field.enum_options = ev.custom_field.enum_options!.filter((o) => o.gid !== '1211426871181280')

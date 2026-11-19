@@ -62,6 +62,12 @@ import { assertAllowedProject } from '@/lib/integrations/asana/config'
 import { mapFlagToTaskPayload } from '@/lib/integrations/asana/mapping'
 import { hasCustomFields, taskUrlForGid } from '@/lib/integrations/asana/client'
 import { desiredFieldValuesForFlag } from '@/lib/integrations/asana/field-mapping'
+import { desiredFieldValuesForIssue } from '@/lib/integrations/asana/field-issue-mapping'
+import {
+  EMPTY_SELECTIONS,
+  selectionsFromRow,
+  type IssueSelections,
+} from '@/lib/issues/issue-selections'
 import {
   logFieldWarnings,
   resolveCustomFields,
@@ -376,6 +382,45 @@ async function hasDurableEvidence(
  * blocks the create: any failure means no custom fields. Warnings carry
  * codes, field keys and GIDs only (logFieldWarnings).
  */
+/**
+ * The reporter's "Report issue" selections for this flag (fresh DB read):
+ *   - IssueSelections → the issue was reported from a pack photo;
+ *   - 'none'          → an ordinary flag (no row, or the table is not
+ *                       deployed yet) → the existing category mapping;
+ *   - null            → the read FAILED → we cannot know what was chosen,
+ *                       so only Evidence Received is sent (never a guess).
+ */
+async function loadIssueSelections(
+  supabase: SupabaseClient,
+  companyId: string,
+  flagId: string,
+): Promise<IssueSelections | 'none' | null> {
+  try {
+    const { data, error } = await supabase
+      .from('flag_issue_selections')
+      .select('category, incident_type, actions, severity, fix_owner')
+      .eq('flag_id', flagId)
+      .eq('company_id', companyId)
+      .maybeSingle()
+    if (error) {
+      const code = (error as { code?: string }).code
+      return code === '42P01' || code === 'PGRST205' ? 'none' : null
+    }
+    if (!data) return 'none'
+    return selectionsFromRow(
+      data as {
+        category: string | null
+        incident_type: string | null
+        actions: string[] | null
+        severity: string | null
+        fix_owner: string | null
+      },
+    )
+  } catch {
+    return null
+  }
+}
+
 async function customFieldsForCreate(
   supabase: SupabaseClient,
   load: () => Promise<WritableFieldValidation>,
@@ -386,7 +431,18 @@ async function customFieldsForCreate(
   try {
     const validation = await load()
     const durableEvidence = await hasDurableEvidence(supabase, companyId, flagId)
-    const mapped = desiredFieldValuesForFlag({ categoryKey, durableEvidence })
+    const selections = await loadIssueSelections(supabase, companyId, flagId)
+    const mapped =
+      selections === 'none'
+        ? desiredFieldValuesForFlag({ categoryKey, durableEvidence })
+        : desiredFieldValuesForIssue(selections ?? EMPTY_SELECTIONS, durableEvidence)
+    if (selections === null) {
+      mapped.warnings.push({
+        code: 'source_unavailable',
+        field: 'category',
+        detail: 'Issue selections could not be read; only Evidence Received is sent.',
+      })
+    }
     const resolved = resolveCustomFields(mapped.desired, validation)
     logFieldWarnings(
       { flagId, projectGid: validation.projectGid },
