@@ -27,6 +27,8 @@ import { UnresolvedIntentsPanel } from '@/components/photos/unresolved-intents-p
 import { GalleryUploader } from '@/components/photos/gallery-uploader'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
+import { canManageProperties } from '@/lib/properties/property-management'
+import { buttonClasses } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { StaticChip, ToggleChip } from '@/components/ui/chip'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -109,6 +111,7 @@ export default async function PropertyPage({
 }: {
   params: Promise<{ id: string }>
   searchParams: Promise<{
+    property_updated?: string
     raised?: string
     open?: string
     error?: string
@@ -125,6 +128,7 @@ export default async function PropertyPage({
 
   const { id } = await params
   const {
+    property_updated,
     raised,
     open,
     error,
@@ -437,6 +441,7 @@ export default async function PropertyPage({
 
       <InsecureContextBanner />
 
+      {property_updated ? <div className="mb-5"><Alert tone="success">Property details saved.</Alert></div> : null}
       {raised ? (
         <div className="mb-5">
           <Alert tone="success">Issue reported. It&rsquo;s in the list below.</Alert>
@@ -498,9 +503,12 @@ export default async function PropertyPage({
                 ) : null}
               </div>
             </div>
-            <Badge tone={status.tone} className="!text-xs !px-2.5 !py-1">
-              {status.label}
-            </Badge>
+            <div className="flex flex-wrap items-center gap-3">
+              {canManageProperties(ctx.membership?.role_key) ? (
+                <Link href={`/properties/${id}/edit`} className={buttonClasses('secondary', 'sm')}>Edit property</Link>
+              ) : null}
+              <Badge tone={status.tone} className="!text-xs !px-2.5 !py-1">{status.label}</Badge>
+            </div>
           </div>
 
           {/* Session 8 follow-up: pack-aware pre-arrival surface.
