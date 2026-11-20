@@ -4,6 +4,7 @@ import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { getUserContext } from '@/lib/auth/get-user-context'
+import { createClient } from '@/lib/supabase/server'
 import { createCompanyAction } from './actions'
 
 /**
@@ -24,13 +25,29 @@ export default async function OnboardPage({
   if (!ctx) redirect('/login')
   if (ctx.company) redirect('/dashboard')
 
-  // SECURITY (rev 3 - fail-open fix): /onboard must NOT claim a pending
-  // invitation. Claiming here activated membership from a mere authenticated
-  // session, BEFORE the invited user completed password + profile setup. Invite
-  // acceptance now happens ONLY in the set-password action, after setup
-  // succeeds. A pending invitee who lands here cannot create a company either
-  // (create_company_with_admin raises invitation_pending) and is routed on to
-  // /invite/set-password by the action.
+  // A normal sign-in/reset can land an invitee here without the invite URL.
+  // Route them back to setup BEFORE showing a company form. This read-only
+  // check grants no membership; activation remains in the setup action.
+  const supabase = await createClient()
+  const { data: invitation, error: invitationError } = await supabase.rpc('get_my_invitation_setup_status')
+  if (!invitationError && invitation === 'pending') redirect('/invite/set-password')
+  if (invitationError || invitation !== 'none') {
+    const message = invitationError || !['expired', 'revoked', 'accepted'].includes(invitation)
+      ? 'We could not check your team invitation. Please refresh this page and try again.'
+      : invitation === 'expired'
+        ? 'Your team invitation has expired. Ask your company admin to renew it.'
+        : invitation === 'revoked'
+          ? 'Your team invitation is no longer active. Please contact your company admin.'
+          : 'Your team access is not active. Please contact your company admin.'
+    return (
+      <AuthShell title="Join your team" subtitle="Finish joining your existing team to continue.">
+        <Alert tone="error">{message}</Alert>
+        <form action="/auth/signout" method="post" className="mt-5">
+          <Button type="submit" variant="secondary" fullWidth>Sign out</Button>
+        </form>
+      </AuthShell>
+    )
+  }
   const { error } = await searchParams
   const hasError = error !== undefined
   const displayName = ctx.profile?.full_name ?? ctx.user.email ?? 'there'
@@ -72,14 +89,6 @@ export default async function OnboardPage({
         </Button>
       </form>
 
-      <div className="mt-6 pt-5 border-t border-slate-200">
-        <p className="text-xs text-slate-500 leading-relaxed">
-          You&rsquo;ll be the company admin. The South African default approval
-          policy ships pre-configured (R1,000 single inventory &middot; R2,000
-          single maintenance &middot; R2,000 monthly owner charges &middot;
-          R60,000 annual). You can edit it any time.
-        </p>
-      </div>
     </AuthShell>
   )
 }
