@@ -354,15 +354,16 @@ describe('source contracts — read-only, by GID, wired ONLY through the writabl
     // route may build is the live destination's, through configForWrite
     // (which refuses it unless the switch is on), and only AFTER the route
     // itself has checked the switch. The scheduled GET never mentions it.
-    expect(route.match(/configForWrite\(/g)).toHaveLength(2)
+    expect(route.match(/configForWrite\(/g)).toHaveLength(3)
     expect(route).toContain('configForWrite(ASANA_DESTINATIONS.live_incidents.projectGid)')
-    expect(route.indexOf('if (!liveIncidentsTestEnabled())')).toBeGreaterThan(-1)
-    expect(route.indexOf('if (!liveIncidentsTestEnabled())')).toBeLessThan(
-      route.indexOf('configForWrite(ASANA_DESTINATIONS.live_incidents.projectGid)'),
-    )
     const cronHandler = route.slice(route.indexOf('export async function GET'), route.indexOf('export async function POST'))
-    expect(cronHandler.length).toBeGreaterThan(200)
-    expect(cronHandler).not.toMatch(/live_incidents|destination|target/)
+    const liveCron = cronHandler.slice(cronHandler.indexOf('if (liveIncidentsRolloutEnabled())'))
+    expect(liveCron).toContain('configForWrite(ASANA_DESTINATIONS.live_incidents.projectGid)')
+    const post = route.slice(route.indexOf('export async function POST'))
+    expect(post.indexOf('if (!liveIncidentsEnabled())')).toBeGreaterThan(-1)
+    expect(post.indexOf('if (!liveIncidentsEnabled())')).toBeLessThan(
+      post.indexOf('configForWrite(ASANA_DESTINATIONS.live_incidents.projectGid)'),
+    )
     // The client sends custom_fields only behind the non-empty guard; no update endpoint.
     const client = code(read('src/lib/integrations/asana/client.ts'))
     expect(client.match(/custom_fields:/g)).toHaveLength(1)

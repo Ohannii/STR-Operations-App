@@ -1,13 +1,12 @@
 /**
- * CONTROLLED LIVE TEST gate — THE eligibility rule for a live-destination
+ * Live destination gate — THE eligibility rule for a live-destination
  * job, shared by task creation AND attachments (one rule, two callers).
  *
  * Re-checked from the DATABASE on every run; nothing in the outbox payload
  * is trusted for it:
  *   - the job's own record agrees with its event type (the pin);
- *   - the flag exists in the job's company, and company + property are the
- *     test scope (Test 1);
- *   - the flag is a pack-photo issue (saved selections with a source photo);
+ *   - the flag and its active property belong to the rollout company;
+ *   - without staff rollout, Test 1 and pack-photo selections are required;
  *   - the flag has no CREATE job for the other destination.
  *
  * Returns null when the job may proceed; otherwise a stable, value-free
@@ -16,7 +15,9 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { liveIncidentsRolloutEnabled } from '@/lib/integrations/asana/config'
 import {
+  LIVE_TEST_SCOPE,
   isInLiveTestScope,
   otherDestination,
   payloadPinMatches,
@@ -55,21 +56,38 @@ export async function liveTestRefusal(
     if (
       !f ||
       f.company_id !== job.companyId ||
-      !isInLiveTestScope({ companyId: f.company_id, propertyId: f.property_id })
+      f.company_id !== LIVE_TEST_SCOPE.companyId ||
+      (!liveIncidentsRolloutEnabled() && !isInLiveTestScope({ companyId: f.company_id, propertyId: f.property_id }))
     ) {
       return { code: LIVE_TEST_CODES.outOfScope, permanent: true }
     }
 
-    const { data: sel, error: selErr } = await supabase
-      .from('flag_issue_selections')
-      .select('flag_id, source_pack_photo_id')
-      .eq('flag_id', job.flagId)
-      .eq('company_id', job.companyId)
-      .maybeSingle()
-    if (selErr) return retry
-    const source = (sel as { source_pack_photo_id?: unknown } | null)?.source_pack_photo_id
-    if (typeof source !== 'string' || !source) {
-      return { code: LIVE_TEST_CODES.notPackPhotoIssue, permanent: true }
+    if (liveIncidentsRolloutEnabled()) {
+      // Production allows ordinary flags too, but proves property ownership
+      // from authoritative rows rather than trusting the enqueue payload.
+      const { data: property, error } = await supabase
+        .from('properties')
+        .select('id, company_id')
+        .eq('id', f.property_id)
+        .eq('company_id', job.companyId)
+        .is('deleted_at', null)
+        .maybeSingle()
+      if (error) return retry
+      if (!property || property.id !== f.property_id || property.company_id !== job.companyId) {
+        return { code: LIVE_TEST_CODES.outOfScope, permanent: true }
+      }
+    } else {
+      const { data: sel, error: selErr } = await supabase
+        .from('flag_issue_selections')
+        .select('flag_id, source_pack_photo_id')
+        .eq('flag_id', job.flagId)
+        .eq('company_id', job.companyId)
+        .maybeSingle()
+      if (selErr) return retry
+      const source = (sel as { source_pack_photo_id?: unknown } | null)?.source_pack_photo_id
+      if (typeof source !== 'string' || !source) {
+        return { code: LIVE_TEST_CODES.notPackPhotoIssue, permanent: true }
+      }
     }
 
     const { data: other, error: otherErr } = await supabase

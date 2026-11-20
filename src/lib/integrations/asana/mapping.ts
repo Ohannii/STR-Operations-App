@@ -59,6 +59,7 @@ export interface FlagForMapping {
   /** Human label for accountability (caller formats via app helpers). */
   accountabilityLabel: string
   propertyName: string
+  propertyAddress?: string
   propertyId: string
   reporterName: string
   raisedAtIso: string
@@ -125,6 +126,7 @@ export function mapFlagToTaskPayload(flag: FlagForMapping): TaskPayload {
     'Reported in the Drop-Inn STR app.',
     '',
     `Property:        ${flag.propertyName}`,
+    ...(flag.propertyAddress ? [`Address:         ${flag.propertyAddress}`] : []),
     `Category:        ${flag.categoryLabel}`,
     `Severity:        ${severityLabel(flag.severity)}`,
     `Chargeable to:   ${flag.accountabilityLabel}${guestCharge ? '   <- GUEST CHARGE' : ''}`,

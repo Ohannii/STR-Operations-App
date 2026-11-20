@@ -60,7 +60,7 @@ import {
 } from '@/lib/integrations/company-allowlist'
 import {
   assertAllowedProject,
-  liveIncidentsTestEnabled,
+  liveIncidentsEnabled,
 } from '@/lib/integrations/asana/config'
 import {
   ASANA_DESTINATIONS,
@@ -250,7 +250,7 @@ async function buildPayloadForFlag(
   if (!flag) return null
 
   const [{ data: property }, { data: category }, reporterRes] = await Promise.all([
-    supabase.from('properties').select('name').eq('id', flag.property_id).maybeSingle(),
+    supabase.from('properties').select('name, address').eq('id', flag.property_id).maybeSingle(),
     supabase
       .from('flag_categories')
       .select('key, display_label')
@@ -273,6 +273,7 @@ async function buildPayloadForFlag(
     raisedAtIso: String(flag.raised_at ?? ''),
     propertyId: String(flag.property_id),
     propertyName: String(property?.name ?? 'Unknown property'),
+    propertyAddress: typeof property?.address === 'string' ? property.address : undefined,
     categoryKey: String(category?.key ?? ''),
     categoryLabel: String(category?.display_label ?? 'Uncategorised'),
     reporterName: reporter?.full_name ?? null,
@@ -297,7 +298,8 @@ export function applyDestination(mapped: TaskPayload, dest: AsanaDestination): T
   const payload: TaskPayload =
     dest.fixedSectionGid === null
       ? mapped
-      : { ...mapped, projectGid: dest.projectGid, sectionGid: dest.fixedSectionGid }
+      : { ...mapped, projectGid: dest.projectGid, sectionGid: dest.fixedSectionGid,
+          notes: mapped.notes.replace('Auto-created by the STR app (BETA).', 'Auto-created by the STR app.') }
   assertAllowedProject(payload.projectGid)
   if (payload.projectGid !== dest.projectGid) {
     throw new Error('task payload does not target the run destination')
@@ -375,7 +377,7 @@ export async function dryRunNextAsanaOutbox(
   deps: DryRunDeps,
 ): Promise<DryRunResult> {
   const dest = destinationOf(deps)
-  if (dest.key !== 'beta' && !liveIncidentsTestEnabled()) {
+  if (dest.key !== 'beta' && !liveIncidentsEnabled()) {
     // Switch off: the live queue is not even read.
     return { status: 'refused', outboxId: '', reason: LIVE_TEST_CODES.switchedOff }
   }
@@ -743,7 +745,7 @@ export async function runNextAsanaOutbox(
 ): Promise<RealRunResult> {
   const now = deps.now ?? Date.now
   const dest = destinationOf(deps)
-  if (dest.key !== 'beta' && !liveIncidentsTestEnabled()) {
+  if (dest.key !== 'beta' && !liveIncidentsEnabled()) {
     // Switch off: the live queue is not read, nothing is claimed or written.
     return { status: 'refused', outboxId: '', reason: LIVE_TEST_CODES.switchedOff }
   }

@@ -258,13 +258,13 @@ const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8')
 const code = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
 
 describe('source contracts', () => {
-  it('worker route: the live queue is reachable ONLY through the secret-protected POST, behind the switch, for ONE named flag', () => {
+  it('manual live trigger remains secret-protected, switched, and limited to ONE named flag', () => {
     const route = code(read('src/app/api/integrations/asana/worker/route.ts'))
     const post = route.slice(route.indexOf('export async function POST'))
     const order = [
       "isValidTriggerSecret(hdrs.get('x-worker-secret')",
       "if (target === 'live_incidents')",
-      'if (!liveIncidentsTestEnabled())',
+      'if (!liveIncidentsEnabled())',
       'if (!UUID_RE.test(flagId))',
       'onlyFlagId: flagId',
       "createAsanaProvider(asanaToken, 'live_incidents')",
@@ -272,7 +272,7 @@ describe('source contracts', () => {
     expect(order.every((i) => i > -1)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
     // the only other provider in the file is the default (BETA) one
-    expect(route.match(/createAsanaProvider\(/g)).toHaveLength(3)
+    expect(route.match(/createAsanaProvider\(/g)).toHaveLength(4)
     expect(route.match(/createAsanaProvider\(asanaToken\)/g)).toHaveLength(2)
   })
 

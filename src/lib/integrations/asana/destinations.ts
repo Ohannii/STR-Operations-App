@@ -1,40 +1,17 @@
 /**
- * Asana DESTINATIONS — where a flag's task is created (pure; no I/O).
- *
- *   beta            the private BETA test project. Section by category
- *                   group. This is every flag's destination unless the
- *                   controlled live test below applies. UNCHANGED.
- *
- *   live_incidents  CONTROLLED LIVE TEST (Nov 2026): the live "Incidents &
- *                   Damages Reporting" project, ALWAYS section "New (Intake"
- *                   whatever the category — the project's own Asana rules do
- *                   the downstream routing.
- *
- * HOW A JOB'S DESTINATION IS PINNED
- * The destination is the outbox row's EVENT TYPE. It is chosen once, when
- * the job is enqueued (before any create attempt), it is part of the row's
- * identity, and no code path ever rewrites it — so retries, reconciliation
- * and attachments of that job can only ever use the same destination. The
- * payload also records it (`destination`, `destination_project_gid`) and the
- * worker refuses a row whose record disagrees with its event type.
- *
- * WHY SEPARATE EVENT TYPES
- * The scheduled worker (and any older deployment) only ever reads the BETA
- * event types below. A live-destination job has a different event type, so
- * an older worker can never claim it and send it to BETA.
- *
- * A live job is only ever enqueued, and only ever processed, when ALL hold:
- *   - the live test switch is on (ASANA_LIVE_INCIDENTS_TEST === 'true');
- *   - the flag belongs to the test company AND the test property;
- *   - the flag is a pack-photo issue (it has saved issue selections).
- * The worker re-checks every one of these from the database on every run;
- * nothing in the outbox payload is trusted for them.
+ * Destination is pinned by the outbox event type and never rewritten.
+ * ASANA_LIVE_INCIDENTS_ENABLED opts this company's new ordinary and pack-photo
+ * issues into live intake, with automatic processing by the scheduled worker.
+ * The separate preview TEST switch remains limited to Test 1 pack-photo issues
+ * and manual processing. Existing BETA jobs retain their destination.
+ * Every live worker run re-checks the flag/company/property in the database.
  */
 
 import {
   ASANA_LIVE_INCIDENTS_INTAKE_SECTION_GID,
   ASANA_LIVE_INCIDENTS_PROJECT_GID,
   ASANA_TEST_PROJECT_GID,
+  liveIncidentsRolloutEnabled,
   liveIncidentsTestEnabled,
 } from '@/lib/integrations/asana/config'
 import type { OutboxEventType } from '@/lib/integrations/types'
@@ -94,15 +71,17 @@ export function isInLiveTestScope(input: { companyId: unknown; propertyId: unkno
 }
 
 /**
- * Destination for a NEW issue, decided once at enqueue. Live ONLY for a
- * pack-photo issue of the test company + property while the switch is on;
- * BETA for everything else (ordinary flags, other properties, switch off).
+ * Destination for a NEW issue, decided once at enqueue. Staff rollout covers
+ * the pinned company; the preview test remains limited to Test 1 pack issues.
  */
 export function chooseDestinationForNewFlag(input: {
   companyId: string
   propertyId: string
   isPackPhotoIssue: boolean
 }): AsanaDestinationKey {
+  if (liveIncidentsRolloutEnabled() && input.companyId === LIVE_TEST_SCOPE.companyId) {
+    return 'live_incidents'
+  }
   return input.isPackPhotoIssue && liveIncidentsTestEnabled() && isInLiveTestScope(input)
     ? 'live_incidents'
     : 'beta'

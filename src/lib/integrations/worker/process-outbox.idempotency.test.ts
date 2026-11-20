@@ -217,7 +217,7 @@ function makeDb(opts: { outbox: Row }) {
         if (sel === 'missing_table') return { data: null, error: { code: '42P01', message: 'relation does not exist' } }
         return { data: sel && matches({ flag_id: FLAG, company_id: String(outbox.company_id) }, filters) ? sel : null }
       }
-      if (table === 'properties') return { data: { name: 'Unit 50' } }
+      if (table === 'properties') return { data: { id: fixtures.flagPropertyId, company_id: fixtures.flagCompanyId, name: 'Unit 50', address: 'Ballito Village, Test Drive' } }
       if (table === 'flag_categories') return { data: { key: fixtures.categoryKey, display_label: 'Item missing' } }
       if (table === 'profiles') return { data: { full_name: 'Reporter' } }
       return { data: null }
@@ -1476,6 +1476,26 @@ function liveSetup(over: { payload?: Row; outbox?: Row; onlyFlagId?: string; sel
 
 afterEach(() => {
   vi.unstubAllEnvs()
+})
+
+describe('staff rollout through the real worker', () => {
+  it.each([false, true])('ordinary/pack-photo issue (%s) outside Test 1 creates one live task and survives retry', async (packPhoto) => {
+    const h = liveSetup(packPhoto ? {} : { selections: null })
+    vi.stubEnv('ASANA_LIVE_INCIDENTS_ENABLED', 'true')
+    vi.stubEnv('ASANA_LIVE_INCIDENTS_TEST', '')
+    h.db.fixtures.flagPropertyId = 'real-property'
+    h.asana.behaviour.create = 'lost_response'
+    expect(await h.run()).toMatchObject({ status: 'error', error: 'create_ambiguous' })
+    expect(sent(h)).toMatchObject({ projectGid: LIVE_PROJECT, sectionGid: LIVE_INTAKE })
+    expect(sent(h).notes).not.toContain('STR app (BETA)')
+    expect(sent(h).notes).toContain('Address:         Ballito Village, Test Drive')
+    h.asana.behaviour.create = 'ok'
+    h.clock.now += 6 * MIN
+    h.due()
+    expect(await h.run()).toMatchObject({ status: 'adopted' })
+    expect(posts(h.asana)).toBe(1)
+    expect(h.db.links[0]).toMatchObject({ external_project_gid: LIVE_PROJECT })
+  })
 })
 
 describe('LIVE TEST: an older / scheduled worker can never claim a live-destination job', () => {

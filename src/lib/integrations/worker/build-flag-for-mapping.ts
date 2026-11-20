@@ -19,6 +19,7 @@ export interface OutboxFlagRow {
   raisedAtIso: string
   propertyId: string
   propertyName: string
+  propertyAddress?: string
   categoryKey: string
   categoryLabel: string
   reporterName: string | null
@@ -38,6 +39,7 @@ export function buildFlagForMapping(
     accountability: row.accountability,
     accountabilityLabel: chargeablePartyDisplay(row.accountability).label,
     propertyName: row.propertyName,
+    ...(row.propertyAddress ? { propertyAddress: row.propertyAddress } : {}),
     propertyId: row.propertyId,
     reporterName: row.reporterName ?? 'Unknown',
     raisedAtIso: row.raisedAtIso,

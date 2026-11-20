@@ -10,7 +10,7 @@ import {
 import { runNextAttachEvidence } from '@/lib/integrations/worker/attach-evidence'
 import { createAsanaProvider } from '@/lib/integrations/asana/provider'
 import { parseAllowedCompanyIds } from '@/lib/integrations/company-allowlist'
-import { ASANA_TEST_PROJECT_GID, liveIncidentsTestEnabled } from '@/lib/integrations/asana/config'
+import { ASANA_TEST_PROJECT_GID, liveIncidentsEnabled, liveIncidentsRolloutEnabled } from '@/lib/integrations/asana/config'
 import { ASANA_DESTINATIONS } from '@/lib/integrations/asana/destinations'
 import { configForWrite } from '@/lib/integrations/asana/field-config'
 import { createWritableFieldValidationLoader } from '@/lib/integrations/asana/field-schema'
@@ -68,12 +68,33 @@ export async function GET(request: Request) {
   // Create-task pass (drains up to `batch`), then AT MOST ONE attach pass so
   // a single tick can never fan out into dozens of large uploads.
   const results = await runAsanaOutboxBatch(supabase, provider, deps, batch)
-  const attach = await runNextAttachEvidence(supabase, deps, asanaToken)
+  const processed = () => results.filter((r) => r.status !== 'no_pending').length
+  let attach = await runNextAttachEvidence(supabase, deps, asanaToken)
+  // Old BETA jobs retain their destination. Staff rollout additionally drains
+  // the live queue within the same creation budget and one attachment pass.
+  // The preview TEST switch alone never enables automatic live processing.
+  if (liveIncidentsRolloutEnabled()) {
+    const liveDeps = {
+      ...workerDeps(host),
+      destination: 'live_incidents' as const,
+      loadFieldValidation: createWritableFieldValidationLoader(
+        asanaToken, configForWrite(ASANA_DESTINATIONS.live_incidents.projectGid),
+      ),
+    }
+    const remaining = Math.max(1, batch) - processed()
+    if (remaining > 0) {
+      const liveProvider = createAsanaProvider(asanaToken, 'live_incidents')
+      results.push(...await runAsanaOutboxBatch(supabase, liveProvider, liveDeps, remaining))
+    }
+    if (attach.status === 'no_pending') {
+      attach = await runNextAttachEvidence(supabase, liveDeps, asanaToken)
+    }
+  }
   console.log(
     '[asana-worker][cron]',
     JSON.stringify({ created: results.length, results, attach }),
   )
-  return NextResponse.json({ ran: true, processed: results.length, results, attach })
+  return NextResponse.json({ ran: true, processed: processed(), results, attach })
 }
 
 /**
@@ -90,7 +111,7 @@ export async function GET(request: Request) {
  *   - `flag` is mandatory, so a run can never pick up some other job;
  *   - `&dryRun=1` forces a dry run: it returns the exact task that WOULD be
  *     created (project, section, name, custom fields) and creates nothing.
- * The scheduled GET above never reads the live queue.
+ * The scheduled GET also drains live jobs when the STAFF rollout is enabled.
  */
 export async function POST(request: Request) {
   const hdrs = await headers()
@@ -106,8 +127,8 @@ export async function POST(request: Request) {
   }
 
   if (target === 'live_incidents') {
-    if (!liveIncidentsTestEnabled()) {
-      return NextResponse.json({ error: 'live test is switched off on this deployment' }, { status: 409 })
+    if (!liveIncidentsEnabled()) {
+      return NextResponse.json({ error: 'live processing is switched off on this deployment' }, { status: 409 })
     }
     const flagId = params.get('flag') ?? ''
     if (!UUID_RE.test(flagId)) {

@@ -141,12 +141,15 @@ export async function createFlagAction(formData: FormData) {
   // NOTE: this runs BEFORE redirect() so the redirect signal is never
   // swallowed by any try/catch.
   if (newFlag) {
-    await maybeEnqueueFlagCreated(supabase, {
+    const input = {
       companyId: property.company_id,
       flagId: newFlag.id,
       createdBy: ctx.user.id,
       payload: { property_id: property.id, category_key: categoryKey },
-    })
+    }
+    const destination = chooseDestinationForNewFlag({ companyId: property.company_id, propertyId: property.id, isPackPhotoIssue: false })
+    if (destination === 'beta') await maybeEnqueueFlagCreated(supabase, input)
+    else await maybeEnqueueFlagEvents(supabase, input, destination)
   }
 
   // Keep the company dashboard's "Open flags" count in sync — it's

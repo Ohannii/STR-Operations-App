@@ -85,6 +85,7 @@ function makeDb(over: {
           return { data: selections && matches(selections, fs) ? selections : null, error: null }
         }
         if (table === 'external_task_links') return { data: link && matches(link, fs) ? link : null, error: null }
+        if (table === 'properties') return { data: flag ? { id: flag.property_id, company_id: flag.company_id } : null, error: null }
         if (table === 'companies') return { data: { name: 'Drop-Inn' }, error: null }
         if (table === 'integration_outbox') {
           const isOtherJobCheck = fs.some((f) => f.col === 'company_id') && !patch
@@ -140,6 +141,13 @@ afterEach(() => {
 })
 
 describe('live attachment: eligible issue', () => {
+  it('staff rollout attaches an ordinary flag outside Test 1 without pack selections', async () => {
+    vi.stubEnv('ASANA_LIVE_INCIDENTS_ENABLED', 'true')
+    vi.stubEnv('ASANA_LIVE_INCIDENTS_TEST', '')
+    const db = makeDb({ flag: { id: FLAG, company_id: SCOPE_CO, property_id: 'real-property', deleted_at: null }, selections: null })
+    expect(await run(db)).toMatchObject({ status: 'attached', flagId: FLAG, uploaded: 1 })
+    expect(db.job.status).toBe('done')
+  })
   it('Test 1 pack-photo issue with a live link -> the PDF is uploaded to THAT task, job done', async () => {
     const db = makeDb()
     expect(await run(db)).toMatchObject({ status: 'attached', flagId: FLAG, uploaded: 1 })

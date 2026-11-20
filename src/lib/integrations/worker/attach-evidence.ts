@@ -13,7 +13,7 @@ import { loadFlagReportData } from '@/lib/reports/report-data'
 import { ensureFlagReportBytes } from '@/lib/reports/ensure-report-artifact'
 import { formatDateDMY } from '@/lib/ui/datetime'
 import { EVIDENCE_BUCKET } from '@/lib/photos/paths'
-import { assertAllowedProject, liveIncidentsTestEnabled } from '@/lib/integrations/asana/config'
+import { assertAllowedProject, liveIncidentsEnabled } from '@/lib/integrations/asana/config'
 import { ASANA_DESTINATIONS } from '@/lib/integrations/asana/destinations'
 import { LIVE_TEST_CODES, liveTestRefusal } from '@/lib/integrations/worker/live-test-gate'
 
@@ -201,7 +201,7 @@ export async function runNextAttachEvidence(
   token: string,
 ): Promise<AttachResult | { status: 'no_pending' }> {
   const dest = ASANA_DESTINATIONS[deps.destination ?? 'beta']
-  if (dest.key !== 'beta' && !liveIncidentsTestEnabled()) {
+  if (dest.key !== 'beta' && !liveIncidentsEnabled()) {
     // Controlled live test switched off: the live attach queue is not read.
     return { status: 'refused', outboxId: '', reason: LIVE_TEST_CODES.switchedOff }
   }
