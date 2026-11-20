@@ -72,6 +72,7 @@ import { mapFlagToTaskPayload } from '@/lib/integrations/asana/mapping'
 import { hasCustomFields, taskUrlForGid } from '@/lib/integrations/asana/client'
 import { desiredFieldValuesForFlag } from '@/lib/integrations/asana/field-mapping'
 import { desiredFieldValuesForIssue } from '@/lib/integrations/asana/field-issue-mapping'
+import { loadPropertyIdentity } from '@/lib/integrations/asana/property-identity'
 import {
   EMPTY_SELECTIONS,
   selectionsFromRow,
@@ -399,7 +400,7 @@ export async function dryRunNextAsanaOutbox(
   // is created. (A BETA dry run never loads the schema — unchanged.)
   const customFields = dest.key !== 'beta' && deps.loadFieldValidation
     ? await customFieldsForCreate(
-        supabase, deps.loadFieldValidation, g.companyId, g.flagId, built.categoryKey, built.payload.projectGid,
+        supabase, deps.loadFieldValidation, g.companyId, g.flagId, built.propertyId, built.categoryKey, built.payload.projectGid,
       )
     : undefined
   const payload = customFields ? { ...built.payload, customFields } : built.payload
@@ -491,6 +492,7 @@ async function customFieldsForCreate(
   load: () => Promise<WritableFieldValidation>,
   companyId: string,
   flagId: string,
+  propertyId: string,
   categoryKey: string,
   expectedProjectGid: string,
 ): Promise<Record<string, string | string[]> | undefined> {
@@ -514,6 +516,15 @@ async function customFieldsForCreate(
         field: 'category',
         detail: 'Issue selections could not be read; only Evidence Received is sent.',
       })
+    }
+    // Identity comes from the verified property mapping, independently of issue selections.
+    // Missing/invalid mappings never block reporting and never manufacture an owner code.
+    const identity = await loadPropertyIdentity(supabase, companyId, propertyId)
+    if (identity.kind === 'mapped') {
+      mapped.desired.unitOptionGid = identity.unitOptionGid
+      mapped.desired.unitNumber = identity.unitNumber
+    } else if (identity.kind !== 'unmapped') {
+      console.warn('[asana-property-identity]', JSON.stringify({ flagId, code: identity.kind }))
     }
     const resolved = resolveCustomFields(mapped.desired, validation)
     logFieldWarnings(
@@ -909,7 +920,7 @@ export async function runNextAsanaOutbox(
   const customFields =
     !state.customFieldsRejected && deps.loadFieldValidation
       ? await customFieldsForCreate(
-          supabase, deps.loadFieldValidation, companyId, flagId, built.categoryKey, payload.projectGid,
+          supabase, deps.loadFieldValidation, companyId, flagId, built.propertyId, built.categoryKey, payload.projectGid,
         )
       : undefined
   const createPayload: TaskPayload = customFields ? { ...payload, customFields } : payload
