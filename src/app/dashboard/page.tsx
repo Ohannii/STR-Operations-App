@@ -18,6 +18,7 @@ import { Badge } from '@/components/ui/badge'
 import { buttonClasses } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
+import { canManageProperties } from '@/lib/properties/property-management'
 import { PropertyFinder } from '@/components/properties/property-finder'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { startPerf } from '@/lib/perf'
@@ -191,10 +192,11 @@ export default async function DashboardPage() {
               All apartments managed under this company.
             </p>
           </div>
-          <Link href="/properties/new" className={buttonClasses('primary', 'md')}>
-            <Plus size={16} aria-hidden />
-            Add property
-          </Link>
+          {canManageProperties(ctx.membership?.role_key) ? (
+            <Link href="/properties/new" className={buttonClasses('primary', 'md')}>
+              <Plus size={16} aria-hidden /> Add property
+            </Link>
+          ) : null}
         </div>
 
         {error ? (
@@ -212,12 +214,12 @@ export default async function DashboardPage() {
                 evidence, and operational status in one place.
               </>
             }
-            action={
+            action={canManageProperties(ctx.membership?.role_key) ? (
               <Link href="/properties/new" className={buttonClasses('primary', 'md')}>
                 <Plus size={16} aria-hidden />
                 Add your first property
               </Link>
-            }
+            ) : undefined}
           />
         ) : (
           <PropertyFinder properties={properties} />
