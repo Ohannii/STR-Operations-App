@@ -54,6 +54,8 @@ function makeDb(opts: { outbox: Row }) {
     /** Report-issue selections row: absent (null), a row, a read error, or the table missing. */
     issueSelections: Row | null | 'error' | 'missing_table'
     issueSelectionFilters: Filter[][]
+    propertyIdentity: Row | null | 'error' | 'missing_table'
+    propertyIdentityFilters: Filter[][]
     /** The flag's own company / property (live-test scope checks read these). */
     flagCompanyId: string
     flagPropertyId: string
@@ -73,6 +75,8 @@ function makeDb(opts: { outbox: Row }) {
     photoSelects: [],
     issueSelections: null,
     issueSelectionFilters: [],
+    propertyIdentity: null,
+    propertyIdentityFilters: [],
   }
   const outboxUpdates: Array<{ patch: Row; filters: Filter[]; matched: boolean }> = []
   const hooks: {
@@ -216,6 +220,13 @@ function makeDb(opts: { outbox: Row }) {
         if (sel === 'error') return { data: null, error: { code: 'XX000', message: 'down' } }
         if (sel === 'missing_table') return { data: null, error: { code: '42P01', message: 'relation does not exist' } }
         return { data: sel && matches({ flag_id: FLAG, company_id: String(outbox.company_id) }, filters) ? sel : null }
+      }
+      if (table === 'property_asana_identities') {
+        fixtures.propertyIdentityFilters.push([...filters])
+        const identity = fixtures.propertyIdentity
+        if (identity === 'error') return { data: null, error: { code: 'XX000', message: 'private failure' } }
+        if (identity === 'missing_table') return { data: null, error: { code: '42P01', message: 'missing' } }
+        return { data: identity && matches(identity, filters) ? identity : null }
       }
       if (table === 'properties') return { data: { id: fixtures.flagPropertyId, company_id: fixtures.flagCompanyId, name: 'Unit 50', address: 'Ballito Village, Test Drive' } }
       if (table === 'flag_categories') return { data: { key: fixtures.categoryKey, display_label: 'Item missing' } }
@@ -1068,7 +1079,7 @@ describe('BETA custom fields — happy paths (exactly one POST each)', () => {
     },
   )
 
-  it('Unit #, Unit Number, Linen type, Accountable Party and Evidence "No" are NEVER sent', async () => {
+  it('without a verified property mapping, Unit fields are omitted; other unchosen fields stay absent', async () => {
     for (const key of ['inventory_missing', 'inventory_damaged', 'maintenance_issue', 'cleaning_issue']) {
       for (const photos of [[photo('p1')], []]) {
         const h = fieldsSetup(key, photos)
@@ -1558,7 +1569,7 @@ describe('LIVE TEST: one task, in the live project, in "New (Intake", with the r
       if (!shared.has(g)) expect(betaGids.has(g)).toBe(false)
     }
     expect(p.projectGid).not.toBe(BETA)
-    // Unit #, Unit Number and Accountable Party are never sent
+    // No verified identity on this test property, and no chosen Accountable Party.
     for (const f of [LF.unit!.gid, LF.unitNumber!.gid, LF.accountableParty!.gid]) expect(p.customFields).not.toHaveProperty(f)
 
     expect(h.db.links).toHaveLength(1)
@@ -1786,5 +1797,78 @@ describe('LIVE TEST switched on does NOT change BETA routing', () => {
     expect(p.customFields).toEqual({ [F.category]: O.inventory, [F.inventoryType]: O.missing, [F.evidence]: O.yes })
     expect(h.db.links[0]).toMatchObject({ external_project_gid: BETA })
     expect(h.db.outbox.event_type).toBe('asana.create_task_for_flag')
+  })
+})
+
+
+// Verified identity is an independent source, resolved only for a new task.
+function identityFixture(companyId = 'co', propertyId = PROP, option = '1213116492387387'): Row {
+  return {
+    company_id: companyId, property_id: propertyId, estate_key: 'ballito_village',
+    unit_number: '50', investor_task_gid: '123456', unit_option_gid: option,
+    properties: { id: propertyId, company_id: companyId, name: 'Unit 50', address: 'Ballito Village', unit_reference: '50', deleted_at: null },
+  }
+}
+
+describe('verified property identity through the real creation worker', () => {
+  it('adds the two Unit fields to an ordinary flag without changing category/evidence or task count', async () => {
+    const h = fieldsSetup('inventory_missing')
+    h.db.fixtures.propertyIdentity = identityFixture()
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    expect(sent(h).customFields).toEqual({ [F.unit]: ['1213116492387387'], [F.unitNumber]: '50', [F.category]: O.inventory, [F.inventoryType]: O.missing, [F.evidence]: O.yes })
+    expect(posts(h.asana)).toBe(1)
+    expect(h.db.fixtures.propertyIdentityFilters[0]).toEqual([{ op: 'eq', col: 'company_id', val: 'co' }, { op: 'eq', col: 'property_id', val: PROP }])
+  })
+  it('adds identity for a pack-photo issue in the live project, retaining every selected action', async () => {
+    const h = liveSetup()
+    h.db.fixtures.propertyIdentity = identityFixture(SCOPE_CO, SCOPE_PROP, '1214009753087420')
+    await h.run()
+    expect(sent(h).customFields).toMatchObject({ [LF.unit!.gid]: ['1214009753087420'], [LF.unitNumber!.gid]: '50', [LF.replacementRequired!.gid]: [LF.replacementRequired!.options!.fix, LF.replacementRequired!.options!.replace] })
+    expect(sent(h).customFields).not.toHaveProperty(LF.accountableParty!.gid)
+    expect(posts(h.asana)).toBe(1)
+  })
+  it('shows the same identity on a live dry run without creating anything', async () => {
+    const h = liveSetup()
+    h.db.fixtures.propertyIdentity = identityFixture(SCOPE_CO, SCOPE_PROP, '1214009753087420')
+    const result = await dryRunNextAsanaOutbox(h.db.client, h.deps)
+    expect(result).toMatchObject({ status: 'dry_run_ok', payload: { customFields: { [LF.unit!.gid]: ['1214009753087420'], [LF.unitNumber!.gid]: '50' } } })
+    expect(posts(h.asana)).toBe(0)
+  })
+  it.each(['error', 'missing_table', null] as const)('unavailable or absent mapping %s keeps the existing reporting flow', async identity => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = fieldsSetup('inventory_missing')
+    h.db.fixtures.propertyIdentity = identity
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    expect(sent(h).customFields).toEqual({ [F.category]: O.inventory, [F.inventoryType]: O.missing, [F.evidence]: O.yes })
+    expect(posts(h.asana)).toBe(1)
+  })
+  it('omits an option the validated destination does not enable, retaining the verified physical number', async () => {
+    const h = fieldsSetup('inventory_missing')
+    h.db.fixtures.propertyIdentity = identityFixture('co', PROP, '99999999')
+    await h.run()
+    expect(sent(h).customFields).not.toHaveProperty(F.unit)
+    expect(sent(h).customFields).toHaveProperty(F.unitNumber, '50')
+  })
+  it('refuses a mapping whose property has moved to the other estate', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = fieldsSetup('inventory_missing')
+    const identity = identityFixture()
+    identity.properties = { ...(identity.properties as Row), address: 'Ballito Life' }
+    h.db.fixtures.propertyIdentity = identity
+    await h.run()
+    expect(sent(h).customFields).not.toHaveProperty(F.unit)
+    expect(sent(h).customFields).not.toHaveProperty(F.unitNumber)
+    expect(posts(h.asana)).toBe(1)
+  })
+  it('does not reread or change identity when an existing task is adopted on a retry', async () => {
+    const h = fieldsSetup('inventory_missing')
+    h.db.fixtures.propertyIdentity = identityFixture()
+    await h.run()
+    const reads = h.db.fixtures.propertyIdentityFilters.length
+    h.db.fixtures.propertyIdentity = 'error'
+    h.db.outbox.status = 'pending'
+    await h.run()
+    expect(posts(h.asana)).toBe(1)
+    expect(h.db.fixtures.propertyIdentityFilters).toHaveLength(reads)
   })
 })
