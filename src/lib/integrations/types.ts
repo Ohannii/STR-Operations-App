@@ -22,6 +22,13 @@ export type IntegrationProvider = 'asana'
 export type OutboxEventType =
   | 'asana.create_task_for_flag'
   | 'asana.attach_flag_evidence'
+  /**
+   * CONTROLLED LIVE TEST: the same two jobs, pinned to the live Incidents &
+   * Damages project (see asana/destinations.ts). Distinct event types so a
+   * worker that only knows the two above can never claim them.
+   */
+  | 'asana.live.create_task_for_flag'
+  | 'asana.live.attach_flag_evidence'
 
 /** Internal entity kinds that can be projected outward. Phase 1: flag. */
 export type IntegrationEntityType = 'flag'

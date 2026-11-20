@@ -281,6 +281,16 @@ function useEditor(): EditorCtx {
   return ctx
 }
 
+/**
+ * Read-only view of one photo's CURRENT caption text (device or server) for
+ * "Report issue", plus whether the pack itself is being submitted. Reporting
+ * never edits the caption: the pack evidence and caption stay independent.
+ */
+export function usePackPhotoCaption(photoId: string): { caption: string; packSubmitting: boolean } {
+  const { textFor, submitting } = useEditor()
+  return { caption: textFor(photoId), packSubmitting: submitting }
+}
+
 function statusLine(status: CaptionPhotoStatus, deviceDurable: boolean) {
   switch (status) {
     case 'saving':

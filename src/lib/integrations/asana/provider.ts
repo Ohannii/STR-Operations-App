@@ -11,7 +11,14 @@
  * listTasksModifiedSince are READ-ONLY reconciliation lookups.
  */
 
-import { assertAllowedProject } from '@/lib/integrations/asana/config'
+import {
+  DisallowedAsanaProjectError,
+  assertAllowedProject,
+} from '@/lib/integrations/asana/config'
+import {
+  ASANA_DESTINATIONS,
+  type AsanaDestinationKey,
+} from '@/lib/integrations/asana/destinations'
 import {
   createTaskInProject,
   getTaskForReconciliation,
@@ -45,7 +52,7 @@ export function assertBetaCustomFields(
   const byGid = new Map(Object.values(config.fields).map((spec) => [spec!.gid, spec!]))
   for (const [fieldGid, value] of Object.entries(fields)) {
     const spec = byGid.get(fieldGid)
-    if (!spec) throw new DisallowedAsanaFieldError(`field ${fieldGid} is not a configured BETA field`)
+    if (!spec) throw new DisallowedAsanaFieldError(`field ${fieldGid} is not a configured field of this project`)
     const optionGids = new Set(Object.values(spec.options ?? {}))
     const okOption = (v: unknown) =>
       typeof v === 'string' && v.length > 0 && (spec.dynamicOptions === true || optionGids.has(v))
@@ -61,13 +68,41 @@ export function assertBetaCustomFields(
   }
 }
 
-export function createAsanaProvider(token: string): TaskProvider {
+/** Thrown (before any network call) for a section the destination does not allow. */
+export class DisallowedAsanaSectionError extends Error {
+  constructor(sectionGid: string) {
+    super(`Refusing to create a task in section "${sectionGid}": not this destination's section.`)
+    this.name = 'DisallowedAsanaSectionError'
+  }
+}
+
+/**
+ * A provider is BOUND to one destination (default: BETA — unchanged). Every
+ * method refuses, before any network call, a project that is not
+ *   (a) on the hard allowlist (assertAllowedProject), AND
+ *   (b) exactly this provider's destination project.
+ * So a BETA provider can never touch the live project and the live-test
+ * provider can never touch BETA or anything else. A destination with a
+ * fixed section (live: "New (Intake") also refuses every other section.
+ */
+export function createAsanaProvider(
+  token: string,
+  destination: AsanaDestinationKey = 'beta',
+): TaskProvider {
+  const dest = ASANA_DESTINATIONS[destination]
+  const assertTarget = (projectGid: string) => {
+    assertAllowedProject(projectGid)
+    if (projectGid !== dest.projectGid) throw new DisallowedAsanaProjectError(projectGid)
+  }
   return {
     async createTask(payload: TaskPayload) {
-      // HARD ALLOWLIST — runs before any fetch. A disallowed project
-      // throws here and no network call is ever made.
-      assertAllowedProject(payload.projectGid)
-      // BETA FIELD BOUNDARY — also before any fetch.
+      // HARD ALLOWLIST + DESTINATION — runs before any fetch. A disallowed
+      // project throws here and no network call is ever made.
+      assertTarget(payload.projectGid)
+      if (dest.fixedSectionGid !== null && payload.sectionGid !== dest.fixedSectionGid) {
+        throw new DisallowedAsanaSectionError(payload.sectionGid)
+      }
+      // FIELD BOUNDARY (this project's writable configuration) — also before any fetch.
       const customFields = hasCustomFields(payload.customFields) ? payload.customFields : undefined
       if (customFields) assertBetaCustomFields(payload.projectGid, customFields)
 
@@ -84,12 +119,12 @@ export function createAsanaProvider(token: string): TaskProvider {
     },
 
     async getTask(projectGid: string, taskGid: string) {
-      assertAllowedProject(projectGid) // the task must be expected in BETA
+      assertTarget(projectGid) // the task must be expected in THIS destination
       return getTaskForReconciliation(token, taskGid)
     },
 
     async listTasksModifiedSince(projectGid: string, modifiedSinceIso: string) {
-      assertAllowedProject(projectGid)
+      assertTarget(projectGid)
       return listProjectTasksModifiedSince(token, projectGid, modifiedSinceIso)
     },
   }

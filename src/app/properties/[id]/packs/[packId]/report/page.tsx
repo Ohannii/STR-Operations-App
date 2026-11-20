@@ -9,6 +9,8 @@ import {
   PackCaptionSubmit,
   SubmittedCaptionRecovery,
 } from '@/components/photos/pack-caption-editor'
+import { PackPhotoIssue } from '@/components/photos/pack-photo-issue'
+import { loadPackPhotoIssues } from '@/lib/issues/load-pack-photo-issues'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import {
   THUMB_TTL_SECONDS,
@@ -196,6 +198,12 @@ export default async function PackReportPage({
   const serverNotes: Record<string, string | null> = Object.fromEntries(
     photoRows.map((p) => [p.id, p.notes]),
   )
+
+  // Issues already reported from this draft pack's photos (read-only; an
+  // empty result if the feature's table isn't there yet).
+  const issuesByPhoto = isDraft
+    ? await loadPackPhotoIssues(supabase, ctx.company.id, photoRows.map((p) => p.id))
+    : {}
 
   const page = (
     <div className="min-h-screen bg-white text-slate-900 print:bg-white overflow-x-clip">
@@ -436,6 +444,13 @@ export default async function PackReportPage({
                             Captured {formatDateTime(capturedDisplay)} ·
                             Uploaded by {uploader}
                           </p>
+                          <PackPhotoIssue
+                            propertyId={propertyId}
+                            photoId={photo.id}
+                            photoNumber={idx + 1}
+                            thumbUrl={thumbUrl}
+                            initialIssues={issuesByPhoto[photo.id] ?? []}
+                          />
                         </div>
                       ) : null}
                       {/* Rendered caption — visible on both screen and

@@ -12,6 +12,11 @@ import {
   isUuid,
   validatePhotoDescriptors,
 } from '@/lib/photos/finalize-helpers'
+import { parseIssueSelections, selectionsToRpc } from '@/lib/issues/issue-selections'
+import type { AsanaIssueStatus } from '@/lib/issues/asana-status'
+import { chooseDestinationForNewFlag } from '@/lib/integrations/asana/destinations'
+import { loadFlagAsanaStatuses } from '@/lib/issues/load-pack-photo-issues'
+import { finalizeIssueErrorMessage } from '@/lib/issues/finalize-issue-errors'
 
 /**
  * Server action invoked by the raise-flag form at
@@ -136,12 +141,15 @@ export async function createFlagAction(formData: FormData) {
   // NOTE: this runs BEFORE redirect() so the redirect signal is never
   // swallowed by any try/catch.
   if (newFlag) {
-    await maybeEnqueueFlagCreated(supabase, {
+    const input = {
       companyId: property.company_id,
       flagId: newFlag.id,
       createdBy: ctx.user.id,
       payload: { property_id: property.id, category_key: categoryKey },
-    })
+    }
+    const destination = chooseDestinationForNewFlag({ companyId: property.company_id, propertyId: property.id, isPackPhotoIssue: false })
+    if (destination === 'beta') await maybeEnqueueFlagCreated(supabase, input)
+    else await maybeEnqueueFlagEvents(supabase, input, destination)
   }
 
   // Keep the company dashboard's "Open flags" count in sync — it's
@@ -193,10 +201,22 @@ export type FinalizeFlagInput = {
   issueTitle?: string | null
   accountability?: string | null
   photos: unknown
+  /**
+   * "Report issue" from a pre-arrival pack photo: the pack photo it came
+   * from and the reporter's Asana-style selections. Validated here AND in
+   * SQL; stored with the flag in the same transaction.
+   */
+  issue?: { sourcePackPhotoId: string; selections: unknown }
 }
 
 export type FinalizeFlagResult =
-  | { ok: true; flagId: string; result: 'created' | 'already_finalized' }
+  | {
+      ok: true
+      flagId: string
+      result: 'created' | 'already_finalized'
+      /** The issue's REAL Asana state (saved link / live create job). */
+      asanaStatus: AsanaIssueStatus
+    }
   | { ok: false; error: string }
 
 export async function finalizeFlagWithPhotos(
@@ -236,6 +256,20 @@ export async function finalizeFlagWithPhotos(
     VALID_CHARGEABLE_VALUES.includes(accountabilityRaw)
       ? accountabilityRaw
       : null
+
+  // Report-issue mode: validate the source pack photo id + selections.
+  let issueArgs: { p_source_pack_photo_id: string; p_selections: ReturnType<typeof selectionsToRpc> } | null =
+    null
+  if (input.issue !== undefined) {
+    const sourcePackPhotoId = String(input.issue?.sourcePackPhotoId ?? '').trim()
+    if (!isUuid(sourcePackPhotoId)) return { ok: false, error: 'Invalid pack photo reference.' }
+    const parsed = parseIssueSelections(input.issue?.selections)
+    if (!parsed.ok) return { ok: false, error: parsed.error }
+    issueArgs = {
+      p_source_pack_photo_id: sourcePackPhotoId,
+      p_selections: selectionsToRpc(parsed.value),
+    }
+  }
 
   const supabase = await createClient()
 
@@ -278,33 +312,43 @@ export async function finalizeFlagWithPhotos(
   // folder-list pre-check duplicated that and cost 20+ s (storage.search
   // full scan under RLS), so it was removed (photo perf fix).
 
-  // Transactional finalisation (flag + photos in one RPC transaction).
-  const { data: rpcResult, error: rpcErr } = await supabase.rpc(
-    'finalize_flag_with_photos',
-    {
-      p_flag_id: proposedFlagId,
-      p_property_id: propertyId,
-      p_category_id: category.id,
-      p_severity: severity,
-      p_description: description,
-      p_issue_title: issueTitle || null,
-      p_accountability: accountability,
-      p_photos: photos.map((p) => ({
-        photo_id: p.photoId,
-        width: p.width,
-        height: p.height,
-        size_bytes: p.sizeBytes,
-      })),
-    },
-  )
+  // Transactional finalisation (flag + photos in one RPC transaction; in
+  // Report-issue mode the selections are recorded in the SAME transaction).
+  const finalizeArgs = {
+    p_flag_id: proposedFlagId,
+    p_property_id: propertyId,
+    p_category_id: category.id,
+    p_severity: severity,
+    p_description: description,
+    p_issue_title: issueTitle || null,
+    p_accountability: accountability,
+    p_photos: photos.map((p) => ({
+      photo_id: p.photoId,
+      width: p.width,
+      height: p.height,
+      size_bytes: p.sizeBytes,
+    })),
+  }
+  const { data: rpcResult, error: rpcErr } = issueArgs
+    ? await supabase.rpc('finalize_flag_issue_with_photos', { ...finalizeArgs, ...issueArgs })
+    : await supabase.rpc('finalize_flag_with_photos', finalizeArgs)
 
   if (rpcErr) {
+    if (issueArgs) {
+      const friendly = finalizeIssueErrorMessage(rpcErr)
+      if (friendly) {
+        console.error('[flags/finalize] issue finalisation refused:', (rpcErr as { code?: string }).code)
+        return { ok: false, error: friendly }
+      }
+    }
     if (isMissingEvidenceObjectError(rpcErr)) {
       // A required file is not stored: nothing was created (rolled back).
       console.error('[flags/finalize] required photo file missing; finalisation rolled back')
       return { ok: false, error: PHOTOS_NOT_UPLOADED_MESSAGE }
     }
     console.error('[flags/finalize] rpc error:', rpcErr)
+    // Report-issue mode never shows a raw database message.
+    if (issueArgs) return { ok: false, error: 'Could not save the issue. Try again.' }
     return { ok: false, error: `Could not finalise flag: ${rpcErr.message}` }
   }
 
@@ -314,15 +358,40 @@ export async function finalizeFlagWithPhotos(
   // Enqueue Asana ONLY after the flag + all photos are finalised (create OR
   // valid idempotent replay). Enqueues BOTH the create-task and the
   // attach-evidence events. Failure-isolated: never throws, never blocks.
-  await maybeEnqueueFlagEvents(supabase, {
+  // DESTINATION — decided ONCE, here, before any create attempt, and pinned
+  // by the job's event type. BETA for everything, except a pack-photo issue
+  // of the controlled live test's company + property while its switch is on.
+  const destination = chooseDestinationForNewFlag({
     companyId: ctx.company.id,
-    flagId: proposedFlagId,
-    createdBy: ctx.user.id,
-    payload: { property_id: propertyId, category_key: categoryKey },
+    propertyId,
+    isPackPhotoIssue: issueArgs !== null,
   })
+  const { create } = await maybeEnqueueFlagEvents(
+    supabase,
+    {
+      companyId: ctx.company.id,
+      flagId: proposedFlagId,
+      createdBy: ctx.user.id,
+      payload: { property_id: propertyId, category_key: categoryKey },
+    },
+    destination,
+  )
+
+  // Honest Asana status. A job inserted just now is queued. EVERY other
+  // outcome (a job already existed, the insert failed, or Asana looked
+  // disabled — which a failed settings read also produces) says nothing
+  // about what already exists for this flag, so the real state is read:
+  // saved task link -> in_asana; live job -> queued; stopped job ->
+  // needs_attention; confirmed neither -> not_sent; failed read -> unknown.
+  let asanaStatus: AsanaIssueStatus
+  if (create === 'enqueued') asanaStatus = 'queued'
+  else {
+    const looked = (await loadFlagAsanaStatuses(supabase, ctx.company.id, [proposedFlagId])).get(proposedFlagId)
+    asanaStatus = looked && looked !== 'deleted' ? looked : 'unknown'
+  }
 
   revalidatePath('/dashboard')
   revalidatePath(`/properties/${propertyId}`)
 
-  return { ok: true, flagId: proposedFlagId, result }
+  return { ok: true, flagId: proposedFlagId, result, asanaStatus }
 }

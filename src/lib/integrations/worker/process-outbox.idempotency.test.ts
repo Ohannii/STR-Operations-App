@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   dryRunNextAsanaOutbox,
@@ -6,7 +6,7 @@ import {
   runNextAsanaOutbox,
   type RealRunResult,
 } from '@/lib/integrations/worker/process-outbox'
-import { BETA_FIELD_CONFIG, configForWrite } from '@/lib/integrations/asana/field-config'
+import { BETA_FIELD_CONFIG, LIVE_INCIDENTS_FIELD_REFERENCE, configForWrite } from '@/lib/integrations/asana/field-config'
 import { createWritableFieldValidationLoader } from '@/lib/integrations/asana/field-schema'
 import { AsanaApiError } from '@/lib/integrations/asana/client'
 import { ASANA_TEST_PROJECT_GID } from '@/lib/integrations/asana/config'
@@ -44,13 +44,35 @@ function makeDb(opts: { outbox: Row }) {
   const links: Row[] = []
   const flagUpdates: Row[] = []
   /** The flag's write-back target (company 'co'). */
-  const flag: Row = { id: FLAG, company_id: 'co', asana_task_url: null }
+  const flag: Row = { id: FLAG, company_id: String(opts.outbox.company_id ?? 'co'), asana_task_url: null }
   /** Custom-field facts: the flag's category key and its photo rows. */
-  const fixtures: { categoryKey: string | null; photos: Row[]; photosError: boolean; photoSelects: string[] } = {
+  const fixtures: {
+    categoryKey: string | null
+    photos: Row[]
+    photosError: boolean
+    photoSelects: string[]
+    /** Report-issue selections row: absent (null), a row, a read error, or the table missing. */
+    issueSelections: Row | null | 'error' | 'missing_table'
+    issueSelectionFilters: Filter[][]
+    /** The flag's own company / property (live-test scope checks read these). */
+    flagCompanyId: string
+    flagPropertyId: string
+    flagReadError: boolean
+    /** Extra outbox rows (e.g. the flag's job for the OTHER destination). */
+    otherJobs: Row[]
+    otherJobsError: boolean
+  } = {
+    flagCompanyId: String(opts.outbox.company_id ?? 'co'),
+    flagPropertyId: PROP,
+    flagReadError: false,
+    otherJobs: [],
+    otherJobsError: false,
     categoryKey: 'inventory_missing',
     photos: [],
     photosError: false,
     photoSelects: [],
+    issueSelections: null,
+    issueSelectionFilters: [],
   }
   const outboxUpdates: Array<{ patch: Row; filters: Filter[]; matched: boolean }> = []
   const hooks: {
@@ -104,8 +126,12 @@ function makeDb(opts: { outbox: Row }) {
           }
         }
         if (table !== 'integration_outbox') return { data: [] }
-        const outboxFilters = filters.filter((f) => !['provider', 'event_type'].includes(f.col))
-        return { data: matches(outbox, outboxFilters) ? [{ ...outbox }] : [] }
+        // event_type IS enforced: a worker only ever sees its own queue.
+        const outboxFilters = filters.filter((f) => !['provider'].includes(f.col))
+        if (fixtures.otherJobsError && filters.some((f) => f.col === 'company_id')) {
+          return { data: null, error: { code: 'XX000', message: 'outbox down' } }
+        }
+        return { data: [outbox, ...fixtures.otherJobs].filter((r) => matches(r, outboxFilters)).map((r) => ({ ...r })) }
       },
       maybeSingle: async () => exec(),
       then: (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
@@ -167,22 +193,31 @@ function makeDb(opts: { outbox: Row }) {
       if (table === 'flags') {
         hooks.onFlagRead?.()
         if (hooks.flagMissing) return { data: null }
+        if (fixtures.flagReadError) return { data: null, error: { code: 'XX000', message: 'flags down' } }
         return {
           data: {
             id: FLAG,
+            company_id: fixtures.flagCompanyId,
             description: 'Leaking tap',
             issue_title: null,
             severity: 'med',
             status: 'raised',
             chargeable_party_decision: null,
             raised_at: '2026-11-02T09:59:00Z',
-            property_id: PROP,
+            property_id: fixtures.flagPropertyId,
             flag_category_id: 'cat-1',
             raised_by: 'user-1',
           },
         }
       }
-      if (table === 'properties') return { data: { name: 'Unit 50' } }
+      if (table === 'flag_issue_selections') {
+        fixtures.issueSelectionFilters.push([...filters])
+        const sel = fixtures.issueSelections
+        if (sel === 'error') return { data: null, error: { code: 'XX000', message: 'down' } }
+        if (sel === 'missing_table') return { data: null, error: { code: '42P01', message: 'relation does not exist' } }
+        return { data: sel && matches({ flag_id: FLAG, company_id: String(outbox.company_id) }, filters) ? sel : null }
+      }
+      if (table === 'properties') return { data: { id: fixtures.flagPropertyId, company_id: fixtures.flagCompanyId, name: 'Unit 50', address: 'Ballito Village, Test Drive' } }
       if (table === 'flag_categories') return { data: { key: fixtures.categoryKey, display_label: 'Item missing' } }
       if (table === 'profiles') return { data: { full_name: 'Reporter' } }
       return { data: null }
@@ -257,6 +292,10 @@ function setup(
   extra: {
     allowedCompanyIds?: string[]
     loadFieldValidation?: () => Promise<WritableFieldValidation>
+    /** Overrides for the outbox row (e.g. a live-destination job). */
+    outbox?: Row
+    destination?: 'beta' | 'live_incidents'
+    onlyFlagId?: string
   } = {},
 ) {
   const clock = { now: T0 }
@@ -264,6 +303,7 @@ function setup(
     outbox: {
       id: 'ob1',
       company_id: 'co',
+      event_type: 'asana.create_task_for_flag',
       entity_type: 'flag',
       entity_id: FLAG,
       status: 'pending',
@@ -274,6 +314,7 @@ function setup(
       deleted_at: null,
       locked_at: null,
       locked_by: null,
+      ...(extra.outbox ?? {}),
     },
   })
   const asana = makeAsana()
@@ -284,6 +325,8 @@ function setup(
     now: () => clock.now,
     newRunId: () => `run-${++r}`,
     ...(extra.loadFieldValidation ? { loadFieldValidation: extra.loadFieldValidation } : {}),
+    ...(extra.destination ? { destination: extra.destination } : {}),
+    ...(extra.onlyFlagId ? { onlyFlagId: extra.onlyFlagId } : {}),
   }
   const run = () => runNextAsanaOutbox(db.client, asana.provider, deps)
   /** Make the row due now (simulates the next cron tick at `clock.now`). */
@@ -1294,5 +1337,454 @@ describe('warning privacy', () => {
       expect(out).not.toContain(leak)
     }
     warn.mockRestore()
+  })
+})
+
+describe('Report issue (pack photo): the reporter\'s saved selections drive the fields', () => {
+  const sel = (over: Row = {}): Row => ({
+    category: null, incident_type: null, actions: [], severity: null, fix_owner: null, ...over,
+  })
+  const issueSetup = (selections: Row | null | 'error' | 'missing_table', appCategory = 'condition_note') => {
+    const h = fieldsSetup(appCategory)
+    h.db.fixtures.issueSelections = selections
+    return h
+  }
+
+  it('selections row -> its Category + incident type (NOT the app issue type mapping)', async () => {
+    const h = issueSetup(sel({ category: 'linen', incident_type: 'stain' }), 'inventory_missing')
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    expect(posts(h.asana)).toBe(1)
+    expect(sent(h).customFields).toEqual({ [F.category]: '1220057630679852', [F.linenType]: '1220057561518789', [F.evidence]: O.yes })
+    // read scoped to THIS flag and company
+    expect(h.db.fixtures.issueSelectionFilters[0]).toEqual(
+      expect.arrayContaining([
+        { op: 'eq', col: 'flag_id', val: FLAG },
+        { op: 'eq', col: 'company_id', val: 'co' },
+      ]),
+    )
+  })
+
+  it('BETA today: actions / severity / fix owner are omitted safely (fields not in BETA yet); task still created once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = issueSetup(sel({ category: 'inventory', incident_type: 'missing_item', actions: ['fix', 'replace'], severity: 'major', fix_owner: 'vendor' }))
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    expect(posts(h.asana)).toBe(1)
+    expect(sent(h).customFields).toEqual({ [F.category]: O.inventory, [F.inventoryType]: O.missing, [F.evidence]: O.yes })
+    const out = warn.mock.calls.map((c) => c.map(String).join(' ')).join('\n')
+    for (const f of ['replacementRequired', 'severity', 'fixOwner']) expect(out).toContain(f)
+    warn.mockRestore()
+  })
+
+  it('an option BETA lacks (HOA) -> Category omitted with a warning; Evidence still sent', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = issueSetup(sel({ category: 'hoa', incident_type: 'noise_complaint' }))
+    await h.run()
+    expect(sent(h).customFields).toEqual({ [F.evidence]: O.yes })
+  })
+
+  it('no selections row -> the existing app issue-type mapping (normal flags unchanged)', async () => {
+    const h = issueSetup(null, 'inventory_damaged')
+    await h.run()
+    expect(sent(h).customFields).toEqual({ [F.category]: O.inventory, [F.inventoryType]: O.damage, [F.evidence]: O.yes })
+  })
+
+  it('table not there yet (migration pending) -> treated as no row (existing mapping)', async () => {
+    const h = issueSetup('missing_table', 'maintenance_issue')
+    await h.run()
+    expect(sent(h).customFields).toEqual({ [F.category]: O.maintenance, [F.evidence]: O.yes })
+  })
+
+  it('read ERROR -> nothing guessed: Evidence only, never the app mapping; task still created once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = issueSetup('error', 'inventory_missing')
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    expect(posts(h.asana)).toBe(1)
+    expect(sent(h).customFields).toEqual({ [F.evidence]: O.yes })
+    expect(warn.mock.calls.map((c) => c.map(String).join(' ')).join('\n')).toContain('source_unavailable')
+    warn.mockRestore()
+  })
+
+  it('a stored value the app no longer knows -> no selections are guessed (Evidence only)', async () => {
+    const h = issueSetup(sel({ category: 'inventory', incident_type: 'stain' })) // stain is a LINEN type
+    await h.run()
+    expect(sent(h).customFields).toEqual({ [F.evidence]: O.yes })
+  })
+})
+
+// ================================================================
+// CONTROLLED LIVE TEST — Incidents & Damages Reporting, "New (Intake"
+// ================================================================
+
+const LIVE_PROJECT = '1211426202387126'
+const LIVE_INTAKE = '1211426202387127'
+const SCOPE_CO = '1669c464-8d26-40fc-9956-9f8955fd27c7'
+const SCOPE_PROP = '3ed2a749-0954-4216-8095-2a1bf2af7aaa'
+const LIVE_EVENT = 'asana.live.create_task_for_flag'
+const LIVE_PIN = { destination: 'live_incidents', destination_project_gid: LIVE_PROJECT }
+const LF = LIVE_INCIDENTS_FIELD_REFERENCE.fields
+
+/** A live-shaped custom_field_settings response built from the verified live reference. */
+function liveSchema() {
+  return {
+    gid: LIVE_PROJECT,
+    custom_field_settings: Object.values(LF).flatMap((spec) =>
+      spec
+        ? [{
+            project: { gid: LIVE_PROJECT },
+            custom_field: {
+              gid: spec.gid,
+              resource_subtype: spec.type,
+              ...(spec.type === 'enum' || spec.type === 'multi_enum'
+                ? { enum_options: (spec.dynamicOptions ? ['1214009753087420'] : Object.values(spec.options ?? {})).map((gid) => ({ gid, enabled: true })) }
+                : {}),
+            },
+          }]
+        : [],
+    ),
+  }
+}
+
+function liveSetup(over: { payload?: Row; outbox?: Row; onlyFlagId?: string; selections?: Row | null | 'error' } = {}) {
+  vi.stubEnv('ASANA_LIVE_INCIDENTS_TEST', 'true')
+  const fetchMock = vi.fn(async () => liveSchema())
+  const load = createWritableFieldValidationLoader('tok', configForWrite(LIVE_PROJECT), fetchMock)
+  const h = setup(
+    over.payload ?? { flag_id: FLAG, property_id: SCOPE_PROP, create_protocol: CREATE_PROTOCOL, ...LIVE_PIN },
+    {
+      allowedCompanyIds: [SCOPE_CO],
+      loadFieldValidation: load,
+      destination: 'live_incidents',
+      outbox: { company_id: SCOPE_CO, event_type: LIVE_EVENT, ...(over.outbox ?? {}) },
+      ...(over.onlyFlagId ? { onlyFlagId: over.onlyFlagId } : {}),
+    },
+  )
+  h.db.fixtures.flagPropertyId = SCOPE_PROP
+  h.db.fixtures.categoryKey = 'cleaning_issue'
+  h.db.fixtures.photos = [{
+    id: 'p1', company_id: SCOPE_CO, flag_id: FLAG, sync_status: 'synced', deleted_at: null, bytes_deleted_at: null,
+    storage_path: `companies/${SCOPE_CO}/flags/${FLAG}/p1.jpg`,
+  }]
+  h.db.fixtures.issueSelections =
+    over.selections === undefined
+      ? {
+          flag_id: FLAG, source_pack_photo_id: 'a080d3ca-61b3-4dd5-9a56-87a90135761d',
+          category: 'inventory', incident_type: 'physical_damage', actions: ['fix', 'replace'], severity: 'major', fix_owner: 'vendor',
+        }
+      : over.selections
+  return { ...h, fetchMock }
+}
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
+
+describe('staff rollout through the real worker', () => {
+  it.each([false, true])('ordinary/pack-photo issue (%s) outside Test 1 creates one live task and survives retry', async (packPhoto) => {
+    const h = liveSetup(packPhoto ? {} : { selections: null })
+    vi.stubEnv('ASANA_LIVE_INCIDENTS_ENABLED', 'true')
+    vi.stubEnv('ASANA_LIVE_INCIDENTS_TEST', '')
+    h.db.fixtures.flagPropertyId = 'real-property'
+    h.asana.behaviour.create = 'lost_response'
+    expect(await h.run()).toMatchObject({ status: 'error', error: 'create_ambiguous' })
+    expect(sent(h)).toMatchObject({ projectGid: LIVE_PROJECT, sectionGid: LIVE_INTAKE })
+    expect(sent(h).notes).not.toContain('STR app (BETA)')
+    expect(sent(h).notes).toContain('Address:         Ballito Village, Test Drive')
+    h.asana.behaviour.create = 'ok'
+    h.clock.now += 6 * MIN
+    h.due()
+    expect(await h.run()).toMatchObject({ status: 'adopted' })
+    expect(posts(h.asana)).toBe(1)
+    expect(h.db.links[0]).toMatchObject({ external_project_gid: LIVE_PROJECT })
+  })
+})
+
+describe('LIVE TEST: an older / scheduled worker can never claim a live-destination job', () => {
+  it('a worker draining the default (BETA) queue does not even SEE a pending live job — with the switch on or off', async () => {
+    for (const on of [true, false]) {
+      const h = liveSetup()
+      if (!on) vi.stubEnv('ASANA_LIVE_INCIDENTS_TEST', '')
+      // exactly what the cron / an older deployment runs: no destination
+      const oldWorkerDeps = { allowedCompanyIds: [SCOPE_CO], appBaseUrl: BASE, now: () => h.clock.now }
+      expect(await runNextAsanaOutbox(h.db.client, h.asana.provider, oldWorkerDeps)).toEqual({ status: 'no_pending' })
+      expect(await runAsanaOutboxBatch(h.db.client, h.asana.provider, oldWorkerDeps, 5)).toEqual([{ status: 'no_pending' }])
+      expect(await dryRunNextAsanaOutbox(h.db.client, oldWorkerDeps)).toEqual({ status: 'no_pending' })
+      expect(posts(h.asana)).toBe(0)
+      expect(h.db.outbox).toMatchObject({ status: 'pending', event_type: LIVE_EVENT, locked_by: null, attempt_count: 0 })
+      expect(h.db.links).toEqual([])
+    }
+  })
+
+  it('the live worker does not see BETA jobs either', async () => {
+    const h = liveSetup({ outbox: { event_type: 'asana.create_task_for_flag' }, payload: { flag_id: FLAG, create_protocol: CREATE_PROTOCOL } })
+    expect(await h.run()).toEqual({ status: 'no_pending' })
+    expect(posts(h.asana)).toBe(0)
+    expect(h.db.outbox.status).toBe('pending')
+  })
+})
+
+describe('LIVE TEST: switch off -> the live queue is not read, nothing is claimed or sent', () => {
+  it.each(['', 'false', 'TRUE', '1', 'yes'])('ASANA_LIVE_INCIDENTS_TEST=%j', async (value) => {
+    const h = liveSetup()
+    vi.stubEnv('ASANA_LIVE_INCIDENTS_TEST', value)
+    expect(await h.run()).toMatchObject({ status: 'refused', reason: 'live_test:switched_off' })
+    expect(await dryRunNextAsanaOutbox(h.db.client, h.deps)).toMatchObject({ status: 'refused', reason: 'live_test:switched_off' })
+    expect(posts(h.asana)).toBe(0)
+    expect(h.db.outboxUpdates).toEqual([])
+    expect(h.db.outbox.status).toBe('pending')
+  })
+})
+
+describe('LIVE TEST: one task, in the live project, in "New (Intake", with the reporter\'s fields', () => {
+  it('created ONCE: live project + intake section + live field GIDs; link, flag URL and job recorded', async () => {
+    const h = liveSetup()
+    const res = await h.run()
+    expect(res).toMatchObject({ status: 'created', flagId: FLAG })
+    expect(posts(h.asana)).toBe(1)
+    const p = sent(h)
+    expect(p.projectGid).toBe(LIVE_PROJECT)
+    expect(p.sectionGid).toBe(LIVE_INTAKE)
+    expect(p.customFields).toEqual({
+      [LF.category!.gid]: LF.category!.options!.inventory,
+      [LF.inventoryIncidentType!.gid]: LF.inventoryIncidentType!.options!.physical_damage,
+      [LF.replacementRequired!.gid]: [LF.replacementRequired!.options!.fix, LF.replacementRequired!.options!.replace],
+      [LF.severity!.gid]: LF.severity!.options!.major,
+      [LF.fixOwner!.gid]: LF.fixOwner!.options!.vendor,
+      [LF.evidenceReceived!.gid]: LF.evidenceReceived!.options!.yes,
+    })
+    // no BETA GID anywhere in the request
+    const betaGids = new Set(Object.values(BETA_FIELD_CONFIG.fields).flatMap((s) => (s ? [s.gid, ...Object.values(s.options ?? {})] : [])))
+    const shared = new Set([LF.unit!.gid, LF.unitNumber!.gid])
+    for (const g of [...Object.keys(p.customFields ?? {}), ...Object.values(p.customFields ?? {}).flat()]) {
+      if (!shared.has(g)) expect(betaGids.has(g)).toBe(false)
+    }
+    expect(p.projectGid).not.toBe(BETA)
+    // Unit #, Unit Number and Accountable Party are never sent
+    for (const f of [LF.unit!.gid, LF.unitNumber!.gid, LF.accountableParty!.gid]) expect(p.customFields).not.toHaveProperty(f)
+
+    expect(h.db.links).toHaveLength(1)
+    expect(h.db.links[0]).toMatchObject({ company_id: SCOPE_CO, internal_entity_id: FLAG, external_project_gid: LIVE_PROJECT })
+    expect(h.db.flag.asana_task_url).toBeTruthy()
+    expect(h.db.outbox).toMatchObject({ status: 'done', event_type: LIVE_EVENT })
+    expect(h.state()).toMatchObject(LIVE_PIN)
+    expect(h.fetchMock).toHaveBeenCalledTimes(1)
+    expect((h.fetchMock.mock.calls[0] as unknown[])[1]).toBe(LIVE_PROJECT)
+  })
+
+  it.each(['maintenance_issue', 'inventory_missing', 'cleaning_issue', 'safety_urgent', 'guest_damage', 'condition_note', 'mystery'])(
+    'app issue type %s -> ALWAYS the intake section (never a category section)',
+    async (key) => {
+      const h = liveSetup()
+      h.db.fixtures.categoryKey = key
+      await h.run()
+      expect(sent(h)).toMatchObject({ projectGid: LIVE_PROJECT, sectionGid: LIVE_INTAKE })
+    },
+  )
+
+  it('HOA: the multi-select incident type is sent as an array with Category HOA', async () => {
+    const h = liveSetup()
+    h.db.fixtures.issueSelections = { flag_id: FLAG, source_pack_photo_id: 'x', category: 'hoa', incident_type: 'noise_complaint', actions: ['record_keeping'], severity: null, fix_owner: null }
+    await h.run()
+    expect(sent(h).customFields).toEqual({
+      [LF.category!.gid]: LF.category!.options!.hoa,
+      [LF.hoaIncidentType!.gid]: [LF.hoaIncidentType!.options!.noise_complaint],
+      [LF.replacementRequired!.gid]: [LF.replacementRequired!.options!.record_keeping],
+      [LF.evidenceReceived!.gid]: LF.evidenceReceived!.options!.yes,
+    })
+  })
+
+  it('dry run: shows the exact live task (project, section, fields) and creates / writes NOTHING', async () => {
+    const h = liveSetup()
+    const res = await dryRunNextAsanaOutbox(h.db.client, h.deps)
+    expect(res).toMatchObject({ status: 'dry_run_ok', flagId: FLAG })
+    const p = (res as { payload: TaskPayload }).payload
+    expect(p).toMatchObject({ projectGid: LIVE_PROJECT, sectionGid: LIVE_INTAKE })
+    expect(p.customFields).toMatchObject({ [LF.category!.gid]: LF.category!.options!.inventory })
+    expect(posts(h.asana)).toBe(0)
+    expect(h.db.outboxUpdates).toEqual([])
+    expect(h.db.links).toEqual([])
+  })
+})
+
+describe('LIVE TEST: the destination is pinned through retries and reconciliation; duplicate protection intact', () => {
+  it('lost response -> the retry reconciles IN THE LIVE PROJECT and adopts the task: exactly ONE POST, still live', async () => {
+    const h = liveSetup()
+    h.asana.behaviour.create = 'lost_response'
+    expect(await h.run()).toMatchObject({ status: 'error', error: 'create_ambiguous' })
+    expect(h.db.outbox).toMatchObject({ status: 'pending', event_type: LIVE_EVENT })
+    expect(h.state()).toMatchObject(LIVE_PIN)
+
+    h.asana.behaviour.create = 'ok'
+    h.clock.now += 6 * MIN
+    h.due()
+    expect(await h.run()).toMatchObject({ status: 'adopted' })
+    expect(posts(h.asana)).toBe(1)
+    expect(h.asana.provider.listTasksModifiedSince.mock.calls.every((c) => (c as unknown as string[])[0] === LIVE_PROJECT)).toBe(true)
+    expect(h.asana.tasks).toHaveLength(1)
+    expect(h.asana.tasks[0].projectGids).toEqual([LIVE_PROJECT])
+    expect(h.db.links[0]).toMatchObject({ external_project_gid: LIVE_PROJECT })
+    expect(h.db.outbox).toMatchObject({ status: 'done', event_type: LIVE_EVENT })
+  })
+
+  it('a saved task GID is verified in the LIVE project and never recreated', async () => {
+    const h = liveSetup()
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    // simulate a crash after the GID was saved: link gone, job pending again
+    h.db.links.length = 0
+    Object.assign(h.db.outbox, { status: 'pending', locked_by: null, locked_at: null })
+    h.due()
+    expect(await h.run()).toMatchObject({ status: 'adopted' })
+    expect(posts(h.asana)).toBe(1)
+    expect((h.asana.provider.getTask.mock.calls[0] as unknown as string[])[0]).toBe(LIVE_PROJECT)
+  })
+
+  it('an EXISTING link (e.g. an earlier BETA task for this issue) is kept: no live task is created', async () => {
+    const h = liveSetup()
+    h.db.links.push({
+      company_id: SCOPE_CO, provider: 'asana', internal_entity_type: 'flag', internal_entity_id: FLAG,
+      external_project_gid: BETA, external_task_gid: 'BETA-T1', external_task_url: 'https://app.asana.com/0/1/BETA-T1', deleted_at: null,
+    })
+    expect(await h.run()).toMatchObject({ status: 'already_linked' })
+    expect(posts(h.asana)).toBe(0)
+    expect(h.db.links).toHaveLength(1)
+    expect(h.db.links[0].external_task_gid).toBe('BETA-T1')
+  })
+
+  it('a 400 on the fields falls back to a create WITHOUT fields — still live, still intake, still one task', async () => {
+    const h = liveSetup()
+    h.asana.behaviour.create = 'reject_400_if_fields'
+    expect(await h.run()).toMatchObject({ status: 'error', error: 'create_rejected_custom_fields_http_400' })
+    h.clock.now += 6 * MIN
+    h.due()
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    const last = sent(h, posts(h.asana) - 1)
+    expect(last).toMatchObject({ projectGid: LIVE_PROJECT, sectionGid: LIVE_INTAKE })
+    expect(last).not.toHaveProperty('customFields')
+    expect(h.asana.tasks).toHaveLength(1)
+  })
+})
+
+describe('LIVE TEST: scope is re-proven from the database on every run — the job payload is never trusted', () => {
+  const refused = async (h: ReturnType<typeof liveSetup>, code: string) => {
+    expect(await h.run()).toMatchObject({ status: 'refused', reason: code })
+    expect(posts(h.asana)).toBe(0)
+    expect(h.db.outbox).toMatchObject({ status: 'dead', last_error: code, event_type: LIVE_EVENT })
+    expect(h.db.links).toEqual([])
+    expect(h.asana.provider.listTasksModifiedSince).not.toHaveBeenCalled()
+  }
+
+  it('another PROPERTY of the test company -> refused (other properties keep their routing)', async () => {
+    const h = liveSetup()
+    h.db.fixtures.flagPropertyId = 'another-property'
+    await refused(h, 'live_test:out_of_scope')
+  })
+
+  it('the flag belongs to a DIFFERENT company than the job -> refused', async () => {
+    const h = liveSetup()
+    h.db.fixtures.flagCompanyId = 'another-company'
+    await refused(h, 'live_test:out_of_scope')
+  })
+
+  it('a job of another (allowlisted) company -> refused, even with a forged live payload', async () => {
+    vi.stubEnv('ASANA_LIVE_INCIDENTS_TEST', 'true')
+    const h = setup(
+      { flag_id: FLAG, property_id: SCOPE_PROP, create_protocol: CREATE_PROTOCOL, ...LIVE_PIN },
+      { allowedCompanyIds: ['co'], destination: 'live_incidents', outbox: { event_type: LIVE_EVENT } },
+    )
+    h.db.fixtures.flagPropertyId = SCOPE_PROP
+    h.db.fixtures.issueSelections = { flag_id: FLAG, source_pack_photo_id: 'x', category: null, incident_type: null, actions: [], severity: null, fix_owner: null }
+    expect(await h.run()).toMatchObject({ status: 'refused', reason: 'live_test:out_of_scope' })
+    expect(posts(h.asana)).toBe(0)
+    expect(h.db.outbox.status).toBe('dead')
+  })
+
+  it('a job from ANOTHER company naming an in-scope flag (forged cross-company job) -> refused', async () => {
+    vi.stubEnv('ASANA_LIVE_INCIDENTS_TEST', 'true')
+    const h = setup(
+      { flag_id: FLAG, property_id: SCOPE_PROP, create_protocol: CREATE_PROTOCOL, ...LIVE_PIN },
+      { allowedCompanyIds: ['co', SCOPE_CO], destination: 'live_incidents', outbox: { event_type: LIVE_EVENT } },
+    )
+    // the flag itself really is the test company's, on the test property
+    h.db.fixtures.flagCompanyId = SCOPE_CO
+    h.db.fixtures.flagPropertyId = SCOPE_PROP
+    h.db.fixtures.issueSelections = { flag_id: FLAG, source_pack_photo_id: 'x', category: null, incident_type: null, actions: [], severity: null, fix_owner: null }
+    expect(await h.run()).toMatchObject({ status: 'refused', reason: 'live_test:out_of_scope' })
+    expect(posts(h.asana)).toBe(0)
+    expect(h.db.outbox.status).toBe('dead')
+  })
+
+  it('a field schema validated for ANOTHER project (BETA) is never used for a live task: created without fields', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const h = liveSetup()
+    const betaLoader = goodLoader()
+    const res = await runNextAsanaOutbox(h.db.client, h.asana.provider, { ...h.deps, loadFieldValidation: betaLoader.load })
+    expect(res).toMatchObject({ status: 'created' })
+    expect(sent(h)).toMatchObject({ projectGid: LIVE_PROJECT, sectionGid: LIVE_INTAKE })
+    expect(sent(h)).not.toHaveProperty('customFields')
+  })
+
+  it('missing flag -> refused', async () => {
+    const h = liveSetup()
+    h.db.hooks.flagMissing = true
+    await refused(h, 'live_test:out_of_scope')
+  })
+
+  it.each([
+    ['an ordinary flag (no saved selections)', null],
+    ['selections without a source pack photo', { flag_id: FLAG, source_pack_photo_id: null, category: 'inventory', incident_type: null, actions: [], severity: null, fix_owner: null }],
+  ])('%s -> refused (only pack-photo issues take part)', async (_l, selections) => {
+    await refused(liveSetup({ selections }), 'live_test:not_pack_photo_issue')
+  })
+
+  it.each([
+    ['no destination record', { flag_id: FLAG, create_protocol: CREATE_PROTOCOL }],
+    ['a BETA record on a live job', { flag_id: FLAG, create_protocol: CREATE_PROTOCOL, destination: 'beta', destination_project_gid: BETA }],
+    ['another project', { flag_id: FLAG, create_protocol: CREATE_PROTOCOL, destination: 'live_incidents', destination_project_gid: '999' }],
+  ])('pin mismatch (%s) -> refused', async (_l, payload) => {
+    await refused(liveSetup({ payload }), 'live_test:destination_pin_mismatch')
+  })
+
+  it('the flag ALSO has a BETA create job -> refused: one destination per flag, never two tasks', async () => {
+    const h = liveSetup()
+    h.db.fixtures.otherJobs = [{
+      id: 'ob-beta', company_id: SCOPE_CO, event_type: 'asana.create_task_for_flag', entity_type: 'flag', entity_id: FLAG, status: 'done', deleted_at: null,
+    }]
+    await refused(h, 'live_test:other_destination_job')
+  })
+
+  it.each(['flag', 'selections', 'other job'])('a FAILED %s read -> retried later, nothing sent, job not retired', async (which) => {
+    const h = liveSetup(which === 'selections' ? { selections: 'error' } : {})
+    if (which === 'flag') h.db.fixtures.flagReadError = true
+    if (which === 'other job') h.db.fixtures.otherJobsError = true
+    expect(await h.run()).toMatchObject({ status: 'error', error: 'live_test:scope_read_failed' })
+    expect(posts(h.asana)).toBe(0)
+    expect(h.db.outbox).toMatchObject({ status: 'pending', attempt_count: 1, event_type: LIVE_EVENT })
+  })
+})
+
+describe('LIVE TEST: a targeted run can only touch the named issue', () => {
+  it('onlyFlagId = another flag -> no_pending; the job is untouched', async () => {
+    const h = liveSetup({ onlyFlagId: OTHER })
+    expect(await h.run()).toEqual({ status: 'no_pending' })
+    expect(posts(h.asana)).toBe(0)
+    expect(h.db.outbox.status).toBe('pending')
+  })
+
+  it('onlyFlagId = this flag -> processed', async () => {
+    const h = liveSetup({ onlyFlagId: FLAG })
+    expect(await h.run()).toMatchObject({ status: 'created' })
+  })
+})
+
+describe('LIVE TEST switched on does NOT change BETA routing', () => {
+  it('a BETA job still goes to the BETA project and its category section, with BETA field GIDs', async () => {
+    vi.stubEnv('ASANA_LIVE_INCIDENTS_TEST', 'true')
+    const h = fieldsSetup('inventory_missing')
+    expect(await h.run()).toMatchObject({ status: 'created' })
+    const p = sent(h)
+    expect(p.projectGid).toBe(BETA)
+    expect(p.sectionGid).not.toBe(LIVE_INTAKE)
+    expect(p.customFields).toEqual({ [F.category]: O.inventory, [F.inventoryType]: O.missing, [F.evidence]: O.yes })
+    expect(h.db.links[0]).toMatchObject({ external_project_gid: BETA })
+    expect(h.db.outbox.event_type).toBe('asana.create_task_for_flag')
   })
 })
