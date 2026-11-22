@@ -103,3 +103,8 @@ actual workboard component, linked to the production CSS. Serve that directory
 and the build's `_next/static` assets locally. These files contain synthetic
 fixture identities, have no running app backend or hydration, and must never
 be treated as live inspections or as proof of camera/upload interactions.
+
+The next integration includes a calendar driven by each company’s connected PMS,
+with Hostaway first for Drop-Inn. See `PMS_CALENDAR_SCOPE.md`: the calendar and
+Today list share the same checkout-generated work; multi-unit reservations need
+a verified physical-apartment allocation before a unit-specific inspection.

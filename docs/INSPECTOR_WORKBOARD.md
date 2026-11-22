@@ -225,3 +225,8 @@ count/no-data states and late-review reconciliation. Replacement quick lists
 remain backlog. Apple/Google store release requires real mobile packaging,
 device/security acceptance, privacy declarations, accounts and store review;
 a web deployment alone is not a store release.
+
+The next integration includes a calendar driven by each company’s connected PMS,
+with Hostaway first for Drop-Inn. See `PMS_CALENDAR_SCOPE.md`: the calendar and
+Today list share the same checkout-generated work; multi-unit reservations need
+a verified physical-apartment allocation before a unit-specific inspection.
