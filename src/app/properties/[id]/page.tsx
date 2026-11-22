@@ -54,9 +54,10 @@ import { packDateDisplay } from '@/lib/reports/pack-dates'
 import { updateFlagAction } from './flags/[flagId]/actions'
 import { toggleFlagMarkAction } from './flags/[flagId]/marks/actions'
 import { startPreArrivalPackAction } from './packs/actions'
-import { canInspect, nextUnstartedTurnover, sastDay } from '@/lib/inspections/workboard'
+import { canInspect, nextDiscardedTurnover, nextUnstartedTurnover, sastDay } from '@/lib/inspections/workboard'
 import { loadInspectionJobs } from '@/lib/inspections/load-workspace'
 import { InspectionStartButton } from '@/components/inspections/inspection-start-button'
+import { DiscardedInspectionNotice } from '@/components/inspections/discarded-inspection-notice'
 import { formatDateSAST } from '@/lib/ui/datetime'
 
 /**
@@ -273,7 +274,8 @@ export default async function PropertyPage({
 
   if (!property) notFound()
   const scheduledInspection = nextUnstartedTurnover(inspectionJobs.data ?? [], id, sastDay())
-  const draftInspection = inspectionJobs.data?.find(j => j.pack_id === draftPack?.id)
+  const discardedInspection = scheduledInspection ? null : nextDiscardedTurnover(inspectionJobs.data ?? [], id, sastDay())
+  const draftInspection = inspectionJobs.data?.find(j => !j.cancelled_at && !j.pack_deleted && j.pack_id === draftPack?.id)
 
   // Second query wave. Everything here depends only on IDs from the
   // first wave (open-flag IDs, draft pack id, submitted pack ids) —
@@ -540,8 +542,9 @@ export default async function PropertyPage({
                 {/* Heading + meta. The photo count deliberately lives ONLY in
                     the status banner below — one authoritative status. */}
                 <p className="text-sm font-medium text-slate-900">
-                  Pre-arrival pack in progress
+                  {draftInspection ? 'Scheduled inspection in progress' : 'Pre-arrival pack in progress'}
                 </p>
+                {draftInspection && <p className="mt-1 text-xs text-slate-600">Inspection date: {formatDateSAST(`${draftInspection.due_on}T12:00:00+02:00`)} · Started by {draftInspection.starter_name ?? 'Team member'}</p>}
                 {(() => {
                   // Draft-creation default titles are not repeated here (the
                   // heading above already says what this is); a custom title is.
@@ -662,16 +665,16 @@ export default async function PropertyPage({
                   />
                 </div>
               </div>
+            ) : discardedInspection ? (
+              <DiscardedInspectionNotice job={discardedInspection} manager={canManageProperties(ctx.membership?.role_key)} />
             ) : (
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-slate-900">
-                    Pre-arrival evidence pack
+                    {scheduledInspection ? 'Scheduled inspection' : 'Pre-arrival evidence pack'}
                   </p>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Start a fresh pack for this turnover. Camera stays open —
-                    capture a full sweep in one go. Submitted packs land in
-                    history below.
+                    {scheduledInspection ? 'Start this inspection to open its pre-arrival pack. Submitting the pack completes the inspection.' : 'Start a fresh pack for this turnover. Camera stays open — capture a full sweep in one go. Submitted packs land in history below.'}
                   </p>
                 </div>
                 {inspectionJobs.error ? <p role="alert" className="text-sm text-amber-900">{inspectionJobs.error} Reload before starting a pack.</p> : scheduledInspection ? <div>

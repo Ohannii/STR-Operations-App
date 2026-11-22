@@ -34,6 +34,11 @@ export function nextUnstartedTurnover(jobs: TurnoverJob[], propertyId: string, t
     .sort((a, b) => a.due_on.localeCompare(b.due_on)
       || (a.checkout_at ?? '').localeCompare(b.checkout_at ?? '') || a.id.localeCompare(b.id))[0] ?? null
 }
+export function nextDiscardedTurnover(jobs: TurnoverJob[], propertyId: string, today: string): TurnoverJob | null {
+  return jobs.filter(j => j.property_id === propertyId && j.due_on <= today && !j.cancelled_at
+    && j.pack_id && j.pack_deleted && j.pack_status === 'draft')
+    .sort((a, b) => a.due_on.localeCompare(b.due_on) || a.id.localeCompare(b.id))[0] ?? null
+}
 // Repeated query keys arrive as arrays in Next; never pass them to client search.
 export const workQueryValue = (value: unknown): string => typeof value === 'string' ? value : ''
 export function sastDay(now = new Date()): string {

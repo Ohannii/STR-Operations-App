@@ -106,6 +106,9 @@ A discarded/deleted linked draft is shown as needing attention rather than as
 completed. Managers can cancel that visit, preserving the discarded pack/link
 and audit trail, then schedule a replacement. They cannot reschedule/relink
 discarded work or cancel a live/submitted pack through these controls.
+The apartment itself shows the discarded inspection and manager cancellation
+in place of ordinary Start. Stale ordinary Start submissions also refuse to
+create an unlinked pack while that due inspection needs cancellation.
 
 Changing an inspection's due date does not change its recorded guest checkout
 or next arrival. The form states this explicitly. Distinct checkout times may

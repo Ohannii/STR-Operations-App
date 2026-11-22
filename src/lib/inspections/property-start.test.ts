@@ -41,6 +41,17 @@ describe('habitual property Start form on a scheduled apartment', () => {
     await expect(startPreArrivalPackAction(form())).rejects.toThrow(encodeURIComponent('Could not load inspection work.'))
     expect(mocks.start).not.toHaveBeenCalled(); expect(mocks.insert).not.toHaveBeenCalled()
   })
+  it('refuses a stale ordinary Start after the scheduled draft was discarded', async () => {
+    mocks.jobs.mockResolvedValue({ data: [{ id: 'job', property_id: property, due_on: '2026-11-22', pack_id: 'discarded-pack', pack_deleted: true, pack_status: 'draft', cancelled_at: null }], error: null })
+    await expect(startPreArrivalPackAction(form())).rejects.toThrow(encodeURIComponent('This inspection’s draft was discarded. A manager can cancel the inspection before scheduling a replacement.'))
+    expect(mocks.start).not.toHaveBeenCalled(); expect(mocks.insert).not.toHaveBeenCalled()
+  })
+  it('allows an ordinary pack after the discarded inspection has been cancelled', async () => {
+    mocks.jobs.mockResolvedValue({ data: [{ id: 'job', property_id: property, due_on: '2026-11-22', pack_id: 'discarded-pack', pack_deleted: true, pack_status: 'draft', cancelled_at: '2026-11-22T12:00:00Z' }], error: null })
+    await expect(startPreArrivalPackAction(form())).rejects.toThrow(`redirect:/properties/${property}`)
+    expect(mocks.start).not.toHaveBeenCalled()
+    expect(mocks.insert).toHaveBeenCalledWith(expect.objectContaining({ property_id: property, pack_type: 'pre_arrival' }))
+  })
   it('starts an ordinary pack today while leaving a future scheduled visit unlinked', async () => {
     mocks.jobs.mockResolvedValue({ data: [{ id: 'future-job', property_id: property, due_on: '2026-12-05', pack_id: null, cancelled_at: null }], error: null })
     await expect(startPreArrivalPackAction(form())).rejects.toThrow(`redirect:/properties/${property}`)

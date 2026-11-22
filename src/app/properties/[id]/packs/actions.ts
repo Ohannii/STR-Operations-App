@@ -7,7 +7,7 @@ import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
 import { formatDateTimeSAST } from '@/lib/ui/datetime'
 import { buildPackStartRedirect } from '@/lib/packs/start-redirect'
-import { canInspect, nextUnstartedTurnover, sastDay } from '@/lib/inspections/workboard'
+import { canInspect, inspectionError, nextDiscardedTurnover, nextUnstartedTurnover, sastDay } from '@/lib/inspections/workboard'
 import { loadInspectionJobs } from '@/lib/inspections/load-workspace'
 import { startTurnover } from '@/app/dashboard/work/actions'
 import {
@@ -95,6 +95,9 @@ export async function startPreArrivalPackAction(formData: FormData) {
       if (!result.ok) redirect(`/properties/${propertyId}?error=${encodeURIComponent(result.error)}`)
       revalidatePath(`/properties/${propertyId}`)
       redirect(buildPackStartRedirect(propertyId, returnTo))
+    }
+    if (nextDiscardedTurnover(jobs.data ?? [], propertyId, sastDay())) {
+      redirect(`/properties/${propertyId}?error=${encodeURIComponent(inspectionError({ code: '55000', message: 'pack unavailable' }))}`)
     }
   }
   const now = new Date()

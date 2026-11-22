@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canInspect, canCoordinateInspections, inspectionError, jobState, localSastToUtc, nextUnstartedTurnover, propertyLabel, sastDay, validDay, workQueryValue, type Allocation, type TurnoverJob } from './workboard'
+import { canInspect, canCoordinateInspections, inspectionError, jobState, localSastToUtc, nextDiscardedTurnover, nextUnstartedTurnover, propertyLabel, sastDay, validDay, workQueryValue, type Allocation, type TurnoverJob } from './workboard'
 
 const job = { due_on: '2026-11-22', cancelled_at: null, pack_deleted: false, pack_status: null } as TurnoverJob
 describe('workboard dates and authorship', () => {
@@ -48,6 +48,12 @@ describe('roles and safe errors', () => {
   })
 })
 describe('scheduled property Start and query boundary', () => {
+  it('finds a discarded due inspection while excluding cancelled, foreign and future visits', () => {
+    const discarded = { ...job, id: 'discarded', property_id: 'bl', pack_id: 'pack', pack_deleted: true, pack_status: 'draft' }
+    const other = [{ ...discarded, id: 'future', due_on: '2026-12-05' }, { ...discarded, id: 'foreign', property_id: 'bv' }, { ...discarded, id: 'cancelled', cancelled_at: '2026-11-22' }]
+    expect(nextDiscardedTurnover(other, 'bl', '2026-11-22')).toBeNull()
+    expect(nextDiscardedTurnover([...other, discarded], 'bl', '2026-11-22')).toBe(discarded)
+  })
   it('selects the earliest unstarted visit on the exact property, excluding linked/cancelled work', () => {
     const visit = { ...job, id: 'later', property_id: 'bl', pack_id: null }
     const jobs = [visit, { ...visit, id: 'early', due_on: '2026-11-21' },

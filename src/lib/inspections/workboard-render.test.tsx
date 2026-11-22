@@ -4,11 +4,20 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn(), push: 
 vi.mock('@/app/dashboard/work/actions', () => ({ assignInspectors: vi.fn(), setReassignmentPolicy: vi.fn(), scheduleTurnover: vi.fn(), updateTurnover: vi.fn(), startTurnover: vi.fn() }))
 import { AssignmentManager } from '@/app/dashboard/assignments/assignment-manager'
 import { InspectionJobCard, Workboard } from '@/app/dashboard/work/workboard'
+import { DiscardedInspectionNotice } from '@/components/inspections/discarded-inspection-notice'
 import type { Allocation, InspectionWorkspace, TurnoverJob } from './workboard'
 const p: Allocation = { id: 'p', name: 'Unit 91', address: 'Ballito Life', unit_reference: '91', revision: 0, inspector_id: 'a', inspector_name: 'Inspector A', inspector_active: true }
 const workspace: InspectionWorkspace = { properties: [p, { ...p, id: 'bv', address: 'Ballito Village', inspector_id: null, inspector_name: null }], inspectors: [{ id: 'a', name: 'Inspector A', role: 'inspector' }, { id: 'b', name: 'Inspector B', role: 'inspector' }], history: [], managers_only: false, settings_revision: 0 }
 const j: TurnoverJob = { id: 'j', property_id: 'p', due_on: '2026-11-22', checkout_at: null, next_arrival_at: null, source: 'manual', cancelled_at: null, revision: 0, pack_id: 'pack', pack_deleted: false, pack_status: 'submitted', started_by: 'b', starter_name: 'Inspector B', submitted_by: 'b', submitter_name: 'Inspector B', submitted_at: '2026-11-22T10:00:00Z' }
 describe('actual inspection screens', () => {
+  it('puts discarded inspection status and manager cancellation on the apartment, without another Start action', () => {
+    const html = renderToStaticMarkup(<DiscardedInspectionNotice job={{ ...j, pack_status: 'draft', pack_deleted: true }} manager />)
+    expect(html).toContain('Inspection still open'); expect(html).toContain('Cancel inspection')
+    expect(html).toContain('/dashboard/work?scope=all&amp;property=p')
+    expect(html).not.toContain('Start pre-arrival'); expect(html).not.toContain('Start scheduled')
+    const inspector = renderToStaticMarkup(<DiscardedInspectionNotice job={{ ...j, pack_status: 'draft', pack_deleted: true }} manager={false} />)
+    expect(inspector).toContain('Ask a manager'); expect(inspector).not.toContain('<button')
+  })
   it('keeps the regular inspector and actual submitter separate, with no readiness claim', () => {
     const html = renderToStaticMarkup(<InspectionJobCard job={j} property={p} manager={false} today="2026-11-22" />)
     expect(html).toContain('Inspector A'); expect(html).toContain('Inspector B')
