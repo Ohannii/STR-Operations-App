@@ -54,9 +54,19 @@ describe('scheduled property Start and query boundary', () => {
       { ...visit, id: 'foreign', property_id: 'bv', due_on: '2026-11-19' },
       { ...visit, id: 'linked', pack_id: 'pack', due_on: '2026-11-19' },
       { ...visit, id: 'cancelled', cancelled_at: '2026-11-20', due_on: '2026-11-19' }]
-    expect(nextUnstartedTurnover(jobs, 'bl')?.id).toBe('early')
+    expect(nextUnstartedTurnover(jobs, 'bl', '2026-11-22')?.id).toBe('early')
     expect(jobs[0].id).toBe('later')
-    expect(nextUnstartedTurnover(jobs, 'missing')).toBeNull()
+    expect(nextUnstartedTurnover(jobs, 'missing', '2026-11-22')).toBeNull()
+  })
+  it('does not route today’s ordinary Start into an inspection due next week', () => {
+    const upcoming = { ...job, property_id: 'bl', pack_id: null, due_on: '2026-12-05' }
+    expect(nextUnstartedTurnover([upcoming], 'bl', '2026-11-22')).toBeNull()
+    expect(nextUnstartedTurnover([upcoming], 'bl', '2026-12-05')).toBe(upcoming)
+  })
+  it('uses South Africa midnight, including year end, when a future visit becomes due', () => {
+    const upcoming = { ...job, property_id: 'bl', pack_id: null, due_on: '2027-01-01' }
+    expect(nextUnstartedTurnover([upcoming], 'bl', sastDay(new Date('2026-12-31T21:59:59Z')))).toBeNull()
+    expect(nextUnstartedTurnover([upcoming], 'bl', sastDay(new Date('2026-12-31T22:00:00Z')))).toBe(upcoming)
   })
   it.each([['a', 'b'], undefined, null, {}, 3])('treats repeated/non-string query values as empty', value => {
     expect(workQueryValue(value)).toBe('')

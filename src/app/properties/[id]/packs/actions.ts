@@ -7,7 +7,7 @@ import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
 import { formatDateTimeSAST } from '@/lib/ui/datetime'
 import { buildPackStartRedirect } from '@/lib/packs/start-redirect'
-import { canInspect, nextUnstartedTurnover } from '@/lib/inspections/workboard'
+import { canInspect, nextUnstartedTurnover, sastDay } from '@/lib/inspections/workboard'
 import { loadInspectionJobs } from '@/lib/inspections/load-workspace'
 import { startTurnover } from '@/app/dashboard/work/actions'
 import {
@@ -89,7 +89,7 @@ export async function startPreArrivalPackAction(formData: FormData) {
   if (canInspect(ctx.membership?.role_key)) {
     const jobs = await loadInspectionJobs(ctx.company.id, false, propertyId)
     if (jobs.error) redirect(`/properties/${propertyId}?error=${encodeURIComponent(jobs.error)}`)
-    const scheduled = nextUnstartedTurnover(jobs.data ?? [], propertyId)
+    const scheduled = nextUnstartedTurnover(jobs.data ?? [], propertyId, sastDay())
     if (scheduled) {
       const result = await startTurnover(scheduled.id)
       if (!result.ok) redirect(`/properties/${propertyId}?error=${encodeURIComponent(result.error)}`)

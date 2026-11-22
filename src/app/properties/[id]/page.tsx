@@ -54,7 +54,7 @@ import { packDateDisplay } from '@/lib/reports/pack-dates'
 import { updateFlagAction } from './flags/[flagId]/actions'
 import { toggleFlagMarkAction } from './flags/[flagId]/marks/actions'
 import { startPreArrivalPackAction } from './packs/actions'
-import { canInspect, nextUnstartedTurnover } from '@/lib/inspections/workboard'
+import { canInspect, nextUnstartedTurnover, sastDay } from '@/lib/inspections/workboard'
 import { loadInspectionJobs } from '@/lib/inspections/load-workspace'
 import { InspectionStartButton } from '@/components/inspections/inspection-start-button'
 import { formatDateSAST } from '@/lib/ui/datetime'
@@ -272,7 +272,7 @@ export default async function PropertyPage({
   ])
 
   if (!property) notFound()
-  const scheduledInspection = nextUnstartedTurnover(inspectionJobs.data ?? [], id)
+  const scheduledInspection = nextUnstartedTurnover(inspectionJobs.data ?? [], id, sastDay())
   const draftInspection = inspectionJobs.data?.find(j => j.pack_id === draftPack?.id)
 
   // Second query wave. Everything here depends only on IDs from the

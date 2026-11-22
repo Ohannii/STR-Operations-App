@@ -27,8 +27,10 @@ export function jobState(job: TurnoverJob, today: string): JobState {
   if (job.pack_status === 'submitted') return 'submitted'
   return job.due_on < today ? 'overdue' : job.due_on === today ? 'today' : 'upcoming'
 }
-export function nextUnstartedTurnover(jobs: TurnoverJob[], propertyId: string): TurnoverJob | null {
-  return jobs.filter(j => j.property_id === propertyId && !j.cancelled_at && !j.pack_id)
+// Automatic apartment Start must not consume a later visit. Upcoming work is
+// separate and can be selected explicitly from its dated workboard card.
+export function nextUnstartedTurnover(jobs: TurnoverJob[], propertyId: string, today: string): TurnoverJob | null {
+  return jobs.filter(j => j.property_id === propertyId && j.due_on <= today && !j.cancelled_at && !j.pack_id)
     .sort((a, b) => a.due_on.localeCompare(b.due_on)
       || (a.checkout_at ?? '').localeCompare(b.checkout_at ?? '') || a.id.localeCompare(b.id))[0] ?? null
 }

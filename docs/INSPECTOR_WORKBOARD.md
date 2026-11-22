@@ -93,10 +93,12 @@ inspector-led start/submit flow must be demonstrated before routine rollout.
 One open pre-arrival draft per apartment remains enforced by the existing unique
 index. A scheduled job never silently adopts an unrelated existing draft or
 submitted report. Submit or discard an older unrelated draft before starting
-another visit. The apartment's primary Start button starts the next scheduled
-inspection when one exists; stale copies of the ordinary Start form use the
-same guarded RPC. Ordinary unscheduled packs remain valid where no scheduled
-job exists, but do not automatically complete an unrelated scheduled job.
+another visit. The apartment's primary Start button starts the earliest
+unstarted inspection due today or overdue (South Africa date); stale ordinary
+Start forms follow the same rule and guarded RPC. Future-dated visits do not
+capture today's ordinary pack. Upcoming work remains visible on its dated
+workboard card and can still be explicitly selected there. Ordinary unscheduled
+packs never automatically complete an unrelated scheduled job.
 
 Unstarted schedules can be rescheduled or cancelled. Started packs are retained;
 this increment does not move or discard their evidence to alter a schedule.
