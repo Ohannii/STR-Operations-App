@@ -54,6 +54,7 @@ import { packDateDisplay } from '@/lib/reports/pack-dates'
 import { updateFlagAction } from './flags/[flagId]/actions'
 import { toggleFlagMarkAction } from './flags/[flagId]/marks/actions'
 import { startPreArrivalPackAction } from './packs/actions'
+import { canInspect } from '@/lib/inspections/workboard'
 
 /**
  * GET /properties/[id]
@@ -440,6 +441,8 @@ export default async function PropertyPage({
       </Link>
 
       <InsecureContextBanner />
+
+      {canInspect(ctx.membership?.role_key) && <Link href={`/dashboard/work?${canManageProperties(ctx.membership?.role_key) ? 'scope=all&' : ''}property=${id}`} className="mb-5 inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-medium"><ClipboardCheck size={16} aria-hidden />Scheduled inspections for this apartment</Link>}
 
       {property_updated ? <div className="mb-5"><Alert tone="success">Property details saved.</Alert></div> : null}
       {raised ? (

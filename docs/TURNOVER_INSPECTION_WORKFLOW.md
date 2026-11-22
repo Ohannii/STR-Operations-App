@@ -1,5 +1,11 @@
 # TURNOVER_INSPECTION_WORKFLOW.md
 
+Implementation note (22 November 2026): the guided checklist below remains a
+design specification. The current pack-based allocation and scheduling
+increment is documented in [INSPECTOR_WORKBOARD.md](INSPECTOR_WORKBOARD.md).
+Pack submission records the actual submitter and does not clear readiness
+blockers or independently complete cleaning/maintenance work.
+
 ## Plain-English overview
 
 In real life, inspectors don't do "post-stay" and "pre-arrival" as two separate trips. They walk into an apartment after a guest checks out and do **both** in one continuous visit:
@@ -293,7 +299,7 @@ Total estimated photo volume from inspections: ~3,800/month. Storage projections
 |---|---|
 | Apartment was vacant — no outgoing stay | Inspector starts Turnover with `outgoing_stay_id = NULL`. Damage section becomes "Condition check" instead of "Previous guest damage." Same template, semantically softer. |
 | Apartment goes from one guest directly to another — no time for cleaning | The "Cleanliness" section is still required. Inspector marks it not-ready if cleaning has not occurred. Property cannot transition to `ready_for_arrival`. |
-| Two inspectors start a Turnover for the same property | Same as today — both drafts exist, manager picks one. The other is closed as duplicate. (Schema is ready for collaborative edit in v2+; not in MVP.) |
+| Two inspectors start a Turnover for the same property | The existing unique index permits one open pre-arrival draft. Concurrent Start requests for the same scheduled job return that same pack; a different job must not adopt an unrelated draft. Keep the original starter and actual submitter, without changing permanent allocation. |
 | Inspection started but app crashes | Local IndexedDB draft survives. Inspector reopens app; draft is restored. Already-uploaded photos remain. |
 | Inspector closes the app mid-section | Auto-save preserves state. Picks up where they left off. |
 | Inspector finishes pre-arrival half but post-stay items remain (or vice versa) | Submit is allowed only when all *mandatory* items are answered. Optional items can be left blank. The summary makes this clear. |
