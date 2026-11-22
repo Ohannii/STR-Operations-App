@@ -24,7 +24,7 @@ import { getUserContext } from '@/lib/auth/get-user-context'
 import { startPerf } from '@/lib/perf'
 import { createClient } from '@/lib/supabase/server'
 import { loadInspectionJobs } from '@/lib/inspections/load-workspace'
-import { canInspect } from '@/lib/inspections/workboard'
+import { canInspect, jobState, sastDay } from '@/lib/inspections/workboard'
 
 /**
  * GET /dashboard
@@ -160,8 +160,8 @@ export default async function DashboardPage() {
           />
           {canInspect(ctx.membership?.role_key) && <SnapshotCard
             icon={ClipboardCheck}
-            label={canManageProperties(ctx.membership?.role_key) ? 'Team inspections to do' : 'My inspections to do'}
-            value={inspections.data ? inspections.data.filter(j => !j.cancelled_at && j.pack_status !== 'submitted').length : '—'}
+            label={canManageProperties(ctx.membership?.role_key) ? 'Team inspections due' : 'Inspections due'}
+            value={inspections.data ? inspections.data.filter(j => ['today', 'overdue', 'needs_attention'].includes(jobState(j, sastDay()))).length : '—'}
             hint={inspections.data ? 'Open the scheduled inspection work list.' : inspections.error ?? 'Inspection work is unavailable.'}
             href={canManageProperties(ctx.membership?.role_key) ? '/dashboard/work?scope=all' : '/dashboard/work'}
           />}

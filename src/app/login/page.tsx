@@ -4,6 +4,7 @@ import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { loginAction } from './actions'
+import { loginReturnPath } from '@/lib/auth/login-return'
 
 /**
  * GET /login
@@ -14,9 +15,9 @@ import { loginAction } from './actions'
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; message?: string }>
+  searchParams: Promise<{ error?: string; message?: string; next?: string | string[] }>
 }) {
-  const { error, message } = await searchParams
+  const { error, message, next } = await searchParams
 
   return (
     <AuthShell
@@ -43,6 +44,7 @@ export default async function LoginPage({
       ) : null}
 
       <form action={loginAction} className="space-y-4">
+        <input type="hidden" name="next" value={loginReturnPath(next)} />
         <Field label="Email" required htmlFor="email">
           <Input id="email" name="email" type="email" required autoComplete="email" />
         </Field>

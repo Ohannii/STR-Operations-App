@@ -3,16 +3,17 @@ import { redirect } from 'next/navigation'
 import { AppShell } from '@/components/app-shell'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { loadInspectionJobs, loadInspectionWorkspace } from '@/lib/inspections/load-workspace'
-import { canCoordinateInspections, canInspect, sastDay, validId } from '@/lib/inspections/workboard'
+import { canCoordinateInspections, canInspect, sastDay, validId, workQueryValue } from '@/lib/inspections/workboard'
 import { Workboard } from './workboard'
 
-export default async function WorkPage({ searchParams }: { searchParams: Promise<{ scope?: string; property?: string }> }) {
+export default async function WorkPage({ searchParams }: { searchParams: Promise<{ scope?: string | string[]; property?: string | string[] }> }) {
   const ctx = await getUserContext()
   if (!ctx) redirect('/login')
   if (!ctx.company) redirect('/onboard')
   if (!canInspect(ctx.membership?.role_key)) redirect('/dashboard')
   const manager = canCoordinateInspections(ctx.membership?.role_key)
-  const query = await searchParams
+  const raw = await searchParams
+  const query = { scope: workQueryValue(raw.scope), property: workQueryValue(raw.property) }
   const all = manager && query.scope === 'all'
   const propertyId = validId(query.property) ? query.property : null
   const [workspace, jobs] = await Promise.all([
@@ -28,7 +29,7 @@ export default async function WorkPage({ searchParams }: { searchParams: Promise
       <Link href="/dashboard/work" aria-current={!all ? 'page' : undefined} className={`rounded-full px-4 py-3 text-sm ${!all ? 'bg-slate-900 text-white' : 'bg-white'}`}>My work</Link>
       <Link href="/dashboard/work?scope=all" aria-current={all ? 'page' : undefined} className={`rounded-full px-4 py-3 text-sm ${all ? 'bg-slate-900 text-white' : 'bg-white'}`}>All staff &amp; unassigned</Link>
     </nav>}
-    <p className="my-5 rounded-xl border border-sky-100 bg-sky-50 p-4 text-sm text-sky-950">Schedules are entered by the team. Hostaway bookings are not connected yet. Pack submission records the inspection; guest readiness and outstanding issues remain separate.</p>
+    <p className="my-5 rounded-xl border border-sky-100 bg-sky-50 p-4 text-sm text-sky-950">Hostaway bookings are not connected yet. Manual schedules are for tests and exceptions. Pack submission records the inspection; guest readiness and outstanding issues remain separate.</p>
     {workspace.data && jobs.data ? <Workboard workspace={workspace.data} jobs={jobs.data} manager={manager} all={all} userId={ctx.user.id} today={sastDay()} initialProperty={query.property ?? ''} />
       : <p role="alert" className="rounded-xl bg-amber-50 p-5 text-amber-900">{workspace.error ?? jobs.error}</p>}
   </AppShell>

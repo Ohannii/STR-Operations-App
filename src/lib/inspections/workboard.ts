@@ -27,6 +27,13 @@ export function jobState(job: TurnoverJob, today: string): JobState {
   if (job.pack_status === 'submitted') return 'submitted'
   return job.due_on < today ? 'overdue' : job.due_on === today ? 'today' : 'upcoming'
 }
+export function nextUnstartedTurnover(jobs: TurnoverJob[], propertyId: string): TurnoverJob | null {
+  return jobs.filter(j => j.property_id === propertyId && !j.cancelled_at && !j.pack_id)
+    .sort((a, b) => a.due_on.localeCompare(b.due_on)
+      || (a.checkout_at ?? '').localeCompare(b.checkout_at ?? '') || a.id.localeCompare(b.id))[0] ?? null
+}
+// Repeated query keys arrive as arrays in Next; never pass them to client search.
+export const workQueryValue = (value: unknown): string => typeof value === 'string' ? value : ''
 export function sastDay(now = new Date()): string {
   // Avoid Intl locale defaults and server/device timezone differences.
   return new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10)
@@ -54,6 +61,8 @@ export function inspectionError(error: { code?: string; message?: string } | nul
   if (error?.code === '40001') return 'This changed on another device. Reload to see the latest version before saving.'
   if (error?.code === '42501') return 'Your current role cannot make this change, or the record is unavailable.'
   if (error?.code === '23505') return 'This work already exists or has changed. Reload the work list before adding it again.'
-  if (error?.code === '55000') return 'This apartment already has a pack, or the schedule has changed. Open the apartment to continue its existing pack.'
+  if (error?.code === '55000' && error.message === 'existing draft') return 'This apartment has an older open pack that is not part of this inspection. Submit or discard it, then tap Start inspection.'
+  if (error?.code === '55000' && error.message === 'pack unavailable') return 'This inspection’s draft was discarded. A manager can cancel the inspection before scheduling a replacement.'
+  if (error?.code === '55000') return 'This inspection has already started or its schedule has changed. Reload the work list.'
   return 'Could not save. Your entries are kept; check your connection and try again.'
 }

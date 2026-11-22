@@ -3,7 +3,8 @@
 import Link from 'next/link'
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { scheduleTurnover, startTurnover, updateTurnover } from './actions'
+import { scheduleTurnover, updateTurnover } from './actions'
+import { InspectionStartButton } from '@/components/inspections/inspection-start-button'
 import { jobState, propertyLabel, type Allocation, type InspectionWorkspace, type TurnoverJob } from '@/lib/inspections/workboard'
 import { naturalCompare } from '@/lib/properties/finder'
 import { formatDateSAST, formatDateTimeSAST } from '@/lib/ui/datetime'
@@ -27,16 +28,17 @@ export function Workboard({ workspace, jobs, manager, all, userId, today, initia
   return <div className="space-y-5">
     <div className="grid grid-cols-2 gap-3"><div className="rounded-xl bg-white p-4"><p className="text-2xl font-semibold">{all ? workspace.properties.filter(p => !p.inspector_id || !p.inspector_active).length : assigned.length}</p><p className="text-sm text-slate-600">{all ? 'Unassigned or unavailable inspector' : 'Apartments allocated to you'}</p></div><div className="rounded-xl bg-white p-4"><p className="text-2xl font-semibold">{checkoutsToday}</p><p className="text-sm text-slate-600">Manually scheduled checkouts today</p></div></div>
     {jobs.some(j => !props.has(j.property_id)) && <p role="alert" className="rounded-xl bg-amber-50 p-4 text-sm">An apartment changed while this page loaded. Reload to see the latest inspection list.</p>}
-    {manager && <details className="rounded-xl border border-slate-200 bg-white p-4"><summary className="min-h-11 cursor-pointer font-medium">Schedule an inspection</summary><ScheduleForm properties={workspace.properties} today={today} /></details>}
+    {manager && <details className="rounded-xl border border-slate-200 bg-white p-4"><summary className="min-h-11 cursor-pointer font-medium">Schedule an inspection (test or exception)</summary><ScheduleForm properties={workspace.properties} today={today} /></details>}
+    {!all && <p className="text-sm text-slate-600">Your allocated work, packs you started or submitted, and open inspections without an available primary inspector.</p>}
     <nav aria-label="Inspection state" className="flex flex-wrap gap-2">{tabs.map(([key, label]) => <button key={key} onClick={() => setFilter(key)} aria-pressed={filter === key} className={`min-h-11 rounded-full px-4 text-sm ${filter === key ? 'bg-slate-900 text-white' : 'border border-slate-200 bg-white'}`}>{label} ({jobs.filter(j => matches(j, key)).length})</button>)}</nav>
     <label className="block text-sm">Find an apartment<input className={`${control} mt-1`} value={query === initialProperty && props.has(initialProperty) ? propertyLabel(props.get(initialProperty)!) : query} onChange={e => setQuery(e.target.value)} placeholder="Estate or unit" /></label>
     {visible.length ? <ul className="grid gap-4 lg:grid-cols-2">{visible.map(j => <li key={`${j.id}:${j.revision}:${j.pack_status}`}><InspectionJobCard job={j} property={props.get(j.property_id)!} manager={manager} today={today} /></li>)}</ul>
-      : <div className="rounded-xl border border-dashed border-slate-300 p-6"><p className="font-medium">No {filter === 'due' ? 'due inspections' : filter === 'submitted' ? 'completed inspections' : `${filter} inspections`} in this view.</p><p className="mt-2 text-sm text-slate-600">{jobs.length === 0 ? 'An allocated apartment appears as due only when an inspection has been scheduled.' : 'Try another filter or search.'}</p></div>}
+      : <div className="rounded-xl border border-dashed border-slate-300 p-6"><p className="font-medium">No {filter === 'due' ? 'due inspections' : filter === 'submitted' ? 'completed inspections' : `${filter} inspections`} in this view.</p><p className="mt-2 text-sm text-slate-600">{jobs.length === 0 ? 'There is no scheduled work in this view. Allocation alone does not create an inspection. Open unassigned inspections also appear here.' : 'Try another filter or search.'}</p></div>}
     {!all && <details className="rounded-xl border border-slate-200 bg-white p-4"><summary className="min-h-11 cursor-pointer font-medium">My allocated apartments ({assigned.length})</summary><p className="mb-3 text-sm text-slate-600">Allocation alone does not mean an inspection is due.</p><ul className="space-y-1">{assigned.sort((a, b) => naturalCompare(propertyLabel(a), propertyLabel(b))).map(p => <li key={p.id}><Link className="inline-flex min-h-11 items-center underline" href={`/properties/${p.id}`}>{propertyLabel(p)}</Link></li>)}</ul></details>}
   </div>
 }
 
-function ScheduleForm({ properties, today }: { properties: Allocation[]; today: string }) {
+export function ScheduleForm({ properties, today }: { properties: Allocation[]; today: string }) {
   const router = useRouter()
   const [nonce, setNonce] = useState(() => crypto.randomUUID())
   const [propertyId, setPropertyId] = useState('')
@@ -44,21 +46,26 @@ function ScheduleForm({ properties, today }: { properties: Allocation[]; today: 
   const [checkout, setCheckout] = useState('')
   const [arrival, setArrival] = useState('')
   const [message, setMessage] = useState('')
+  const [saved, setSaved] = useState(false)
   const [pending, start] = useTransition()
+  const selected = properties.find(p => p.id === propertyId)
   // Freeze the whole form during a request; retry keeps the same nonce/values.
   return <form className="mt-4" onSubmit={e => { e.preventDefault(); if (pending) return; start(async () => {
     const result = await scheduleTurnover({ id: nonce, propertyId, due, checkout, arrival })
+    setSaved(result.ok)
     setMessage(result.ok ? 'Inspection scheduled.' : result.error)
     if (result.ok) { setNonce(crypto.randomUUID()); setPropertyId(''); setCheckout(''); setArrival(''); router.refresh() }
   }) }}>
     <fieldset disabled={pending} className="grid gap-4 sm:grid-cols-2">
       <label className="text-sm sm:col-span-2">Apartment<select required className={control} value={propertyId} onChange={e => setPropertyId(e.target.value)}><option value="">Choose an apartment…</option>{[...properties].sort((a, b) => naturalCompare(propertyLabel(a), propertyLabel(b))).map(p => <option key={p.id} value={p.id}>{propertyLabel(p)}</option>)}</select></label>
+      {selected && (!selected.inspector_id || !selected.inspector_active) && <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-950 sm:col-span-2">No available primary inspector. This inspection will appear as unassigned in the team’s work lists.</p>}
       <label className="text-sm sm:col-span-2">Inspection date<input required type="date" className={control} value={due} onChange={e => setDue(e.target.value)} /></label>
       <label className="text-sm">Checkout (optional, South Africa time)<input type="datetime-local" className={control} value={checkout} onChange={e => setCheckout(e.target.value)} /></label>
       <label className="text-sm">Next arrival (optional, South Africa time)<input type="datetime-local" className={control} value={arrival} onChange={e => setArrival(e.target.value)} /></label>
       <button className={`${primary} sm:col-span-2`}>{pending ? 'Saving…' : 'Add to inspection work'}</button>
     </fieldset>
     <p role="status" className="mt-3 text-sm text-slate-700">{message}</p>
+    {saved && <Link className="inline-flex min-h-11 items-center text-sm underline" href="/dashboard/work?scope=all">View all staff &amp; unassigned</Link>}
   </form>
 }
 
@@ -82,21 +89,22 @@ export function InspectionJobCard({ job, property, manager, today }: { job: Turn
     {submitted && <p className="mb-3 text-sm text-slate-600">Outstanding issues and guest readiness are tracked separately.</p>}
     <div className="flex flex-wrap items-center gap-3">
       {submitted && <Link href={`/properties/${property.id}/packs/${job.pack_id}/report`} className={primary}>View pack</Link>}
-      {!submitted && state !== 'cancelled' && !job.pack_deleted && <button disabled={pending} className={primary} onClick={() => start(async () => {
-        const result = await startTurnover(job.id)
-        if (!result.ok) { setMessage(result.error); return }
-        router.push(`/properties/${property.id}`)
-        router.refresh()
-      })}>{pending ? 'Opening…' : job.pack_id ? 'Continue inspection' : 'Start inspection'}</button>}
+      {!submitted && state !== 'cancelled' && !job.pack_deleted && <InspectionStartButton jobId={job.id} propertyId={property.id} label={job.pack_id ? 'Continue inspection' : 'Start inspection'} />}
       <Link className="inline-flex min-h-11 items-center text-sm underline" href={`/properties/${property.id}`}>Open apartment</Link>
     </div>
     <p role="status" className="mt-2 text-sm text-rose-700">{message}</p>
+    {job.pack_deleted && !job.cancelled_at && <p className="mt-3 text-sm text-amber-900">The draft was discarded. {manager ? 'Cancel this inspection to clear it and allow a replacement.' : 'Ask a manager to cancel this inspection before scheduling a replacement.'}</p>}
+    {manager && job.pack_deleted && !job.cancelled_at && <button type="button" disabled={pending} className="mt-2 min-h-11 text-sm text-rose-700 underline disabled:opacity-40" onClick={() => start(async () => {
+      const result = await updateTurnover(job.id, job.revision, job.due_on, true)
+      setMessage(result.ok ? 'Inspection cancelled.' : result.error)
+      if (result.ok) router.refresh()
+    })}>Cancel inspection</button>}
     {manager && !job.pack_id && !job.cancelled_at && <details className="mt-3 border-t border-slate-100 pt-3"><summary className="min-h-11 cursor-pointer text-sm">Change schedule</summary>
       <form onSubmit={e => { e.preventDefault(); start(async () => {
         const result = await updateTurnover(job.id, job.revision, due, false)
         setMessage(result.ok ? 'Schedule updated.' : result.error)
         if (result.ok) router.refresh()
-      }) }}><fieldset disabled={pending} className="space-y-3"><label className="block text-sm">Inspection date<input required type="date" className={control} value={due} onChange={e => setDue(e.target.value)} /></label><button className={primary}>Save date</button><button type="button" className="ml-4 min-h-11 text-sm text-rose-700 underline" onClick={() => start(async () => {
+      }) }}><fieldset disabled={pending} className="space-y-3"><label className="block text-sm">Inspection date<input required type="date" className={control} value={due} onChange={e => setDue(e.target.value)} /></label><p className="text-xs text-slate-600">Only the inspection date changes. Checkout and next arrival stay as recorded.</p><button className={primary}>Save date</button><button type="button" className="ml-4 min-h-11 text-sm text-rose-700 underline" onClick={() => start(async () => {
         const result = await updateTurnover(job.id, job.revision, job.due_on, true)
         setMessage(result.ok ? 'Inspection cancelled.' : result.error)
         if (result.ok) router.refresh()

@@ -15,6 +15,20 @@ describe('actual inspection screens', () => {
     expect(html).toContain('Submitted by:'); expect(html).toContain('guest readiness are tracked separately')
     expect(html).toContain('/properties/p/packs/pack/report'); expect(html).not.toContain('Start inspection')
   })
+  it('offers only cancellation of a discarded linked draft to managers', () => {
+    const discarded = { ...j, pack_status: 'draft', pack_deleted: true }
+    const html = renderToStaticMarkup(<InspectionJobCard job={discarded} property={p} manager today="2026-11-22" />)
+    expect(html).toContain('Cancel inspection')
+    expect(html).not.toContain('Change schedule'); expect(html).not.toContain('Start inspection')
+    expect(html).not.toContain('Continue inspection'); expect(html).not.toContain('View pack')
+    const inspector = renderToStaticMarkup(<InspectionJobCard job={discarded} property={p} manager={false} today="2026-11-22" />)
+    expect(inspector).toContain('Ask a manager'); expect(inspector).not.toContain('>Cancel inspection</button>')
+  })
+  it('shows starter A and submitter B independently on the completed card', () => {
+    const html = renderToStaticMarkup(<InspectionJobCard job={{ ...j, started_by: 'a', starter_name: 'Inspector A' }} property={p} manager today="2026-11-22" />)
+    expect(html).toContain('Started by:'); expect(html).toContain('Submitted by:')
+    expect(html).toContain('Inspector A'); expect(html).toContain('Inspector B')
+  })
   it('gives an open-policy inspector bulk allocation, but hides manager settings', () => {
     const html = renderToStaticMarkup(<AssignmentManager workspace={workspace} manager={false} />)
     expect(html).toContain('Save allocation'); expect(html).toContain('Ballito Life'); expect(html).toContain('Ballito Village')

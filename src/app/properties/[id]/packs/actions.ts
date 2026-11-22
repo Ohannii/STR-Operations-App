@@ -7,6 +7,9 @@ import { safeReturnTo } from '@/lib/safe-return-to'
 import { createClient } from '@/lib/supabase/server'
 import { formatDateTimeSAST } from '@/lib/ui/datetime'
 import { buildPackStartRedirect } from '@/lib/packs/start-redirect'
+import { canInspect, nextUnstartedTurnover } from '@/lib/inspections/workboard'
+import { loadInspectionJobs } from '@/lib/inspections/load-workspace'
+import { startTurnover } from '@/app/dashboard/work/actions'
 import {
   CONFLICT_UNPROVEN_MESSAGE,
   deriveConflictDetails,
@@ -81,6 +84,19 @@ export async function startPreArrivalPackAction(formData: FormData) {
   // Default title: "Pre-arrival pack — 20 Jun 2026, 15:59" in SAST so
   // the auto-title matches the team's wall clock (DB + Vercel server
   // are UTC). See @/lib/ui/datetime.
+  // Protect stale copies of the ordinary Start form as well as the new UI.
+  // Never adopt an unrelated draft: the same guarded Start RPC owns the link.
+  if (canInspect(ctx.membership?.role_key)) {
+    const jobs = await loadInspectionJobs(ctx.company.id, false, propertyId)
+    if (jobs.error) redirect(`/properties/${propertyId}?error=${encodeURIComponent(jobs.error)}`)
+    const scheduled = nextUnstartedTurnover(jobs.data ?? [], propertyId)
+    if (scheduled) {
+      const result = await startTurnover(scheduled.id)
+      if (!result.ok) redirect(`/properties/${propertyId}?error=${encodeURIComponent(result.error)}`)
+      revalidatePath(`/properties/${propertyId}`)
+      redirect(buildPackStartRedirect(propertyId, returnTo))
+    }
+  }
   const now = new Date()
   const defaultTitle = `Pre-arrival pack — ${formatDateTimeSAST(now)}`
 

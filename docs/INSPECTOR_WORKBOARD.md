@@ -15,7 +15,7 @@ turnover, checkout or arrival date as normal daily administration.
 For each Hostaway checkout, match the company/account and exact physical
 listing/subunit to the existing property UUID, then create or update one
 turnover work item. Put it on the apartment's primary inspector work list;
-unassigned apartments go to the manager's exception view. Show the departing
+unassigned work is visible to the operations team and inspectors. Show the departing
 guest from the checkout reservation, checkout time and next arrival when
 available. Keep outgoing and incoming guest identities distinct. Missing data
 must remain visibly unknown rather than guessed.
@@ -43,8 +43,10 @@ inspector-led start/submit flow must be demonstrated before routine rollout.
   actor and time in append-only history; identical saves add no event.
 - The current foundation includes manual date/checkout/arrival fields for
   controlled tests and exceptions only. Routine work must come from Hostaway.
-- My work shows the current user's allocated-unit jobs and packs they actually
-  started or submitted. Managers can see all staff and unassigned work. Opening
+- My work shows the current user's allocated-unit jobs, packs they actually
+  started or submitted, and open work without an available primary inspector.
+  This shared unassigned pool does not claim or reassign an apartment when
+  someone starts it. Managers can also see all staff and unassigned work. Opening
   an apartment's scheduled-inspections link lets another inspector cover that
   apartment without changing its permanent allocation.
 - The inspector taps Start inspection to open an ordinary pre-arrival photo
@@ -90,29 +92,60 @@ inspector-led start/submit flow must be demonstrated before routine rollout.
 
 One open pre-arrival draft per apartment remains enforced by the existing unique
 index. A scheduled job never silently adopts an unrelated existing draft or
-submitted report. Finish an older draft before starting another visit. Start
-scheduled work from the work list; ordinary unscheduled packs remain valid but
-do not automatically complete an unrelated scheduled job.
+submitted report. Submit or discard an older unrelated draft before starting
+another visit. The apartment's primary Start button starts the next scheduled
+inspection when one exists; stale copies of the ordinary Start form use the
+same guarded RPC. Ordinary unscheduled packs remain valid where no scheduled
+job exists, but do not automatically complete an unrelated scheduled job.
 
 Unstarted schedules can be rescheduled or cancelled. Started packs are retained;
 this increment does not move or discard their evidence to alter a schedule.
 A discarded/deleted linked draft is shown as needing attention rather than as
-completed. Reset/relink tooling for those exceptions is a later increment.
+completed. Managers can cancel that visit, preserving the discarded pack/link
+and audit trail, then schedule a replacement. They cannot reschedule/relink
+discarded work or cancel a live/submitted pack through these controls.
+
+Changing an inspection's due date does not change its recorded guest checkout
+or next arrival. The form states this explicitly. Distinct checkout times may
+still create separate manual slots on the same day. Hostaway needs its own
+reservation identity and reconciliation; date/time uniqueness is not enough.
+Foreign keys deliberately retain evidence/creator references: destructive
+company/user erasure is outside this increment and must not silently cascade.
 
 ## Acceptance and release
 
-Migration: `20261122174325_inspector_workboard.sql`. Review before applying to
-the shared staff database. Do not merge or apply an unreviewed production
-migration. Deploying these pages before the migration displays a clear pending
-setup state and preserves existing flag/pack actions.
+Applied foundation: `20261122174325_inspector_workboard.sql` (unchanged).
+Pending follow-up: `20261122191844_inspection_workboard_recovery.sql`.
+The follow-up adds discarded-draft cancellation, shared unassigned visibility
+in both RLS and the read RPC, schedule creation audit, and weaker non-key locks
+for allocation/policy writers. It adds one guarded boolean helper for available
+primary inspectors so caller RLS cannot hide another inspector's membership and
+accidentally label their apartment unassigned. Its execute grant is authenticated
+only; foreign-company and inappropriate-role calls reveal no allocation.
+Existing photo/caption/submit functions are not changed. Review before applying
+the follow-up to the shared staff database; do not merge an unreviewed migration.
 
 Automated checks cover default/manager-only policies, tenant isolation, eligible
 assignees, forged requests, atomic bulk failure, stale revisions, schedule
 replays, duplicate Start, real caption submission, attribution and unchanged
 readiness. `supabase/tests/inspector_workboard.sql` runs inside a rolled-back
 transaction on a disposable local database. Never run fixture tests against the
-shared staff project. Real two-connection tests additionally exercise competing
-allocation saves and concurrent Start requests.
+shared staff project. `scripts/tests/inspection-database.mjs` now applies every
+repository migration verbatim to a fresh disposable database and runs that SQL
+suite plus real multi-connection tests. A test-only trigger holds the real Start
+RPC after its property lock to reproduce the allocation/FK deadlock ordering;
+the fixed allocation and Start must both commit. Additional cases cover
+discard/cancel/replacement, unrelated ordinary packs, unassigned/unavailable
+visibility through RPC and RLS, A starting/B submitting with the real caption
+RPC, duplicate schedules, competing allocations and concurrent Starts.
+
+Run `pnpm run test:inspections:db` with `STR_TEST_DATABASE_URL` pointing at a
+**disposable local PostgreSQL 17 server** and a role able to create databases and
+test roles. Remote addresses are refused. The runner creates a random database
+and drops only that database in cleanup. Minimal local auth/storage schema
+fixtures stand in for Supabase services; these tests do not replace GoTrue,
+object-byte or phone acceptance. The GitHub Actions workflow
+`.github/workflows/inspection-database.yml` runs this on a PostgreSQL 17 service.
 
 Before rollout, observe an Android inspector and an operations manager:
 
@@ -124,6 +157,14 @@ Before rollout, observe an Android inspector and an operations manager:
 4. Enable manager-only reassignment; an inspector's forged write must also fail.
 5. Schedule another turnover for that unit; it must not inherit completion.
 6. Verify existing photo capture/retry, PDF sharing and Asana issue reporting.
+7. Start and discard a test draft; a manager cancels its visit and starts a
+   replacement without rewriting the old evidence.
+8. Use the apartment's normal Start button with scheduled work and with an
+   unrelated older draft. Neither may silently leave a completed visit unlinked.
+9. Find unallocated work in an inspector's default list. A starts, B submits;
+   check both names on the card and report without changing primary allocation.
+10. Sign in after session expiry and return to the requested work/apartment page.
+    Repeated query parameters must not crash the work list.
 
 ## Next increments and retained product decisions
 

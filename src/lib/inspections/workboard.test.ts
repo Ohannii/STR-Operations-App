@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canInspect, canCoordinateInspections, inspectionError, jobState, localSastToUtc, propertyLabel, sastDay, validDay, type Allocation, type TurnoverJob } from './workboard'
+import { canInspect, canCoordinateInspections, inspectionError, jobState, localSastToUtc, nextUnstartedTurnover, propertyLabel, sastDay, validDay, workQueryValue, type Allocation, type TurnoverJob } from './workboard'
 
 const job = { due_on: '2026-11-22', cancelled_at: null, pack_deleted: false, pack_status: null } as TurnoverJob
 describe('workboard dates and authorship', () => {
@@ -28,6 +28,12 @@ describe('workboard dates and authorship', () => {
   })
 })
 describe('roles and safe errors', () => {
+  it('distinguishes an unrelated draft from a discarded linked pack without exposing other SQL text', () => {
+    expect(inspectionError({ code: '55000', message: 'existing draft' })).toContain('not part of this inspection')
+    expect(inspectionError({ code: '55000', message: 'pack unavailable' })).toContain('manager can cancel')
+    expect(inspectionError({ code: '55000', message: 'private detail' })).not.toContain('private detail')
+    expect(inspectionError({ code: '55000' })).not.toContain('continue its existing pack')
+  })
   it.each(['company_admin', 'gm', 'ops_manager', 'maintenance_coordinator'])('allows %s to coordinate and inspect', role => {
     expect(canInspect(role)).toBe(true); expect(canCoordinateInspections(role)).toBe(true)
   })
@@ -39,5 +45,20 @@ describe('roles and safe errors', () => {
     expect(inspectionError({ code: 'XX000', message: 'secret fixture' })).not.toContain('secret')
     expect(inspectionError({ code: 'PGRST202' })).toContain('not switched on')
     expect(inspectionError({ code: '40001' })).toContain('another device')
+  })
+})
+describe('scheduled property Start and query boundary', () => {
+  it('selects the earliest unstarted visit on the exact property, excluding linked/cancelled work', () => {
+    const visit = { ...job, id: 'later', property_id: 'bl', pack_id: null }
+    const jobs = [visit, { ...visit, id: 'early', due_on: '2026-11-21' },
+      { ...visit, id: 'foreign', property_id: 'bv', due_on: '2026-11-19' },
+      { ...visit, id: 'linked', pack_id: 'pack', due_on: '2026-11-19' },
+      { ...visit, id: 'cancelled', cancelled_at: '2026-11-20', due_on: '2026-11-19' }]
+    expect(nextUnstartedTurnover(jobs, 'bl')?.id).toBe('early')
+    expect(jobs[0].id).toBe('later')
+    expect(nextUnstartedTurnover(jobs, 'missing')).toBeNull()
+  })
+  it.each([['a', 'b'], undefined, null, {}, 3])('treats repeated/non-string query values as empty', value => {
+    expect(workQueryValue(value)).toBe('')
   })
 })

@@ -54,7 +54,10 @@ import { packDateDisplay } from '@/lib/reports/pack-dates'
 import { updateFlagAction } from './flags/[flagId]/actions'
 import { toggleFlagMarkAction } from './flags/[flagId]/marks/actions'
 import { startPreArrivalPackAction } from './packs/actions'
-import { canInspect } from '@/lib/inspections/workboard'
+import { canInspect, nextUnstartedTurnover } from '@/lib/inspections/workboard'
+import { loadInspectionJobs } from '@/lib/inspections/load-workspace'
+import { InspectionStartButton } from '@/components/inspections/inspection-start-button'
+import { formatDateSAST } from '@/lib/ui/datetime'
 
 /**
  * GET /properties/[id]
@@ -257,6 +260,7 @@ export default async function PropertyPage({
     { data: draftPack },
     { data: submittedPacks },
     { data: closedFlags },
+    inspectionJobs,
   ] = await Promise.all([
     propertyPromise,
     flagsPromise,
@@ -264,9 +268,12 @@ export default async function PropertyPage({
     draftPackPromise,
     submittedPacksPromise,
     recentClosedFlagsPromise,
+    canInspect(ctx.membership?.role_key) ? loadInspectionJobs(ctx.company.id, false, id) : Promise.resolve({ data: [], error: null }),
   ])
 
   if (!property) notFound()
+  const scheduledInspection = nextUnstartedTurnover(inspectionJobs.data ?? [], id)
+  const draftInspection = inspectionJobs.data?.find(j => j.pack_id === draftPack?.id)
 
   // Second query wave. Everything here depends only on IDs from the
   // first wave (open-flag IDs, draft pack id, submitted pack ids) —
@@ -459,6 +466,7 @@ export default async function PropertyPage({
         <div className="mb-5">
           <Alert tone="success">
             Pack submitted. It&rsquo;s now in history — start a new pack when ready.
+            {canInspect(ctx.membership?.role_key) && <Link href={`/dashboard/work?property=${id}`} className="ml-2 underline">View inspection work</Link>}
           </Alert>
         </div>
       ) : null}
@@ -526,6 +534,7 @@ export default async function PropertyPage({
               photos forever" behaviour that didn't support
               repeatable turnover capture. */}
           <div className="mt-4 pt-4 border-t border-slate-100">
+            {draftPack && !draftInspection && scheduledInspection && <p className="mb-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-950">This open pack is not linked to the next scheduled inspection. Submit or discard it first, then start the scheduled inspection. Submitting this older pack will not complete that visit.</p>}
             {draftPack ? (
               <div className="min-w-0">
                 {/* Heading + meta. The photo count deliberately lives ONLY in
@@ -665,7 +674,10 @@ export default async function PropertyPage({
                     history below.
                   </p>
                 </div>
-                <form action={startPreArrivalPackAction} className="contents">
+                {inspectionJobs.error ? <p role="alert" className="text-sm text-amber-900">{inspectionJobs.error} Reload before starting a pack.</p> : scheduledInspection ? <div>
+                  <p className="mb-2 text-sm text-slate-600">Scheduled for {formatDateSAST(`${scheduledInspection.due_on}T12:00:00+02:00`)}</p>
+                  <InspectionStartButton jobId={scheduledInspection.id} propertyId={property.id} />
+                </div> : <form action={startPreArrivalPackAction} className="contents">
                   <input type="hidden" name="property_id" value={property.id} />
                   <button
                     type="submit"
@@ -674,7 +686,7 @@ export default async function PropertyPage({
                     <Camera size={16} aria-hidden />
                     Start pre-arrival pack
                   </button>
-                </form>
+                </form>}
               </div>
             )}
           </div>
