@@ -4,6 +4,35 @@ Product decisions: 22 November 2026. This increment implements the allocation
 and manual workboard foundation. It is separate from the guided inspection
 template engine, Hostaway sync and inventory placement.
 
+## Release requirement: automatic checkout work
+
+Anni confirmed during the phone review that staff have no capacity to schedule
+routine inspections manually. This foundation is not an acceptable routine
+workflow until Hostaway generates the work automatically. Manual scheduling is
+only a test/exception tool; do not ask inspectors or managers to enter each
+turnover, checkout or arrival date as normal daily administration.
+
+For each Hostaway checkout, match the company/account and exact physical
+listing/subunit to the existing property UUID, then create or update one
+turnover work item. Put it on the apartment's primary inspector work list;
+unassigned apartments go to the manager's exception view. Show the departing
+guest from the checkout reservation, checkout time and next arrival when
+available. Keep outgoing and incoming guest identities distinct. Missing data
+must remain visibly unknown rather than guessed.
+
+The inspector still starts the inspection. Submitting its linked pre-arrival
+pack completes that visit, without a second completion or acceptance step.
+Booking changes/cancellations, sync retries and duplicate webhooks must not
+duplicate jobs, rewrite completed evidence, or mark guest-ready. BL/BV units
+with the same number must never collide. Each company connects Hostaway
+independently through secure server-side onboarding; no secrets in chat, source
+control, public URLs or application logs.
+
+Keep PR #74 in draft while its foundation is independently reviewed. Completing
+a manually scheduled test does not establish acceptance of the intended
+automated workflow. Hostaway connection, one real mapped turnover and the
+inspector-led start/submit flow must be demonstrated before routine rollout.
+
 ## User flow
 
 - Dashboard → inspection work → inspector allocations. Search by estate, unit
@@ -12,8 +41,8 @@ template engine, Hostaway sync and inventory placement.
   Operations managers may enable manager-only reassignment. No approval or
   acceptance step is introduced. Every actual change records old/new inspector,
   actor and time in append-only history; identical saves add no event.
-- Managers enter a manual inspection date and optional checkout/next arrival
-  times. These are explicitly manual schedules, never inferred live bookings.
+- The current foundation includes manual date/checkout/arrival fields for
+  controlled tests and exceptions only. Routine work must come from Hostaway.
 - My work shows the current user's allocated-unit jobs and packs they actually
   started or submitted. Managers can see all staff and unassigned work. Opening
   an apartment's scheduled-inspections link lets another inspector cover that
