@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { MoreHorizontal } from 'lucide-react'
+import { Trash2 } from 'lucide-react'
 import { updateTurnover } from '@/app/dashboard/work/actions'
 import type { TurnoverJob } from '@/lib/inspections/workboard'
 import { formatDateSAST } from '@/lib/ui/datetime'
@@ -13,30 +13,13 @@ export function CancelInspectionControl({ job, propertyName, disabled = false }:
 }) {
   const router = useRouter()
   const id = useId()
-  const container = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
-  const menuItem = useRef<HTMLButtonElement>(null)
   const dialog = useRef<HTMLDialogElement>(null)
   const keep = useRef<HTMLButtonElement>(null)
   const saving = useRef(false)
-  const [menuOpen, setMenuOpen] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState('')
   const [pending, start] = useTransition()
-
-  useEffect(() => {
-    if (!menuOpen) return
-    menuItem.current?.focus()
-    const outside = (e: PointerEvent) => {
-      if (!container.current?.contains(e.target as Node)) setMenuOpen(false)
-    }
-    document.addEventListener('pointerdown', outside)
-    const focusOutside = (e: FocusEvent) => {
-      if (!container.current?.contains(e.target as Node)) setMenuOpen(false)
-    }
-    document.addEventListener('focusin', focusOutside)
-    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('focusin', focusOutside) }
-  }, [menuOpen])
 
   useEffect(() => {
     if (!confirming) return
@@ -71,23 +54,13 @@ export function CancelInspectionControl({ job, propertyName, disabled = false }:
     })
   }
 
-  return <div ref={container} className="relative shrink-0">
-    <button ref={trigger} type="button" aria-label="Inspection options" aria-haspopup="menu" aria-expanded={menuOpen} aria-controls={`${id}-menu`} disabled={disabled || pending}
-      className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2 disabled:opacity-40"
-      onClick={() => setMenuOpen(open => !open)}
-      onKeyDown={e => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setMenuOpen(true) } }}>
-      <MoreHorizontal size={19} aria-hidden />
-      <span>Options</span>
+  return <div className="shrink-0">
+    <button ref={trigger} type="button" aria-haspopup="dialog" aria-expanded={confirming} aria-controls={`${id}-confirmation`} disabled={disabled || pending}
+      className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-white px-3 text-sm font-medium text-rose-700 transition-colors hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-700 focus-visible:ring-offset-2 disabled:opacity-40"
+      onClick={() => { setError(''); setConfirming(true) }}>
+      <Trash2 size={15} aria-hidden /><span>Cancel inspection…</span>
     </button>
-    {menuOpen && <div id={`${id}-menu`} role="menu" aria-label="Inspection actions" className="absolute right-0 top-full z-20 mt-1 w-48 rounded-xl border border-slate-200 bg-white p-1 shadow-lg"
-      onKeyDown={e => {
-        if (e.key === 'Escape') { e.preventDefault(); setMenuOpen(false); trigger.current?.focus() }
-        else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) { e.preventDefault(); menuItem.current?.focus() }
-      }}>
-      <button ref={menuItem} type="button" role="menuitem" className="flex min-h-11 w-full items-center rounded-lg px-3 text-left text-sm text-rose-700 hover:bg-rose-50 focus-visible:bg-rose-50 focus-visible:outline-none"
-        onClick={() => { setError(''); setMenuOpen(false); setConfirming(true) }}>Cancel inspection…</button>
-    </div>}
-    {confirming && <dialog ref={dialog} aria-labelledby={`${id}-title`} aria-describedby={`${id}-description`}
+    {confirming && <dialog id={`${id}-confirmation`} ref={dialog} aria-labelledby={`${id}-title`} aria-describedby={`${id}-description`}
       className="m-auto max-h-[calc(100dvh_-_2rem)] w-[calc(100%_-_2rem)] max-w-sm overflow-y-auto overscroll-contain rounded-2xl border-0 bg-white p-5 text-slate-900 shadow-xl backdrop:bg-slate-950/35"
       onCancel={e => { e.preventDefault(); dismiss() }}>
       <h2 id={`${id}-title`} className="text-lg font-semibold tracking-tight">Cancel this inspection?</h2>

@@ -58,6 +58,8 @@ import { loadInspectionJobs } from '@/lib/inspections/load-workspace'
 import { InspectionStartButton } from '@/components/inspections/inspection-start-button'
 import { DiscardedInspectionNotice } from '@/components/inspections/discarded-inspection-notice'
 import { formatDateSAST } from '@/lib/ui/datetime'
+import { completedInspectionForPack } from '@/lib/inspections/completion'
+import { CompletedInspectionNotice } from '@/components/inspections/completed-inspection-notice'
 
 /**
  * GET /properties/[id]
@@ -120,7 +122,7 @@ export default async function PropertyPage({
     open?: string
     error?: string
     pack_started?: string
-    pack_submitted?: string
+    pack_submitted?: string | string[]
     pack_discarded?: string
   }>
 }) {
@@ -136,7 +138,6 @@ export default async function PropertyPage({
     raised,
     open,
     error,
-    pack_started,
     pack_submitted,
     pack_discarded,
   } = await searchParams
@@ -274,6 +275,8 @@ export default async function PropertyPage({
   if (!property) notFound()
   const scheduledInspection = nextUnstartedTurnover(inspectionJobs.data ?? [], id, sastDay())
   const discardedInspection = scheduledInspection ? null : nextDiscardedTurnover(inspectionJobs.data ?? [], id, sastDay())
+  const completedInspection = completedInspectionForPack(inspectionJobs.data ?? [], id, pack_submitted)
+  const confirmedSubmittedPack = submittedPacks?.find(p => p.id === pack_submitted)
   const draftInspection = inspectionJobs.data?.find(j => !j.cancelled_at && !j.pack_deleted && j.pack_id === draftPack?.id)
 
   // Second query wave. Everything here depends only on IDs from the
@@ -434,6 +437,25 @@ export default async function PropertyPage({
   const status = propertyStatusDisplay(property.status)
   const sub = [property.unit_reference, property.address].filter(Boolean).join(' · ')
 
+  const startInspectionPanel = (
+    <section aria-label="Start apartment inspection" className="rounded-xl border border-teal-200 bg-teal-50/60 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold text-slate-900">{scheduledInspection ? 'Inspect this apartment' : 'Pre-arrival inspection'}</h2>
+        {scheduledInspection && <span className="rounded-full bg-teal-100 px-2.5 py-1 text-xs font-semibold text-teal-900">{scheduledInspection.due_on < sastDay() ? 'Overdue' : 'Due today'}</span>}
+      </div>
+      {scheduledInspection && <p className="mt-1 text-sm font-medium text-teal-900">{formatDateSAST(`${scheduledInspection.due_on}T12:00:00+02:00`, 'short')}</p>}
+      <p className="mt-2 text-sm leading-relaxed text-slate-700">Take photos and report any issues. Review and submit the pack when you are finished{scheduledInspection ? ' to complete this inspection' : ''}.</p>
+      <div className="mt-4">
+        {inspectionJobs.error ? <p role="alert" className="text-sm text-amber-900">{inspectionJobs.error} Reload before starting a pack.</p> : scheduledInspection ? <InspectionStartButton jobId={scheduledInspection.id} propertyId={property.id} label="Start inspection" /> : <form action={startPreArrivalPackAction}>
+          <input type="hidden" name="property_id" value={property.id} />
+          <button type="submit" className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2 sm:w-auto">
+            <Camera size={18} aria-hidden />Start pre-arrival pack
+          </button>
+        </form>}
+      </div>
+    </section>
+  )
+
   return (
     <AppShell
       companyName={ctx.company.name}
@@ -456,22 +478,16 @@ export default async function PropertyPage({
           <Alert tone="success">Issue reported. It&rsquo;s in the list below.</Alert>
         </div>
       ) : null}
-      {pack_started ? (
+      {pack_submitted && !completedInspection ? (
         <div className="mb-5">
-          <Alert tone="success">Pre-arrival pack started. Tap Take photos to begin.</Alert>
-        </div>
-      ) : null}
-      {pack_submitted ? (
-        <div className="mb-5">
-          <Alert tone="success">
-            Pack submitted. It&rsquo;s now in history — start a new pack when ready.
-            {canInspect(ctx.membership?.role_key) && <Link href={`/dashboard/work?property=${id}`} className="ml-2 underline">View inspection work</Link>}
+          <Alert tone={confirmedSubmittedPack ? 'success' : 'info'}>
+            {confirmedSubmittedPack ? <>Inspection photos submitted. <Link href={`/properties/${id}/packs/${confirmedSubmittedPack.id}/report`} className="underline">View submitted inspection</Link></> : <>Check inspection history for the latest submission status.</>}
           </Alert>
         </div>
       ) : null}
-      {pack_discarded ? (
+      {pack_discarded && !discardedInspection ? (
         <div className="mb-5">
-          <Alert tone="success">Draft pack discarded.</Alert>
+          <Alert tone="info">Inspection draft discarded.</Alert>
         </div>
       ) : null}
       {error ? (
@@ -504,7 +520,7 @@ export default async function PropertyPage({
               {canManageProperties(ctx.membership?.role_key) ? (
                 <Link href={`/properties/${id}/edit`} aria-label="Edit property" className="inline-flex min-h-11 items-center gap-1.5 px-1 text-sm text-slate-500 hover:text-slate-900"><Pencil size={14} aria-hidden />Edit</Link>
               ) : null}
-              <Badge tone={status.tone} className="!text-[11px] !font-medium !normal-case !tracking-normal !px-2 !py-1">{status.label}</Badge>
+              {canManageProperties(ctx.membership?.role_key) && <Badge tone={status.tone} className="!text-xs !font-medium !normal-case !tracking-normal !px-2 !py-1">Apartment: {status.label}</Badge>}
             </div>
           </div>
 
@@ -525,13 +541,14 @@ export default async function PropertyPage({
               photos forever" behaviour that didn't support
               repeatable turnover capture. */}
           <div className="mt-4 pt-4 border-t border-slate-100">
+            {completedInspection && <CompletedInspectionNotice job={completedInspection} />}
             {draftPack && !draftInspection && scheduledInspection && <p className="mb-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-950">This open pack is not linked to the next scheduled inspection. Submit or discard it first, then start the scheduled inspection. Submitting this older pack will not complete that visit.</p>}
             {draftPack ? (
               <div className="min-w-0 rounded-xl border border-teal-200 bg-teal-50/60 p-4">
                 {/* Heading + meta. The photo count deliberately lives ONLY in
                     the status banner below — one authoritative status. */}
                 <p className="inline-flex items-center gap-1.5 rounded-full bg-teal-100 px-2.5 py-1 text-xs font-semibold text-teal-900"><Camera size={13} aria-hidden />In progress</p>
-                <h2 className="mt-2 text-lg font-semibold text-slate-900">{draftInspection ? 'Apartment inspection' : 'Pre-arrival pack'}</h2>
+                <h2 className="mt-2 text-lg font-semibold text-slate-900">Apartment inspection</h2>
                 <p className="mt-1 text-sm leading-relaxed text-slate-700">{draftPackPhotoCount > 0 ? 'Next: finish taking photos, then review the pack and report any issues before submitting.' : 'Next: take photos of the apartment. Then review the pack, report any issues and submit.'}</p>
                 {draftInspection && <p className="mt-1 text-xs text-slate-600">Inspection date: {formatDateSAST(`${draftInspection.due_on}T12:00:00+02:00`)} · Started by {draftInspection.starter_name ?? 'Team member'}</p>}
                 {(() => {
@@ -574,10 +591,10 @@ export default async function PropertyPage({
                 />
 
                 {/* 2. Add-photos group. */}
-                <p className="mt-4 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+                <p className="mt-4 text-sm font-medium text-slate-600">
                   Add photos
                 </p>
-                <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                <div className="mt-1.5 flex flex-col items-stretch gap-1">
                   <EvidenceCapture
                     propertyId={property.id}
                     evidencePackId={draftPack.id}
@@ -585,7 +602,7 @@ export default async function PropertyPage({
                     userId={ctx.user.id}
                     companyId={ctx.company.id}
                     launchLabel={
-                      draftPackPhotoCount > 0 ? 'Continue capturing' : 'Take photos'
+                      draftPackPhotoCount > 0 ? 'Take more photos' : 'Take photos'
                     }
                     // Capturing leads only while the pack is empty; once there
                     // are photos, Submit becomes the dominant action.
@@ -620,7 +637,7 @@ export default async function PropertyPage({
                       <Flag size={13} aria-hidden />
                       Report an issue
                     </Link>
-                    <div className="sm:ml-auto">
+                    {draftPackPhotoCount > 0 && <div className="sm:ml-auto">
                       {/* P0 caption durability (22 Oct 2026): the property page
                           never finalises a pre-arrival pack directly any more.
                           Submission lives on the pack report, where every
@@ -628,12 +645,12 @@ export default async function PropertyPage({
                           this link is the only submit affordance here. */}
                       <Link
                         href={`/properties/${property.id}/packs/${draftPack.id}/report`}
-                        className={`inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2 sm:w-auto ${draftPackPhotoCount > 0 ? 'bg-teal-700 text-white hover:bg-teal-800' : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
+                        className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2 sm:w-auto"
                       >
                         <ClipboardCheck size={18} aria-hidden />
-                        {draftPackPhotoCount > 0 ? 'Review and submit pack' : 'Review pack'}
+                        Review and submit inspection
                       </Link>
-                    </div>
+                    </div>}
                   </div>
                 </div>
 
@@ -642,28 +659,17 @@ export default async function PropertyPage({
                   <DiscardDraftButton
                     propertyId={property.id}
                     packId={draftPack.id}
+                    scheduled={Boolean(draftInspection)}
+                    propertyName={[property.name, property.address].filter(Boolean).join(' · ')}
                   />
                 </div>
               </div>
             ) : discardedInspection ? (
               <DiscardedInspectionNotice job={discardedInspection} manager={canManageProperties(ctx.membership?.role_key)} propertyName={[property.name, property.address].filter(Boolean).join(' · ')} />
+            ) : completedInspection ? (
+              <details><summary className="inline-flex min-h-11 cursor-pointer items-center text-sm font-medium text-teal-800 underline underline-offset-4">Start another inspection</summary><p className="mb-3 text-sm text-slate-600">Start a separate visit only if another inspection is needed.</p>{startInspectionPanel}</details>
             ) : (
-              <section aria-label="Start apartment inspection" className="rounded-xl border border-teal-200 bg-teal-50/60 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h2 className="text-lg font-semibold text-slate-900">{scheduledInspection ? 'Inspect this apartment' : 'Pre-arrival inspection'}</h2>
-                  {scheduledInspection && <span className="rounded-full bg-teal-100 px-2.5 py-1 text-xs font-semibold text-teal-900">{scheduledInspection.due_on < sastDay() ? 'Overdue' : 'Due today'}</span>}
-                </div>
-                {scheduledInspection && <p className="mt-1 text-sm font-medium text-teal-900">{formatDateSAST(`${scheduledInspection.due_on}T12:00:00+02:00`, 'short')}</p>}
-                <p className="mt-2 text-sm leading-relaxed text-slate-700">Take photos and report any issues. Review and submit the pack when you are finished{scheduledInspection ? ' to complete this inspection' : ''}.</p>
-                <div className="mt-4">
-                  {inspectionJobs.error ? <p role="alert" className="text-sm text-amber-900">{inspectionJobs.error} Reload before starting a pack.</p> : scheduledInspection ? <InspectionStartButton jobId={scheduledInspection.id} propertyId={property.id} label="Start inspection" /> : <form action={startPreArrivalPackAction}>
-                    <input type="hidden" name="property_id" value={property.id} />
-                    <button type="submit" className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2 sm:w-auto">
-                      <Camera size={18} aria-hidden />Start pre-arrival pack
-                    </button>
-                  </form>}
-                </div>
-              </section>
+              startInspectionPanel
             )}
           </div>
 

@@ -271,13 +271,13 @@ export default async function PackReportPage({
         {isDraft ? (
           <div className="border border-t-0 border-amber-300 bg-amber-50 px-6 py-3 print:hidden">
             <p className="text-sm text-amber-900">
-              <span className="font-semibold">This pack is still a draft.</span>{' '}
-              Edit captions below, then tap{' '}
-              <span className="font-semibold">Save captions and submit pack</span>{' '}
-              at the bottom of this page. Submitted packs become an immutable
-              record. Photos can&rsquo;t be removed from a pre-arrival pack one by
-              one &mdash; if the wrong photos are in it, discard the draft from the
-              property page and start a new pack.
+              <span className="font-semibold">Review your inspection.</span>{' '}
+              Add captions and report any issues, then tap{' '}
+              <span className="font-semibold">Submit inspection</span>{' '}
+              below. Submitted photos and captions can&rsquo;t be edited, and
+              individual photos can&rsquo;t be removed. To discard, return to
+              the apartment&rsquo;s More inspection options. A discarded scheduled
+              inspection needs a manager to arrange a replacement.
             </p>
           </div>
         ) : null}

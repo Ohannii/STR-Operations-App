@@ -12,10 +12,10 @@ const j: TurnoverJob = { id: 'j', property_id: 'p', due_on: '2026-11-22', checko
 describe('actual inspection screens', () => {
   it('puts discarded inspection status and manager cancellation on the apartment, without another Start action', () => {
     const html = renderToStaticMarkup(<DiscardedInspectionNotice job={{ ...j, pack_status: 'draft', pack_deleted: true }} manager propertyName="Ballito Life · Unit 91" />)
-    expect(html).toContain('Inspection still open'); expect(html).toContain('Inspection options')
-    expect(html).toContain('Inspection needs attention'); expect(html).toContain('Options')
+    expect(html).toContain('Inspection still open'); expect(html).toContain('Cancel inspection…')
+    expect(html).toContain('Inspection needs attention')
     expect(html).toContain('To start again'); expect(html).toContain('Open inspection work')
-    expect(html).not.toContain('Cancel inspection'); expect(html).not.toContain('<dialog')
+    expect(html).not.toContain('<dialog')
     expect(html).toContain('/dashboard/work?scope=all&amp;property=p')
     expect(html).not.toContain('Start pre-arrival'); expect(html).not.toContain('Start scheduled')
     const inspector = renderToStaticMarkup(<DiscardedInspectionNotice job={{ ...j, pack_status: 'draft', pack_deleted: true }} manager={false} propertyName="Ballito Life · Unit 91" />)
@@ -30,7 +30,7 @@ describe('actual inspection screens', () => {
   it('offers only cancellation of a discarded linked draft to managers', () => {
     const discarded = { ...j, pack_status: 'draft', pack_deleted: true }
     const html = renderToStaticMarkup(<InspectionJobCard job={discarded} property={p} manager today="2026-11-22" />)
-    expect(html).toContain('Inspection options')
+    expect(html).toContain('Cancel inspection…')
     expect(html).not.toContain('Change schedule'); expect(html).not.toContain('Start inspection')
     expect(html).not.toContain('Continue inspection'); expect(html).not.toContain('View pack')
     const inspector = renderToStaticMarkup(<InspectionJobCard job={discarded} property={p} manager={false} today="2026-11-22" />)
@@ -61,7 +61,7 @@ describe('actual inspection screens', () => {
   it('keeps cancelled history distinct from a discarded inspection needing recovery', () => {
     const html = renderToStaticMarkup(<InspectionJobCard job={{ ...j, pack_status: 'draft', pack_deleted: true, cancelled_at: '2026-11-22T10:00:00Z' }} property={p} manager today="2026-11-22" />)
     expect(html).toContain('Cancelled'); expect(html).not.toContain('Needs attention')
-    expect(html).not.toContain('Inspection options'); expect(html).not.toContain('Start inspection')
+    expect(html).not.toContain('Cancel inspection…'); expect(html).not.toContain('Start inspection')
   })
   it('gives an open-policy inspector bulk allocation, but hides manager settings', () => {
     const html = renderToStaticMarkup(<AssignmentManager workspace={workspace} manager={false} />)
@@ -78,5 +78,21 @@ describe('actual inspection screens', () => {
     expect(html).toContain('No due inspections'); expect(html).toContain('My allocated apartments (1)')
     expect(html).not.toContain('Start inspection'); expect(html).not.toContain('Schedule an inspection')
     expect(html).toContain('Manually scheduled checkouts today')
+  })
+  it('puts real due cards before summaries, allocations and manager setup information', () => {
+    const jobs = [{ ...j, pack_id: null, pack_status: null }]
+    const html = renderToStaticMarkup(<Workboard workspace={workspace} jobs={jobs} manager all userId="a" today="2026-11-22" initialProperty="" />)
+    expect(html.indexOf('<article')).toBeLessThan(html.indexOf('Work summary'))
+    expect(html.indexOf('<article')).toBeLessThan(html.indexOf('Hostaway not connected'))
+    expect(html).not.toContain('Find an apartment')
+    const inspector = renderToStaticMarkup(<Workboard workspace={workspace} jobs={jobs} manager={false} all={false} userId="a" today="2026-11-22" initialProperty="" />)
+    expect(inspector).not.toContain('Hostaway not connected'); expect(inspector).toContain('Inspector allocations')
+  })
+  it('keeps search available for larger lists and for an active apartment filter', () => {
+    const jobs = Array.from({ length: 6 }, (_, n) => ({ ...j, id: `job-${n}`, pack_id: null, pack_status: null }))
+    const html = renderToStaticMarkup(<Workboard workspace={workspace} jobs={jobs} manager={false} all={false} userId="a" today="2026-11-22" initialProperty="" />)
+    expect(html).toContain('Find an apartment')
+    const filtered = renderToStaticMarkup(<Workboard workspace={workspace} jobs={jobs.slice(0, 1)} manager={false} all={false} userId="a" today="2026-11-22" initialProperty="p" />)
+    expect(filtered).toContain('Find an apartment'); expect(filtered).toContain('Clear apartment filter')
   })
 })

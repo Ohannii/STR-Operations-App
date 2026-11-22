@@ -15,10 +15,9 @@ const button = (text: string) => {
   return found!
 }
 const click = async (element: HTMLElement) => { await act(async () => { element.click() }) }
-const actions = () => host.querySelector<HTMLButtonElement>('[aria-label="Inspection options"]')!
+const actions = () => button('Cancel inspection…')
 async function openConfirmation() {
   await click(actions())
-  await click(button('Cancel inspection…'))
   return host.querySelector('dialog')!
 }
 beforeEach(async () => {
@@ -32,13 +31,12 @@ afterEach(async () => {
   await act(async () => { root.unmount() }); host.remove(); vi.unstubAllGlobals()
 })
 describe('actual cancellation interactions', () => {
-  it('opening the menu and confirmation never cancels; Keep is focused and preserves the inspection', async () => {
-    expect(actions().textContent).toBe('Options')
+  it('opening confirmation never cancels; Keep is focused and preserves the inspection', async () => {
+    expect(actions().getAttribute('aria-haspopup')).toBe('dialog')
     expect(host.querySelector('dialog')).toBeNull()
     await click(actions())
     expect(actions().getAttribute('aria-expanded')).toBe('true')
     expect(mocks.update).not.toHaveBeenCalled()
-    await click(button('Cancel inspection…'))
     expect(host.querySelector('dialog')?.open).toBe(true)
     expect(host.textContent).toContain('Ballito Life · Unit 91')
     expect(host.textContent).toContain('22 Nov 2026')
@@ -61,14 +59,11 @@ describe('actual cancellation interactions', () => {
     await act(async () => { dialog.dispatchEvent(new Event('cancel', { cancelable: true })) })
     expect(host.querySelector('dialog')).toBeNull(); expect(mocks.update).not.toHaveBeenCalled()
   })
-  it('outside taps and Escape close only the actions menu', async () => {
-    await click(actions())
-    await act(async () => { document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })) })
-    expect(host.querySelector('[role="menu"]')).toBeNull()
-    await click(actions())
-    await act(async () => { button('Cancel inspection…').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
-    expect(host.querySelector('[role="menu"]')).toBeNull(); expect(document.activeElement).toBe(actions())
+  it('repeated taps on the secondary control open only one confirmation and never save', async () => {
+    await act(async () => { actions().click(); actions().click() })
+    expect(host.querySelectorAll('dialog')).toHaveLength(1)
     expect(mocks.update).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(button('Keep inspection'))
   })
   it('double taps issue one request and cannot dismiss the dialog while saving', async () => {
     let finish!: (value: { ok: true }) => void

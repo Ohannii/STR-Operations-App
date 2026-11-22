@@ -233,7 +233,7 @@ export async function submitEvidencePackAction(formData: FormData) {
     const url = returnTo ?? `/properties/${propertyId}`
     redirect(
       `${url}?error=${encodeURIComponent(
-        'Pre-arrival packs are submitted from the pack report, where captions are saved with the pack. Open the report and tap "Save captions and submit pack".',
+        'Pre-arrival packs are submitted from the pack report, where captions are saved with the pack. Open the report and tap "Submit inspection".',
       )}`,
     )
   }

@@ -421,9 +421,7 @@ export function GalleryUploader({
     <div className="inline-flex flex-col gap-2 min-w-0">
       <label
         className={
-          isMisconfigured || busy
-            ? 'inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-400 cursor-not-allowed'
-            : 'inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 active:bg-slate-100 cursor-pointer transition'
+          `inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 py-2 text-sm font-medium focus-within:outline-none focus-within:ring-2 focus-within:ring-teal-700 focus-within:ring-offset-2 ${evidencePackId ? 'text-teal-800 underline underline-offset-4' : 'border border-slate-300 bg-white text-slate-700'} ${isMisconfigured || busy ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-slate-50 transition'}`
         }
         title={
           isMisconfigured
@@ -447,7 +445,8 @@ export function GalleryUploader({
           accept="image/*"
           multiple
           {...(preferCamera ? { capture: 'environment' as const } : {})}
-          className="hidden"
+          className="sr-only"
+          aria-label={buttonLabel}
           disabled={isMisconfigured || busy}
           onChange={(e) => {
             // Capture into a plain array BEFORE iOS Safari has a

@@ -109,17 +109,23 @@ discarded work or cancel a live/submitted pack through these controls.
 The apartment itself shows the discarded inspection and manager cancellation
 in place of ordinary Start. Stale ordinary Start submissions also refuse to
 create an unlinked pack while that due inspection needs cancellation.
-Cancellation is a secondary action under the inspection's actions menu, on both
-the apartment and workboard. Selecting it only opens a native confirmation
+Cancellation is a compact secondary control on both the apartment and
+workboard. Selecting it only opens a native confirmation
 dialog naming the apartment and date; Keep inspection receives initial focus.
 Only explicit confirmation sends the request. The dialog freezes while saving,
 and repeats/double taps are single-flight. Its default/cancel paths never write.
 
 The apartment screen uses a visible teal inspection panel and primary action,
-amber recovery panel, and a labelled Options button for secondary actions.
+amber recovery panel, and a compact confirmed cancellation control. Discard
+is disclosed under More inspection options with a scheduled-recovery warning.
 It states the next step: take photos, then review/report issues and submit.
-The workboard uses explicit status labels as well as colour, with manual test
-creation below the work list. See `INSPECTOR_UX_WALKTHROUGH.md` for the persona
+The workboard puts job cards before summaries, allocations and manager-only
+setup information. A compact view selector and conditional search preserve
+filtering. It uses explicit status labels as well as colour, with manual test
+creation below the work list. After a linked submission, the exact server-proven
+visit shows Inspection complete and leads back to work; another Start is
+secondary. Offline and lost-response Start failures remain inline and retries
+reopen the same guarded visit. See `INSPECTOR_UX_WALKTHROUGH.md` for the persona
 walkthrough and independent review brief. Zero-only
 snapshot cards and implementation-roadmap copy are omitted from daily work.
 Touch targets remain at least 44 CSS pixels even where the visual control is

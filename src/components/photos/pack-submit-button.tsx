@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useSyncExternalStore } from 'react'
 import { AlertTriangle, Camera, CheckCircle2, Loader2, Trash2 } from 'lucide-react'
 import { discardEvidencePackAction } from '@/app/properties/[id]/packs/actions'
 import { packCapture, usePackCapture } from '@/lib/photos/pack-capture-store'
@@ -143,24 +143,36 @@ export function PackStatusBanner({
 
 /**
  * Discarding a draft is destructive and deliberately separated from the
- * normal actions — outlined danger styling plus an explicit confirm. It
- * never sits next to Submit.
+ * normal actions — disclosed only under More, then explicitly confirmed.
  */
+const subscribeHydration = () => () => {}
+const clientReady = () => true
+const serverReady = () => false
+
 export function DiscardDraftButton({
   propertyId,
   packId,
+  scheduled = false,
+  propertyName,
 }: {
   propertyId: string
   packId: string
+  scheduled?: boolean
+  propertyName?: string
 }) {
+  // Until hydration installs the confirmation handler, the form must be inert.
+  const interactive = useSyncExternalStore(subscribeHydration, clientReady, serverReady)
   return (
-    <form
+    <details>
+    <summary className="inline-flex min-h-11 cursor-pointer items-center rounded-lg px-2 text-sm font-medium text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700">More inspection options</summary>
+    <form className="mt-1"
       action={discardEvidencePackAction}
       onSubmit={(e) => {
         const ok =
           typeof window === 'undefined' ||
           window.confirm(
-            'Discard this draft pre-arrival pack? It will not become a submitted record. This cannot be undone.',
+            `Discard this inspection draft${propertyName ? ` for ${propertyName}` : ''}? It will not become a submitted record. ` +
+              (scheduled ? 'The scheduled inspection will stay open. A manager must cancel it and arrange a replacement before you can start again.' : 'You will need to start a new inspection to replace it.'),
           )
         if (!ok) e.preventDefault()
       }}
@@ -169,11 +181,13 @@ export function DiscardDraftButton({
       <input type="hidden" name="pack_id" value={packId} />
       <button
         type="submit"
-        className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2 sm:w-auto"
+        disabled={!interactive}
+        className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-red-700 transition hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2"
       >
         <Trash2 size={13} aria-hidden />
-        Discard draft
+        Discard inspection draft…
       </button>
     </form>
+    </details>
   )
 }
