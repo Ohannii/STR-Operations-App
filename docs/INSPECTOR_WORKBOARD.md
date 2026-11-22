@@ -109,6 +109,17 @@ discarded work or cancel a live/submitted pack through these controls.
 The apartment itself shows the discarded inspection and manager cancellation
 in place of ordinary Start. Stale ordinary Start submissions also refuse to
 create an unlinked pack while that due inspection needs cancellation.
+Cancellation is a secondary action under the inspection's actions menu, on both
+the apartment and workboard. Selecting it only opens a native confirmation
+dialog naming the apartment and date; Keep inspection receives initial focus.
+Only explicit confirmation sends the request. The dialog freezes while saving,
+and repeats/double taps are single-flight. Its default/cancel paths never write.
+
+The apartment screen uses a compact neutral inspection status with a small
+attention indicator, quiet section navigation and issue tiles. Zero-only
+snapshot cards and implementation-roadmap copy are omitted from daily work.
+Touch targets remain at least 44 CSS pixels even where the visual control is
+small. Native dialog focus/keyboard behaviour still needs device acceptance.
 
 Changing an inspection's due date does not change its recorded guest checkout
 or next arrival. The form states this explicitly. Distinct checkout times may

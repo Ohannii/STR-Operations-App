@@ -1,32 +1,19 @@
 'use client'
 
 import Link from 'next/link'
-import { useState, useTransition } from 'react'
-import { useRouter } from 'next/navigation'
-import { updateTurnover } from '@/app/dashboard/work/actions'
+import { ChevronRight } from 'lucide-react'
+import { CancelInspectionControl } from './cancel-inspection-control'
 import type { TurnoverJob } from '@/lib/inspections/workboard'
 import { formatDateSAST } from '@/lib/ui/datetime'
 
-export function DiscardedInspectionNotice({ job, manager }: { job: TurnoverJob; manager: boolean }) {
-  const router = useRouter()
-  const [pending, start] = useTransition()
-  const [error, setError] = useState('')
-  return <section aria-label="Scheduled inspection" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-950">
-    <h2 className="font-semibold">Scheduled inspection · {formatDateSAST(`${job.due_on}T12:00:00+02:00`)}</h2>
-    <p className="mt-2 text-sm font-medium">Draft discarded · Inspection still open</p>
-    <p className="mt-1 text-sm">{manager ? 'Cancel this inspection to clear it. You can then schedule a replacement if needed.' : 'Ask a manager to cancel this inspection before scheduling a replacement.'}</p>
-    <div className="mt-3 flex flex-wrap items-center gap-3">
-      {manager && <button type="button" disabled={pending} className="min-h-12 rounded-xl border border-amber-400 bg-white px-4 py-3 text-sm font-medium disabled:opacity-40" onClick={() => {
-        if (pending) return
-        start(async () => {
-          setError('')
-          const result = await updateTurnover(job.id, job.revision, job.due_on, true)
-          if (!result.ok) { setError(result.error); return }
-          router.refresh()
-        })
-      }}>{pending ? 'Cancelling…' : 'Cancel inspection'}</button>}
-      <Link className="inline-flex min-h-11 items-center text-sm underline" href={`/dashboard/work?${manager ? 'scope=all&' : ''}property=${job.property_id}`}>View inspection work</Link>
+export function DiscardedInspectionNotice({ job, manager, propertyName }: { job: TurnoverJob; manager: boolean; propertyName: string }) {
+  return <section aria-label="Scheduled inspection" className="flex items-start justify-between gap-2 py-1">
+    <div className="min-w-0">
+      <h2 className="text-sm font-medium text-slate-800">Inspection <span className="font-normal text-slate-500">· {formatDateSAST(`${job.due_on}T12:00:00+02:00`, 'short')}</span></h2>
+      <p className="mt-2 flex items-start gap-2 text-sm leading-relaxed text-slate-600"><span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden />Draft discarded. Inspection still open.</p>
+      {!manager && <p className="mt-1 text-xs text-slate-500">Ask a manager to review this inspection.</p>}
+      <Link className="mt-1 inline-flex min-h-11 items-center gap-1 text-sm font-medium text-slate-700 hover:text-slate-950" href={`/dashboard/work?${manager ? 'scope=all&' : ''}property=${job.property_id}`}>View inspection <ChevronRight size={14} aria-hidden /></Link>
     </div>
-    {error && <p role="alert" className="mt-2 text-sm">{error}</p>}
+    {manager && <CancelInspectionControl job={job} propertyName={propertyName} />}
   </section>
 }

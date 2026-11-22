@@ -11,7 +11,7 @@ import {
   FileText,
   Flag,
   Hourglass,
-  Info,
+  Pencil,
   MessageCircle,
   type LucideIcon,
 } from 'lucide-react'
@@ -28,7 +28,6 @@ import { GalleryUploader } from '@/components/photos/gallery-uploader'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { canManageProperties } from '@/lib/properties/property-management'
-import { buttonClasses } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { StaticChip, ToggleChip } from '@/components/ui/chip'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -443,15 +442,13 @@ export default async function PropertyPage({
     >
       <Link
         href="/dashboard"
-        className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 mb-5 transition-colors"
+        className="mb-3 inline-flex min-h-11 items-center gap-1.5 text-sm text-slate-500 transition-colors hover:text-slate-900"
       >
         <ArrowLeft size={14} aria-hidden />
         All properties
       </Link>
 
       <InsecureContextBanner />
-
-      {canInspect(ctx.membership?.role_key) && <Link href={`/dashboard/work?${canManageProperties(ctx.membership?.role_key) ? 'scope=all&' : ''}property=${id}`} className="mb-5 inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-medium"><ClipboardCheck size={16} aria-hidden />Scheduled inspections for this apartment</Link>}
 
       {property_updated ? <div className="mb-5"><Alert tone="success">Property details saved.</Alert></div> : null}
       {raised ? (
@@ -484,14 +481,11 @@ export default async function PropertyPage({
       ) : null}
 
       {/* Property header */}
-      <Card className="mb-8">
-        <div className="p-5 sm:p-6">
+      <Card className="mb-6 !shadow-none">
+        <div className="p-4 sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0 flex-1">
-              <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">
-                Apartment
-              </p>
-              <h1 className="text-2xl font-semibold text-slate-900 tracking-tight truncate">
+              <h1 className="break-words text-2xl font-semibold tracking-tight text-slate-900">
                 {property.name}
               </h1>
               {sub ? (
@@ -504,25 +498,20 @@ export default async function PropertyPage({
                   <span className="text-slate-700 font-medium">{property.bedrooms ?? '—'}</span>{' '}
                   {property.bedrooms === 1 ? 'bedroom' : 'bedrooms'}
                 </span>
-                <span>Added {relativeTime(property.created_at)}</span>
-                {(submittedPacks?.length ?? 0) > 0 ? (
-                  <span className="inline-flex items-center gap-1 text-slate-700">
-                    <FileText size={12} aria-hidden />
-                    <span>
-                      <span className="font-medium">{submittedPacks?.length}</span>{' '}
-                      submitted pack{submittedPacks?.length === 1 ? '' : 's'}
-                    </span>
-                  </span>
-                ) : null}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               {canManageProperties(ctx.membership?.role_key) ? (
-                <Link href={`/properties/${id}/edit`} className={buttonClasses('secondary', 'sm')}>Edit property</Link>
+                <Link href={`/properties/${id}/edit`} aria-label="Edit property" className="inline-flex min-h-11 items-center gap-1.5 px-1 text-sm text-slate-500 hover:text-slate-900"><Pencil size={14} aria-hidden />Edit</Link>
               ) : null}
-              <Badge tone={status.tone} className="!text-xs !px-2.5 !py-1">{status.label}</Badge>
+              <Badge tone={status.tone} className="!text-[11px] !font-medium !normal-case !tracking-normal !px-2 !py-1">{status.label}</Badge>
             </div>
           </div>
+
+          <nav aria-label="Apartment sections" className="mt-3 flex flex-wrap items-center gap-x-5 text-sm text-slate-600">
+            {canInspect(ctx.membership?.role_key) && <Link href={`/dashboard/work?${canManageProperties(ctx.membership?.role_key) ? 'scope=all&' : ''}property=${id}`} className="inline-flex min-h-11 items-center gap-1.5 hover:text-slate-950"><ClipboardCheck size={14} aria-hidden />Inspection work</Link>}
+            <Link href="#history" className="inline-flex min-h-11 items-center gap-1.5 hover:text-slate-950"><FileText size={14} aria-hidden />Pack history</Link>
+          </nav>
 
           {/* Session 8 follow-up: pack-aware pre-arrival surface.
               Three states:
@@ -666,7 +655,7 @@ export default async function PropertyPage({
                 </div>
               </div>
             ) : discardedInspection ? (
-              <DiscardedInspectionNotice job={discardedInspection} manager={canManageProperties(ctx.membership?.role_key)} />
+              <DiscardedInspectionNotice job={discardedInspection} manager={canManageProperties(ctx.membership?.role_key)} propertyName={[property.name, property.address].filter(Boolean).join(' · ')} />
             ) : (
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -707,8 +696,7 @@ export default async function PropertyPage({
         <div className="mb-3">
           <h2 className="text-lg font-semibold text-slate-900">Report an issue</h2>
           <p className="text-sm text-slate-600">
-            One tap to report something an inspector or manager noticed. Triage and
-            child actions ship in a later session.
+            Choose what needs attention.
           </p>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
@@ -725,24 +713,24 @@ export default async function PropertyPage({
                 href={`/properties/${property.id}/flags/new?category=${key}`}
                 className={
                   isSafety
-                    ? 'group min-w-0 bg-red-50 border border-red-200 rounded-xl p-4 hover:bg-red-100 hover:border-red-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2'
-                    : 'group min-w-0 bg-white border border-slate-200 rounded-xl p-4 hover:border-slate-300 hover:shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2'
+                    ? 'group flex min-w-0 items-start gap-3 rounded-xl border border-red-100 bg-red-50/60 p-3.5 transition-colors hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2'
+                    : 'group flex min-w-0 items-start gap-3 rounded-xl border border-slate-200/80 bg-white p-3.5 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2'
                 }
               >
                 <div
                   className={
                     isSafety
-                      ? 'w-9 h-9 rounded-lg bg-red-600 text-white flex items-center justify-center mb-2.5'
-                      : 'w-9 h-9 rounded-lg bg-slate-100 text-slate-700 group-hover:bg-slate-900 group-hover:text-white flex items-center justify-center mb-2.5 transition-colors'
+                      ? 'mt-0.5 shrink-0 text-red-600'
+                      : 'mt-0.5 shrink-0 text-slate-500'
                   }
                 >
                   <Icon size={18} aria-hidden />
                 </div>
-                <p
+                <div className="min-w-0"><p
                   className={
                     isSafety
-                      ? 'text-sm font-semibold text-red-900'
-                      : 'text-sm font-semibold text-slate-900'
+                      ? 'text-sm font-medium text-red-900'
+                      : 'text-sm font-medium text-slate-900'
                   }
                 >
                   {tileTitle}
@@ -750,12 +738,12 @@ export default async function PropertyPage({
                 <p
                   className={
                     isSafety
-                      ? 'text-[11px] text-red-700 mt-0.5 leading-snug'
-                      : 'text-[11px] text-slate-500 mt-0.5 leading-snug'
+                      ? 'mt-1 text-xs leading-relaxed text-red-700'
+                      : 'mt-1 text-xs leading-relaxed text-slate-500'
                   }
                 >
                   {tileSub}
-                </p>
+                </p></div>
               </Link>
             )
           })}
@@ -767,7 +755,7 @@ export default async function PropertyPage({
           derived from the data we already loaded — no extra queries
           except the open-recovery head-count which ran in parallel
           with the flags query. */}
-      <section className="mb-8">
+      {(readyForAsanaCount > 0 || ownerApprovalPendingCount > 0 || (openRecoveryCount ?? 0) > 0 || overdueCount > 0) && <section className="mb-8">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <SnapshotTile
             icon={ClipboardCheck}
@@ -794,7 +782,7 @@ export default async function PropertyPage({
             tone={overdueCount > 0 ? 'red' : 'slate'}
           />
         </div>
-      </section>
+      </section>}
 
       {/* Open flags — grouped by category, expand-in-place (Session 7).
           Each card has a collapsed summary + an expanded inline panel
@@ -886,7 +874,7 @@ export default async function PropertyPage({
             - Recently closed/no-action flags (capped at 5)
           Both link out to their respective detail pages so the
           full record is one click away weeks after the fact. */}
-      <section className="mb-10">
+      <section id="history" className="mb-10 scroll-mt-24">
         <h2 className="text-lg font-semibold text-slate-900 mb-3">History</h2>
         <div className="grid md:grid-cols-2 gap-4">
           <Card>
@@ -1014,64 +1002,7 @@ export default async function PropertyPage({
         </div>
       </section>
 
-      {/* Roadmap blurb */}
-      <section className="mb-10">
-        <h2 className="text-sm font-semibold text-slate-900 mb-3">Coming for this apartment</h2>
-        <div className="grid sm:grid-cols-3 gap-3">
-          <RoadmapMiniCard
-            icon={ClipboardCheck}
-            label="Turnover inspection"
-            phase="Next session"
-          />
-          <RoadmapMiniCard
-            icon={Camera}
-            label="Evidence camera & photos"
-            phase="v1.0"
-          />
-          <RoadmapMiniCard
-            icon={ChevronRight}
-            label="Flag triage & child actions"
-            phase="v1.0"
-          />
-        </div>
-      </section>
-
-      {/* Footer info */}
-      <section className="pt-6 border-t border-slate-200">
-        <div className="flex items-start gap-3 text-xs text-slate-500">
-          <Info size={14} className="mt-0.5 shrink-0 text-slate-400" aria-hidden />
-          <p>
-            Approval cap, owner link, and template overrides for this apartment
-            inherit the company defaults. Per-property overrides become editable when
-            the settings page ships in v1.2.
-          </p>
-        </div>
-      </section>
     </AppShell>
-  )
-}
-
-function RoadmapMiniCard({
-  icon: Icon,
-  label,
-  phase,
-}: {
-  icon: LucideIcon
-  label: string
-  phase: string
-}) {
-  return (
-    <Card>
-      <div className="p-3 flex items-center gap-2.5">
-        <div className="shrink-0 w-7 h-7 rounded-md bg-slate-100 flex items-center justify-center">
-          <Icon size={14} className="text-slate-600" aria-hidden />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold text-slate-900 truncate">{label}</p>
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider">{phase}</p>
-        </div>
-      </div>
-    </Card>
   )
 }
 

@@ -5,6 +5,7 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { scheduleTurnover, updateTurnover } from './actions'
 import { InspectionStartButton } from '@/components/inspections/inspection-start-button'
+import { CancelInspectionControl } from '@/components/inspections/cancel-inspection-control'
 import { jobState, propertyLabel, type Allocation, type InspectionWorkspace, type TurnoverJob } from '@/lib/inspections/workboard'
 import { naturalCompare } from '@/lib/properties/finder'
 import { formatDateSAST, formatDateTimeSAST } from '@/lib/ui/datetime'
@@ -94,21 +95,13 @@ export function InspectionJobCard({ job, property, manager, today }: { job: Turn
     </div>
     <p role="status" className="mt-2 text-sm text-rose-700">{message}</p>
     {job.pack_deleted && !job.cancelled_at && <p className="mt-3 text-sm text-amber-900">The draft was discarded. {manager ? 'Cancel this inspection to clear it and allow a replacement.' : 'Ask a manager to cancel this inspection before scheduling a replacement.'}</p>}
-    {manager && job.pack_deleted && !job.cancelled_at && <button type="button" disabled={pending} className="mt-2 min-h-11 text-sm text-rose-700 underline disabled:opacity-40" onClick={() => start(async () => {
-      const result = await updateTurnover(job.id, job.revision, job.due_on, true)
-      setMessage(result.ok ? 'Inspection cancelled.' : result.error)
-      if (result.ok) router.refresh()
-    })}>Cancel inspection</button>}
+    {manager && job.pack_deleted && !job.cancelled_at && <CancelInspectionControl job={job} propertyName={propertyLabel(property)} disabled={pending} />}
     {manager && !job.pack_id && !job.cancelled_at && <details className="mt-3 border-t border-slate-100 pt-3"><summary className="min-h-11 cursor-pointer text-sm">Change schedule</summary>
       <form onSubmit={e => { e.preventDefault(); start(async () => {
         const result = await updateTurnover(job.id, job.revision, due, false)
         setMessage(result.ok ? 'Schedule updated.' : result.error)
         if (result.ok) router.refresh()
-      }) }}><fieldset disabled={pending} className="space-y-3"><label className="block text-sm">Inspection date<input required type="date" className={control} value={due} onChange={e => setDue(e.target.value)} /></label><p className="text-xs text-slate-600">Only the inspection date changes. Checkout and next arrival stay as recorded.</p><button className={primary}>Save date</button><button type="button" className="ml-4 min-h-11 text-sm text-rose-700 underline" onClick={() => start(async () => {
-        const result = await updateTurnover(job.id, job.revision, job.due_on, true)
-        setMessage(result.ok ? 'Inspection cancelled.' : result.error)
-        if (result.ok) router.refresh()
-      })}>Cancel inspection</button></fieldset></form>
+      }) }}><fieldset disabled={pending} className="space-y-3"><label className="block text-sm">Inspection date<input required type="date" className={control} value={due} onChange={e => setDue(e.target.value)} /></label><p className="text-xs text-slate-600">Only the inspection date changes. Checkout and next arrival stay as recorded.</p><div className="flex items-center justify-between gap-3"><button className={primary}>Save date</button><CancelInspectionControl job={job} propertyName={propertyLabel(property)} disabled={pending} /></div></fieldset></form>
     </details>}
   </article>
 }

@@ -29,6 +29,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Test application and interaction guards
+        run: pnpm test
       - run: pnpm run test:inspections:db
         env:
           STR_TEST_DATABASE_URL: postgres://postgres:local-fixture-only@127.0.0.1:5432/postgres

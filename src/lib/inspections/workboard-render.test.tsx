@@ -11,11 +11,12 @@ const workspace: InspectionWorkspace = { properties: [p, { ...p, id: 'bv', addre
 const j: TurnoverJob = { id: 'j', property_id: 'p', due_on: '2026-11-22', checkout_at: null, next_arrival_at: null, source: 'manual', cancelled_at: null, revision: 0, pack_id: 'pack', pack_deleted: false, pack_status: 'submitted', started_by: 'b', starter_name: 'Inspector B', submitted_by: 'b', submitter_name: 'Inspector B', submitted_at: '2026-11-22T10:00:00Z' }
 describe('actual inspection screens', () => {
   it('puts discarded inspection status and manager cancellation on the apartment, without another Start action', () => {
-    const html = renderToStaticMarkup(<DiscardedInspectionNotice job={{ ...j, pack_status: 'draft', pack_deleted: true }} manager />)
-    expect(html).toContain('Inspection still open'); expect(html).toContain('Cancel inspection')
+    const html = renderToStaticMarkup(<DiscardedInspectionNotice job={{ ...j, pack_status: 'draft', pack_deleted: true }} manager propertyName="Ballito Life · Unit 91" />)
+    expect(html).toContain('Inspection still open'); expect(html).toContain('Inspection actions')
+    expect(html).not.toContain('Cancel inspection'); expect(html).not.toContain('<dialog')
     expect(html).toContain('/dashboard/work?scope=all&amp;property=p')
     expect(html).not.toContain('Start pre-arrival'); expect(html).not.toContain('Start scheduled')
-    const inspector = renderToStaticMarkup(<DiscardedInspectionNotice job={{ ...j, pack_status: 'draft', pack_deleted: true }} manager={false} />)
+    const inspector = renderToStaticMarkup(<DiscardedInspectionNotice job={{ ...j, pack_status: 'draft', pack_deleted: true }} manager={false} propertyName="Ballito Life · Unit 91" />)
     expect(inspector).toContain('Ask a manager'); expect(inspector).not.toContain('<button')
   })
   it('keeps the regular inspector and actual submitter separate, with no readiness claim', () => {
@@ -27,7 +28,7 @@ describe('actual inspection screens', () => {
   it('offers only cancellation of a discarded linked draft to managers', () => {
     const discarded = { ...j, pack_status: 'draft', pack_deleted: true }
     const html = renderToStaticMarkup(<InspectionJobCard job={discarded} property={p} manager today="2026-11-22" />)
-    expect(html).toContain('Cancel inspection')
+    expect(html).toContain('Inspection actions')
     expect(html).not.toContain('Change schedule'); expect(html).not.toContain('Start inspection')
     expect(html).not.toContain('Continue inspection'); expect(html).not.toContain('View pack')
     const inspector = renderToStaticMarkup(<InspectionJobCard job={discarded} property={p} manager={false} today="2026-11-22" />)

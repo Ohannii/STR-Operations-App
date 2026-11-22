@@ -42,14 +42,14 @@ export function formatDateTimeSAST(input: DateInput): string {
   })
 }
 
-/** Date only in SAST, e.g. "20 June 2026". Returns "—" when empty/invalid. */
-export function formatDateSAST(input: DateInput): string {
+/** Date only in SAST; use 'short' for compact status rows. Empty/invalid → "—". */
+export function formatDateSAST(input: DateInput, month: 'long' | 'short' = 'long'): string {
   const d = toDate(input)
   if (!d) return '—'
   return d.toLocaleDateString('en-ZA', {
     timeZone: SAST_TIME_ZONE,
     year: 'numeric',
-    month: 'long',
+    month,
     day: 'numeric',
   })
 }
