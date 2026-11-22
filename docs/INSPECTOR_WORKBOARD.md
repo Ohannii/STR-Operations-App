@@ -117,7 +117,13 @@ company/user erasure is outside this increment and must not silently cascade.
 ## Acceptance and release
 
 Applied foundation: `20261122174325_inspector_workboard.sql` (unchanged).
-Pending follow-up: `20261122191844_inspection_workboard_recovery.sql`.
+Applied recovery: `20261122191844_inspection_workboard_recovery.sql`.
+Both were applied once on 22 November 2026 after review and Anni's approval.
+The recovery file is unchanged from reviewed commit `790f171`; its SHA-256 is
+`06d0ba5a60b3c301563c52d1222daa0d9d01d0aff8e04b7deceb86905adb9ddf`.
+Its six function bodies, authenticated-only execution, retained table grants
+and row security were verified. Existing photo/caption/submit definitions and
+business row counts were unchanged; verification created no business records.
 The follow-up adds discarded-draft cancellation, shared unassigned visibility
 in both RLS and the read RPC, schedule creation audit, and weaker non-key locks
 for allocation/policy writers. It adds one guarded boolean helper for available
@@ -125,7 +131,7 @@ primary inspectors so caller RLS cannot hide another inspector's membership and
 accidentally label their apartment unassigned. Its execute grant is authenticated
 only; foreign-company and inappropriate-role calls reveal no allocation.
 Existing photo/caption/submit functions are not changed. Review before applying
-the follow-up to the shared staff database; do not merge an unreviewed migration.
+any future migration to the shared staff database; do not merge an unreviewed migration.
 
 Automated checks cover default/manager-only policies, tenant isolation, eligible
 assignees, forged requests, atomic bulk failure, stale revisions, schedule
