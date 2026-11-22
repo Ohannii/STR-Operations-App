@@ -12,7 +12,9 @@ const j: TurnoverJob = { id: 'j', property_id: 'p', due_on: '2026-11-22', checko
 describe('actual inspection screens', () => {
   it('puts discarded inspection status and manager cancellation on the apartment, without another Start action', () => {
     const html = renderToStaticMarkup(<DiscardedInspectionNotice job={{ ...j, pack_status: 'draft', pack_deleted: true }} manager propertyName="Ballito Life · Unit 91" />)
-    expect(html).toContain('Inspection still open'); expect(html).toContain('Inspection actions')
+    expect(html).toContain('Inspection still open'); expect(html).toContain('Inspection options')
+    expect(html).toContain('Inspection needs attention'); expect(html).toContain('Options')
+    expect(html).toContain('To start again'); expect(html).toContain('Open inspection work')
     expect(html).not.toContain('Cancel inspection'); expect(html).not.toContain('<dialog')
     expect(html).toContain('/dashboard/work?scope=all&amp;property=p')
     expect(html).not.toContain('Start pre-arrival'); expect(html).not.toContain('Start scheduled')
@@ -28,7 +30,7 @@ describe('actual inspection screens', () => {
   it('offers only cancellation of a discarded linked draft to managers', () => {
     const discarded = { ...j, pack_status: 'draft', pack_deleted: true }
     const html = renderToStaticMarkup(<InspectionJobCard job={discarded} property={p} manager today="2026-11-22" />)
-    expect(html).toContain('Inspection actions')
+    expect(html).toContain('Inspection options')
     expect(html).not.toContain('Change schedule'); expect(html).not.toContain('Start inspection')
     expect(html).not.toContain('Continue inspection'); expect(html).not.toContain('View pack')
     const inspector = renderToStaticMarkup(<InspectionJobCard job={discarded} property={p} manager={false} today="2026-11-22" />)
@@ -38,6 +40,28 @@ describe('actual inspection screens', () => {
     const html = renderToStaticMarkup(<InspectionJobCard job={{ ...j, started_by: 'a', starter_name: 'Inspector A' }} property={p} manager today="2026-11-22" />)
     expect(html).toContain('Started by:'); expect(html).toContain('Submitted by:')
     expect(html).toContain('Inspector A'); expect(html).toContain('Inspector B')
+  })
+  it('guides an unstarted due visit to Start and never claims it is complete', () => {
+    const html = renderToStaticMarkup(<InspectionJobCard job={{ ...j, pack_id: null, pack_status: null }} property={p} manager={false} today="2026-11-22" />)
+    expect(html).toContain('Due today'); expect(html).toContain('Start inspection')
+    expect(html).toContain('Take photos and report any issues, then submit the pack')
+    expect(html).not.toContain('Inspection complete'); expect(html).not.toContain('Continue inspection')
+  })
+  it('guides a live draft to Continue without another Start or a completed label', () => {
+    const html = renderToStaticMarkup(<InspectionJobCard job={{ ...j, pack_status: 'draft', submitted_at: null }} property={p} manager={false} today="2026-11-22" />)
+    expect(html).toContain('In progress'); expect(html).toContain('Continue inspection')
+    expect(html).toContain('review and submit the pack')
+    expect(html).not.toContain('Start inspection'); expect(html).not.toContain('Inspection complete')
+  })
+  it('distinguishes future work from work due today', () => {
+    const html = renderToStaticMarkup(<InspectionJobCard job={{ ...j, due_on: '2026-12-05', pack_id: null, pack_status: null }} property={p} manager={false} today="2026-11-22" />)
+    expect(html).toContain('Upcoming'); expect(html).toContain('5 Dec 2026')
+    expect(html).not.toContain('Due today'); expect(html).not.toContain('Inspection complete')
+  })
+  it('keeps cancelled history distinct from a discarded inspection needing recovery', () => {
+    const html = renderToStaticMarkup(<InspectionJobCard job={{ ...j, pack_status: 'draft', pack_deleted: true, cancelled_at: '2026-11-22T10:00:00Z' }} property={p} manager today="2026-11-22" />)
+    expect(html).toContain('Cancelled'); expect(html).not.toContain('Needs attention')
+    expect(html).not.toContain('Inspection options'); expect(html).not.toContain('Start inspection')
   })
   it('gives an open-policy inspector bulk allocation, but hides manager settings', () => {
     const html = renderToStaticMarkup(<AssignmentManager workspace={workspace} manager={false} />)

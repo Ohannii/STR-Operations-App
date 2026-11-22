@@ -181,8 +181,9 @@ describe('BLOCKER 2 — no user-accessible path bypasses caption review', () => 
     expect(exports).toEqual(['PackStatusBanner', 'DiscardDraftButton'])
   })
 
-  it('the property page uses the "Review captions and submit" link, not a direct submit', () => {
-    expect(propertyCode).toContain('Review captions and submit')
+  it('the property review action still opens the caption report, never a direct submit', () => {
+    const reviewLink = propertyCode.match(/<Link\b[\s\S]*?<\/Link>/g)?.find(link => link.includes('Review and submit pack'))
+    expect(reviewLink).toContain('href={`/properties/${property.id}/packs/${draftPack.id}/report`}')
     expect(propertyCode).not.toMatch(/import\s*\{[^}]*PackSubmitButton[^}]*\}/)
     expect(propertyCode).not.toContain('<PackSubmitButton')
     expect(propertyCode).not.toContain('submitEvidencePackAction')

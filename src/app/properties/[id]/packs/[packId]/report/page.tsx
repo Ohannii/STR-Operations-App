@@ -493,11 +493,10 @@ export default async function PackReportPage({
               Ready to submit?
             </h3>
             <p className="text-sm text-emerald-800 mt-1 leading-relaxed">
-              Submitting saves every caption on this page and finalises the
-              pack in one step — there are no individual save buttons.
-              Submitted packs move into the apartment&rsquo;s history and
-              become an immutable record. After submit, a new pre-arrival pack
-              can be started for the next turnover.
+              Check the photos and captions, and report any issues before
+              submitting. The pack is then saved in the apartment&rsquo;s
+              history. Reported issues stay open and guest readiness is
+              tracked separately.
             </p>
             <div className="mt-3">
               <PackCaptionSubmit photoCount={photoRows.length} />

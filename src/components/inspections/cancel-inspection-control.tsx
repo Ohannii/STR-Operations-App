@@ -72,11 +72,12 @@ export function CancelInspectionControl({ job, propertyName, disabled = false }:
   }
 
   return <div ref={container} className="relative shrink-0">
-    <button ref={trigger} type="button" aria-label="Inspection actions" aria-haspopup="menu" aria-expanded={menuOpen} aria-controls={`${id}-menu`} disabled={disabled || pending}
-      className="inline-flex h-11 w-11 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:opacity-40"
+    <button ref={trigger} type="button" aria-label="Inspection options" aria-haspopup="menu" aria-expanded={menuOpen} aria-controls={`${id}-menu`} disabled={disabled || pending}
+      className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2 disabled:opacity-40"
       onClick={() => setMenuOpen(open => !open)}
       onKeyDown={e => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setMenuOpen(true) } }}>
       <MoreHorizontal size={19} aria-hidden />
+      <span>Options</span>
     </button>
     {menuOpen && <div id={`${id}-menu`} role="menu" aria-label="Inspection actions" className="absolute right-0 top-full z-20 mt-1 w-48 rounded-xl border border-slate-200 bg-white p-1 shadow-lg"
       onKeyDown={e => {

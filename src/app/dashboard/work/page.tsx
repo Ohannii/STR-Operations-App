@@ -21,7 +21,7 @@ export default async function WorkPage({ searchParams }: { searchParams: Promise
   ])
   return <AppShell companyName={ctx.company.name} userName={ctx.profile?.full_name ?? 'Account'} userEmail={ctx.user.email ?? ''}>
     <div className="flex flex-wrap items-start justify-between gap-4">
-      <div><h1 className="text-2xl font-semibold">{propertyId ? 'Apartment inspections' : all ? 'Team inspections' : 'My inspections'}</h1><p className="mt-2 text-sm text-slate-600">Scheduled work and the packs you started or submitted.</p></div>
+      <div><h1 className="text-2xl font-semibold">{propertyId ? 'Apartment inspections' : all ? 'Team inspections' : 'My inspections'}</h1><p className="mt-2 text-sm text-slate-600">Choose an apartment. Start the inspection, take photos, then review and submit.</p></div>
       <Link href="/dashboard/assignments" className="inline-flex min-h-11 items-center rounded-xl border border-slate-300 bg-white px-4 text-sm">Inspector allocations</Link>
     </div>
     {propertyId && <Link href="/dashboard/work" className="mt-3 inline-flex min-h-11 items-center text-sm underline">All my inspections</Link>}
@@ -29,7 +29,7 @@ export default async function WorkPage({ searchParams }: { searchParams: Promise
       <Link href="/dashboard/work" aria-current={!all ? 'page' : undefined} className={`rounded-full px-4 py-3 text-sm ${!all ? 'bg-slate-900 text-white' : 'bg-white'}`}>My work</Link>
       <Link href="/dashboard/work?scope=all" aria-current={all ? 'page' : undefined} className={`rounded-full px-4 py-3 text-sm ${all ? 'bg-slate-900 text-white' : 'bg-white'}`}>All staff &amp; unassigned</Link>
     </nav>}
-    <p className="my-5 rounded-xl border border-sky-100 bg-sky-50 p-4 text-sm text-sky-950">Hostaway bookings are not connected yet. Manual schedules are for tests and exceptions. Pack submission records the inspection; guest readiness and outstanding issues remain separate.</p>
+    <p className="my-4 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900"><span className="font-semibold">Hostaway not connected.</span> Only test or manually added inspections appear here.</p>
     {workspace.data && jobs.data ? <Workboard workspace={workspace.data} jobs={jobs.data} manager={manager} all={all} userId={ctx.user.id} today={sastDay()} initialProperty={query.property ?? ''} />
       : <p role="alert" className="rounded-xl bg-amber-50 p-5 text-amber-900">{workspace.error ?? jobs.error}</p>}
   </AppShell>

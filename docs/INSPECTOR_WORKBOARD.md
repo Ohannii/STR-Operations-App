@@ -115,8 +115,12 @@ dialog naming the apartment and date; Keep inspection receives initial focus.
 Only explicit confirmation sends the request. The dialog freezes while saving,
 and repeats/double taps are single-flight. Its default/cancel paths never write.
 
-The apartment screen uses a compact neutral inspection status with a small
-attention indicator, quiet section navigation and issue tiles. Zero-only
+The apartment screen uses a visible teal inspection panel and primary action,
+amber recovery panel, and a labelled Options button for secondary actions.
+It states the next step: take photos, then review/report issues and submit.
+The workboard uses explicit status labels as well as colour, with manual test
+creation below the work list. See `INSPECTOR_UX_WALKTHROUGH.md` for the persona
+walkthrough and independent review brief. Zero-only
 snapshot cards and implementation-roadmap copy are omitted from daily work.
 Touch targets remain at least 44 CSS pixels even where the visual control is
 small. Native dialog focus/keyboard behaviour still needs device acceptance.

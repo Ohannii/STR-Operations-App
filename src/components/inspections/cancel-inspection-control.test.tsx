@@ -15,7 +15,7 @@ const button = (text: string) => {
   return found!
 }
 const click = async (element: HTMLElement) => { await act(async () => { element.click() }) }
-const actions = () => host.querySelector<HTMLButtonElement>('[aria-label="Inspection actions"]')!
+const actions = () => host.querySelector<HTMLButtonElement>('[aria-label="Inspection options"]')!
 async function openConfirmation() {
   await click(actions())
   await click(button('Cancel inspection…'))
@@ -33,6 +33,7 @@ afterEach(async () => {
 })
 describe('actual cancellation interactions', () => {
   it('opening the menu and confirmation never cancels; Keep is focused and preserves the inspection', async () => {
+    expect(actions().textContent).toBe('Options')
     expect(host.querySelector('dialog')).toBeNull()
     await click(actions())
     expect(actions().getAttribute('aria-expanded')).toBe('true')
