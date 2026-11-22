@@ -3,11 +3,11 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { TurnoverJob } from './workboard'
-const state = vi.hoisted(() => ({ stage: 'due', manager: false }))
+const state = vi.hoisted(() => ({ stage: 'due', manager: false, linked: true, extraDue: false, workError: false }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }), redirect: vi.fn(), notFound: vi.fn() }))
 vi.mock('@/lib/auth/get-user-context', () => ({ getUserContext: async () => ({ user: { id: 'inspector', email: 'fixture@example.invalid' }, company: { id: 'fixture-company', name: 'Design fixture' }, profile: { full_name: 'Inspector A' }, membership: { role_key: state.manager ? 'ops_manager' : 'inspector' } }) }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => ({ from: query }) }))
-vi.mock('@/lib/inspections/load-workspace', () => ({ loadInspectionJobs: async () => ({ data: [job()], error: null }) }))
+vi.mock('@/lib/inspections/load-workspace', () => ({ loadInspectionJobs: async () => state.workError ? ({ data: null, error: 'Work unavailable' }) : ({ data: [...(state.linked ? [job()] : []), ...(state.extraDue ? [{ ...job(), id: 'next-visit', pack_id: null, pack_status: null, submitted_at: null }] : [])], error: null }) }))
 vi.mock('@/app/dashboard/work/actions', () => ({ startTurnover: vi.fn(), updateTurnover: vi.fn() }))
 vi.mock('@/app/properties/[id]/packs/actions', () => ({ startPreArrivalPackAction: vi.fn(), discardEvidencePackAction: vi.fn() }))
 vi.mock('@/app/properties/[id]/photos/actions', () => ({ attachEvidencePhoto: vi.fn(), attachEvidencePhotosBatch: vi.fn(), requestPhotoUploadSlot: vi.fn() }))
@@ -27,7 +27,8 @@ function query(table: string) {
   const result = () => {
     let data: unknown = []
     if (table === 'properties') data = property
-    if (table === 'evidence_packs') data = filters.status === 'draft' && ['empty', 'photos'].includes(state.stage) ? { id: packId, title: null, started_at: '2026-11-22T08:00:00Z', started_by: 'a' } : filters.status === 'submitted' ? state.stage === 'completed' ? [{ id: packId, title: null, started_at: '2026-11-22T08:00:00Z', submitted_at: '2026-11-22T10:30:00Z', submitted_by: 'b' }] : [] : null
+    if (table === 'profiles') data = { full_name: 'Inspector B' }
+    if (table === 'evidence_packs') data = filters.status === 'draft' && ['empty', 'photos'].includes(state.stage) ? { id: packId, title: null, started_at: '2026-11-22T08:00:00Z', started_by: 'a' } : filters.status === 'submitted' ? state.stage === 'completed' ? [{ id: packId, property_id: propertyId, status: 'submitted', deleted_at: null, title: null, started_at: '2026-11-22T08:00:00Z', submitted_at: '2026-11-22T10:30:00Z', submitted_by: 'b' }] : [] : null
     return { data, error: null, count: table === 'photos' && state.stage === 'photos' ? 3 : 0 }
   }
   const proxy: Record<string, unknown> = new Proxy({}, { get: (_, key) => {
@@ -53,7 +54,7 @@ async function apartment(stage: string, submitted: string | undefined = undefine
   savePreview(`apartment-${stage}${state.manager ? '-manager' : ''}`, html)
   return html
 }
-beforeEach(() => { state.manager = false; vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-22T12:00:00Z')) })
+beforeEach(() => { state.manager = false; state.linked = true; state.extraDue = false; state.workError = false; vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-22T12:00:00Z')) })
 afterEach(() => { vi.useRealTimers() })
 describe('actual apartment inspection page with isolated server data', () => {
   it('a due visit offers Start without showing the apartment Idle badge to an inspector', async () => {
@@ -79,6 +80,25 @@ describe('actual apartment inspection page with isolated server data', () => {
     expect(html).toContain('12:30'); expect(html).toContain('Back to my inspections')
     expect(html).toMatch(/<details><summary[^>]*>Start another inspection<\/summary>/)
     expect(html).not.toContain('start a new pack when ready')
+  })
+  it('a standalone submitted pack gets the same finish state using its actual submitter and timestamp', async () => {
+    state.linked = false
+    const html = await apartment('completed', packId)
+    expect(html).toContain('Inspection complete'); expect(html).toContain('Submitted by Inspector B')
+    expect(html).toContain('12:30'); expect(html).toContain('Back to my inspections')
+    expect(html).toMatch(/<details><summary[^>]*>Start another inspection<\/summary>/)
+    expect(html).not.toContain('Inspection date:')
+  })
+  it('another real due visit stays visible after completing the previous one', async () => {
+    state.extraDue = true
+    const html = await apartment('completed', packId)
+    expect(html).toContain('Inspection complete'); expect(html).toContain('Next inspection due')
+    expect(html).toContain('Start inspection'); expect(html).not.toContain('Start another inspection')
+  })
+  it('an unavailable work read does not infer standalone completion', async () => {
+    state.linked = false; state.workError = true
+    const html = await apartment('completed', packId)
+    expect(html).not.toContain('Inspection complete'); expect(html).toContain('Work unavailable')
   })
   it('a URL flag alone cannot claim an open visit is complete', async () => {
     const html = await apartment('due', packId)

@@ -26,7 +26,7 @@ export default async function WorkPage({ searchParams }: { searchParams: Promise
       <Link href="/dashboard/work" aria-current={!all ? 'page' : undefined} className={`rounded-full px-4 py-3 text-sm ${!all ? 'bg-teal-700 text-white' : 'bg-white'}`}>My work</Link>
       <Link href="/dashboard/work?scope=all" aria-current={all ? 'page' : undefined} className={`rounded-full px-4 py-3 text-sm ${all ? 'bg-teal-700 text-white' : 'bg-white'}`}>All staff &amp; unassigned</Link>
     </nav>}
-    {workspace.data && jobs.data ? <Workboard workspace={workspace.data} jobs={jobs.data} manager={manager} all={all} userId={ctx.user.id} today={sastDay()} initialProperty={query.property ?? ''} />
+    {workspace.data && jobs.data ? <Workboard key={`${all}:${propertyId ?? ''}`} workspace={workspace.data} jobs={jobs.data} manager={manager} all={all} userId={ctx.user.id} today={sastDay()} initialProperty={query.property ?? ''} />
       : <p role="alert" className="rounded-xl bg-amber-50 p-5 text-amber-900">{workspace.error ?? jobs.error}</p>}
   </AppShell>
 }

@@ -58,7 +58,7 @@ import { loadInspectionJobs } from '@/lib/inspections/load-workspace'
 import { InspectionStartButton } from '@/components/inspections/inspection-start-button'
 import { DiscardedInspectionNotice } from '@/components/inspections/discarded-inspection-notice'
 import { formatDateSAST } from '@/lib/ui/datetime'
-import { completedInspectionForPack } from '@/lib/inspections/completion'
+import { completedInspectionForPack, inspectionCompletionForPack } from '@/lib/inspections/completion'
 import { CompletedInspectionNotice } from '@/components/inspections/completed-inspection-notice'
 
 /**
@@ -222,7 +222,7 @@ export default async function PropertyPage({
 
   const submittedPacksPromise = supabase
     .from('evidence_packs')
-    .select('id, title, submitted_at, submitted_by, started_at')
+    .select('id, property_id, status, deleted_at, title, submitted_at, submitted_by, started_at')
     .eq('property_id', id)
     .eq('pack_type', 'pre_arrival')
     .eq('status', 'submitted')
@@ -232,6 +232,9 @@ export default async function PropertyPage({
     .returns<
       {
         id: string
+        property_id: string
+        status: string
+        deleted_at: string | null
         title: string | null
         submitted_at: string | null
         submitted_by: string | null
@@ -275,7 +278,7 @@ export default async function PropertyPage({
   if (!property) notFound()
   const scheduledInspection = nextUnstartedTurnover(inspectionJobs.data ?? [], id, sastDay())
   const discardedInspection = scheduledInspection ? null : nextDiscardedTurnover(inspectionJobs.data ?? [], id, sastDay())
-  const completedInspection = completedInspectionForPack(inspectionJobs.data ?? [], id, pack_submitted)
+  const completedJob = completedInspectionForPack(inspectionJobs.data ?? [], id, pack_submitted)
   const confirmedSubmittedPack = submittedPacks?.find(p => p.id === pack_submitted)
   const draftInspection = inspectionJobs.data?.find(j => !j.cancelled_at && !j.pack_deleted && j.pack_id === draftPack?.id)
 
@@ -339,21 +342,34 @@ export default async function PropertyPage({
           .returns<{ evidence_pack_id: string }[]>()
       : null
 
+  const standaloneSubmitterQuery = confirmedSubmittedPack && !completedJob && confirmedSubmittedPack.submitted_by
+    && confirmedSubmittedPack.submitted_by !== ctx.user.id
+    ? supabase.from('profiles').select('full_name').eq('id', confirmedSubmittedPack.submitted_by).maybeSingle<{ full_name: string | null }>()
+    : null
+
   const [
     marksRes,
     flagPhotosRes,
     draftPackPhotosRes,
     submittedPackPhotosRes,
     draftPackPendingIntentsRes,
+    standaloneSubmitterRes,
   ] = await Promise.all([
     marksQuery,
     flagPhotosQuery,
     draftPackPhotosQuery,
     submittedPackPhotosQuery,
     draftPackPendingIntentsQuery,
+    standaloneSubmitterQuery,
   ])
   perf.mark('queries')
   perf.done()
+
+  const completedInspection = inspectionCompletionForPack(
+    canInspect(ctx.membership?.role_key) && !inspectionJobs.error ? inspectionJobs.data : null,
+    id, pack_submitted, confirmedSubmittedPack,
+    confirmedSubmittedPack?.submitted_by === ctx.user.id ? ctx.profile?.full_name ?? null : standaloneSubmitterRes?.data?.full_name ?? null,
+  )
 
   const activeMarksByFlagId = (marksRes?.data ?? []).reduce<
     Record<string, ChipKind[]>
@@ -440,7 +456,7 @@ export default async function PropertyPage({
   const startInspectionPanel = (
     <section aria-label="Start apartment inspection" className="rounded-xl border border-teal-200 bg-teal-50/60 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold text-slate-900">{scheduledInspection ? 'Inspect this apartment' : 'Pre-arrival inspection'}</h2>
+        <h2 className="text-lg font-semibold text-slate-900">{scheduledInspection ? completedInspection ? 'Next inspection due' : 'Inspect this apartment' : 'Pre-arrival inspection'}</h2>
         {scheduledInspection && <span className="rounded-full bg-teal-100 px-2.5 py-1 text-xs font-semibold text-teal-900">{scheduledInspection.due_on < sastDay() ? 'Overdue' : 'Due today'}</span>}
       </div>
       {scheduledInspection && <p className="mt-1 text-sm font-medium text-teal-900">{formatDateSAST(`${scheduledInspection.due_on}T12:00:00+02:00`, 'short')}</p>}
@@ -666,7 +682,7 @@ export default async function PropertyPage({
               </div>
             ) : discardedInspection ? (
               <DiscardedInspectionNotice job={discardedInspection} manager={canManageProperties(ctx.membership?.role_key)} propertyName={[property.name, property.address].filter(Boolean).join(' · ')} />
-            ) : completedInspection ? (
+            ) : completedInspection && !scheduledInspection ? (
               <details><summary className="inline-flex min-h-11 cursor-pointer items-center text-sm font-medium text-teal-800 underline underline-offset-4">Start another inspection</summary><p className="mb-3 text-sm text-slate-600">Start a separate visit only if another inspection is needed.</p>{startInspectionPanel}</details>
             ) : (
               startInspectionPanel

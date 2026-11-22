@@ -27,7 +27,7 @@ app calls the inspection evidence a pack.
 | Issue found | Will I lose my inspection? | Existing issue sheet stays attached to its photo; save confirmation and truthful Asana status remain independent from pack submission. |
 | Discarded draft | Why can't I start again? | Amber Inspection needs attention panel explicitly says the inspection is still open and gives the next recovery step. Managers have a compact Cancel inspection control that only opens confirmation. Inspectors can return to their full work list. |
 | Cancellation | Can I tap safely? | Cancel inspection opens confirmation, with no one-item menu. Keep inspection is focused first. Only explicit final confirmation writes. |
-| Submission | Was the inspection recorded? | The exact submitted pack ID returns to the apartment. Only a matching server-confirmed submitted visit can show Inspection complete, its actual submitter and time. Back to my inspections leads; starting another visit is disclosed separately. The linked work card retains actual starter and submitter. Guest readiness and unresolved incidents remain separate. |
+| Submission | Was the inspection recorded? | The exact submitted pack ID returns to the apartment. A matching server-confirmed submitted visit, or a confirmed standalone submitted pack with no linked visit, shows Inspection complete with its actual submitter/time. The standalone case never completes another scheduled visit. Back to my inspections leads. A second real due visit stays visible; only an additional ad-hoc Start is disclosed separately. The linked work card retains actual starter and submitter. Guest readiness and unresolved incidents remain separate. |
 
 The prior neutral treatment made status and navigation too easy to miss.
 Colour now carries a consistent role: teal for progressing work, amber for
@@ -108,3 +108,21 @@ The next integration includes a calendar driven by each company’s connected PM
 with Hostaway first for Drop-Inn. See `PMS_CALENDAR_SCOPE.md`: the calendar and
 Today list share the same checkout-generated work; multi-unit reservations need
 a verified physical-apartment allocation before a unit-specific inspection.
+
+## Direct Claude follow-up
+
+Claude reviewed exact head 05804da in a separate scratch clone, reran all 1,727
+tests and lint, and independently reproduced two blockers: a standalone pack
+missed the finish panel, and a cleared server filter persisted in the same client
+instance. The follow-up covers both: server-verified standalone completion, and a
+Workboard key tied to the server scope. The filter regression re-renders the
+actual WorkPage on the same React root after Clear, so it exercises Next-style
+state preservation rather than stopping at a mocked router.push. Additional
+coverage protects unknown reads and cancelled/deleted linked work from false
+standalone completion, and keeps a genuine next due visit visible.
+
+The first PMS delivery is narrowed to a verified mapping, scheduled pull and
+idempotent work-list sync. Manual collisions, pre-existing ad-hoc drafts and
+manager cancellation surviving resync are explicit rules. Two-company automated
+isolation stays mandatory from the first delivery; a second real customer and
+the full manager grid can wait.

@@ -62,20 +62,58 @@ outgoing checkout and next incoming arrival as separate facts, including gaps,
 same-day changeovers and late updates. Manual creation remains an exception or
 controlled test tool while a connector is unavailable.
 
-## First delivery and acceptance
+## First delivery: one useful Hostaway path
 
-Audit the current repo and provider's current documented API/authentication
-first. Implement one working Hostaway path behind the provider boundary, not a
-calendar of sample bookings presented as live. Trace one real checkout and next
-arrival to the correct BL/BV apartment before claiming operational readiness.
-Then surface the normalised data in the calendar and Today list.
+Start with a verified, hand-reviewed Hostaway listing/subunit-to-existing-property
+mapping for Drop-Inn's BV/BL apartments, secure company-scoped credentials, a
+scheduled pull of upcoming departures and an idempotent upsert into the existing
+inspection work list. Trace one real departure/next arrival to the correct
+apartment. Do not require a provider marketplace, webhooks, the manager calendar
+grid, guest-name presentation or a second real customer before that first useful
+beta. Add date-based agenda/calendar views to the same read model next, then the
+manager grid. The calendar requirement is retained, not falsely declared shipped.
 
-Acceptance includes two companies with independent connections, same-number
-BL/BV units, category bookings awaiting physical allocation, repeated turnovers,
-changed unit allocation, booking changes/cancellations, duplicate events, sync
-outage/recovery and South Africa time. A calendar checkout, its work-list entry
-and the resulting submitted inspection must refer to the same turnover.
+Tenant isolation is a first-delivery requirement: use two synthetic companies
+and independent connections in automated tests before enabling writes. A second
+real customer onboarding can wait. Webhooks improve freshness later; the first
+scheduled pull must already have retry, reconciliation and honest freshness.
 
-This needs a separately reviewed implementation and migration. The current
-workboard table still accepts manual schedules only. Do not alter an already
-applied migration to introduce this scope or turn on unverified writes.
+## Identity, manual collisions and cancelled work
+
+The current table accepts only source='manual' and its existing unique indexes
+key manual slots by apartment/day or checkout time. A separately reviewed new
+migration must add a persistent external turnover identity and scope the manual
+slot constraints appropriately. Do not edit the applied foundation migration.
+Use (company, connection/provider, reservation, physical listing/subunit) as the
+external key; the connection disambiguates two provider accounts reusing IDs.
+A date change updates the same identity, rather than creating another visit.
+
+If sync collides with an existing manual visit, do not silently adopt its pack,
+overwrite the visit or create a duplicate. Record an explicit reconciliation
+exception. A manager resolves the manual slot; a subsequent pull retries the same
+external identity. Exact physical identity and source context must be preserved.
+This is exception handling, not a requirement to schedule normal visits manually.
+
+For mapped apartments in automatic mode, the normal Start must select the actual
+due PMS-generated visit. Retire ordinary ad-hoc Start from that normal flow;
+keep any deliberate non-turnover inspection separately labelled as an exception.
+Before enabling an apartment, detect and resolve existing unrelated open drafts.
+An unrelated draft must never be silently linked to make a checkout visit look
+complete. Continued booking/unit changes after a draft starts become visible
+exceptions without losing the evidence or its actual author.
+
+A manager-cancelled synced visit keeps a durable cancellation/tombstone for its
+external identity. Repeated pulls/webhooks must not recreate it or clear its
+cancellation. Reinstatement is an explicit authorised action; booking changes
+alone do not undo a manager's cancellation. Preserve the distinction between a
+provider-cancelled reservation, a manager-cancelled inspection and retained
+submitted evidence.
+
+## Acceptance
+
+Cover exact BL/BV mapping, unresolved multi-unit allocation, repeated turnovers,
+changed unit allocation, booking changes/cancellations, duplicate pulls/events,
+manual-slot collisions, manager cancellation surviving resync, old ad-hoc drafts,
+sync outage/recovery and explicit time zones. A calendar checkout, work-list row
+and submitted inspection must reference the same turnover. Do not claim live
+success using invented bookings, credentials or guest names.

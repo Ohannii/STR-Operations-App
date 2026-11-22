@@ -123,8 +123,10 @@ The workboard puts job cards before summaries, allocations and manager-only
 setup information. A compact view selector and conditional search preserve
 filtering. It uses explicit status labels as well as colour, with manual test
 creation below the work list. After a linked submission, the exact server-proven
-visit shows Inspection complete and leads back to work; another Start is
-secondary. Offline and lost-response Start failures remain inline and retries
+visit shows Inspection complete and leads back to work. Standalone submitted
+packs use their own verified submitter/time for the same finish state without
+completing an unrelated scheduled visit. Another real due visit stays visible;
+only an additional ad-hoc Start is disclosed separately. Offline and lost-response Start failures remain inline and retries
 reopen the same guarded visit. See `INSPECTOR_UX_WALKTHROUGH.md` for the persona
 walkthrough and independent review brief. Zero-only
 snapshot cards and implementation-roadmap copy are omitted from daily work.

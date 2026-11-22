@@ -4,7 +4,10 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({ push: vi.fn() }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn(), push: mocks.push }) }))
+vi.mock('@/lib/auth/get-user-context', () => ({ getUserContext: async () => ({ user: { id: 'inspector' }, company: { id: 'company', name: 'Fixture' }, profile: { full_name: 'Inspector' }, membership: { role_key: 'inspector' } }) }))
+vi.mock('@/lib/inspections/load-workspace', () => ({ loadInspectionWorkspace: async () => ({ data: pageWorkspace(), error: null }), loadInspectionJobs: async (_company: string, _all: boolean, id: string | null) => ({ data: pageJobs().filter(j => !id || j.property_id === id), error: null }) }))
 vi.mock('@/app/dashboard/work/actions', () => ({ startTurnover: vi.fn(), updateTurnover: vi.fn(), scheduleTurnover: vi.fn() }))
+import WorkPage from '@/app/dashboard/work/page'
 import { Workboard } from '@/app/dashboard/work/workboard'
 import type { InspectionWorkspace, TurnoverJob } from '@/lib/inspections/workboard'
 const workspace: InspectionWorkspace = { properties: [
@@ -36,12 +39,22 @@ describe('compact work-list controls', () => {
     expect(headings()).toEqual(['Ballito Life · Unit 91', 'Ballito Village · Unit 91'])
     expect(host.querySelector('input')).toBeNull()
   })
-  it('clearing a server-scoped apartment URL requests the full work list instead of pretending it was loaded', async () => {
-    const id = '33333333-3333-4333-8333-333333333333'
-    await act(async () => { root.render(<Workboard workspace={{ ...workspace, properties: [{ ...workspace.properties[0], id }] }} jobs={[{ ...due, property_id: id }]} manager={false} all={false} userId="inspector" today="2026-11-22" initialProperty={id} />) })
+  it('clearing a server-scoped URL resets the actual page instance when the unfiltered server result arrives', async () => {
+    await act(async () => { root.render(await WorkPage({ searchParams: Promise.resolve({ property: serverProperty }) })) })
+    expect(headings()).toEqual(['Ballito Life · Unit 91'])
     const clear = [...host.querySelectorAll('button')].find(b => b.textContent === 'Clear apartment filter')!
     await act(async () => { clear.click() })
     expect(mocks.push).toHaveBeenCalledExactlyOnceWith('/dashboard/work')
-    expect(headings()).toHaveLength(1)
+    // Next preserves the parent across search-param navigation. Re-render the
+    // real page on the same root, including its production Workboard key.
+    await act(async () => { root.render(await WorkPage({ searchParams: Promise.resolve({}) })) })
+    expect(headings()).toEqual(['Ballito Life · Unit 91', 'Ballito Village · Unit 91'])
+    expect(host.querySelector('input')).toBeNull()
+    expect(host.textContent).not.toContain(serverProperty)
+    expect([...host.querySelectorAll('button')].some(b => b.textContent === 'Clear apartment filter')).toBe(false)
   })
 })
+
+const serverProperty = '33333333-3333-4333-8333-333333333333'
+function pageWorkspace(): InspectionWorkspace { return { ...workspace, properties: [{ ...workspace.properties[0], id: serverProperty }, workspace.properties[1]] } }
+function pageJobs(): TurnoverJob[] { return [{ ...due, property_id: serverProperty }, { ...due, id: 'bv-due', property_id: 'bv' }] }

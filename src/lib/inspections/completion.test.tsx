@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { completedInspectionForPack } from './completion'
+import { completedInspectionForPack, inspectionCompletionForPack } from './completion'
 import { CompletedInspectionNotice } from '@/components/inspections/completed-inspection-notice'
 import type { TurnoverJob } from './workboard'
 const pack = '11111111-1111-4111-8111-111111111111'
@@ -31,5 +31,20 @@ describe('server-proven inspection completion', () => {
     expect(html).toContain('12:30'); expect(html).toContain('Back to my inspections')
     expect(html).toContain('href="/dashboard/work"'); expect(html).toContain(`/properties/${property}/packs/${pack}/report`)
     expect(html).toContain('guest readiness are tracked separately'); expect(html).not.toContain('Start inspection')
+  })
+  it('records a standalone submitted inspection without inventing a scheduled visit or changing other work', () => {
+    const submitted = { id: pack, property_id: property, status: 'submitted', deleted_at: null, submitted_by: 'b', submitted_at: job.submitted_at }
+    const unrelated = { ...job, id: 'other-visit', pack_id: null, pack_status: null, submitted_at: null }
+    const result = inspectionCompletionForPack([unrelated], property, pack, submitted, 'Inspector B')
+    expect(result).toEqual({ property_id: property, pack_id: pack, submitted_at: job.submitted_at, submitter_name: 'Inspector B' })
+    expect(unrelated.pack_id).toBeNull(); expect(unrelated.pack_status).toBeNull()
+  })
+  it.each([{ property_id: 'other' }, { status: 'draft' }, { deleted_at: '2026-11-22T11:00:00Z' }, { submitted_at: null }, { submitted_at: 'invalid' }])('refuses unproven standalone completion: %j', change => {
+    expect(inspectionCompletionForPack([], property, pack, { id: pack, property_id: property, status: 'submitted', deleted_at: null, submitted_by: 'b', submitted_at: job.submitted_at, ...change }, 'Inspector B')).toBeNull()
+  })
+  it('never overrides a linked cancellation or an unavailable work-list read with a standalone notice', () => {
+    const submitted = { id: pack, property_id: property, status: 'submitted', deleted_at: null, submitted_by: 'b', submitted_at: job.submitted_at }
+    expect(inspectionCompletionForPack([{ ...job, cancelled_at: '2026-11-22T11:00:00Z' }], property, pack, submitted, 'Inspector B')).toBeNull()
+    expect(inspectionCompletionForPack(null, property, pack, submitted, 'Inspector B')).toBeNull()
   })
 })
