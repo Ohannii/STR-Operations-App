@@ -34,3 +34,7 @@ jobs:
       - run: pnpm run test:inspections:db
         env:
           STR_TEST_DATABASE_URL: postgres://postgres:local-fixture-only@127.0.0.1:5432/postgres
+      - name: Test PMS credential and mapping boundaries
+        run: pnpm run test:pms:db
+        env:
+          STR_TEST_DATABASE_URL: postgres://postgres:local-fixture-only@127.0.0.1:5432/postgres

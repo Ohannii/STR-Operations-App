@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:inspections:db": "node scripts/tests/inspection-database.mjs"
+    "test:inspections:db": "node scripts/tests/inspection-database.mjs",
+    "test:pms:db": "node scripts/tests/pms-database.mjs"
   },
   "dependencies": {
     "@react-pdf/renderer": "4.5.1",
