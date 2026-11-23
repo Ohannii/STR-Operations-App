@@ -32,6 +32,9 @@
 --      enqueue_asana_handoff() (destination decided from the stored
 --      classification). Idempotent: the existing unique indexes and the
 --      one-destination trigger refuse a second job.
+--   6. Early warning: asana_handoff_health() gives operations managers a
+--      count of real issues that did not reach Asana (missing / stopped /
+--      stuck) and when the reconciliation worker last ran successfully.
 --
 -- Nothing is hard-coded per company or apartment. Existing issues, jobs,
 -- audit rows and live Asana tasks are NOT touched: new columns default to
@@ -318,6 +321,115 @@ end;
 $$;
 revoke all on function public.enqueue_asana_handoff(uuid, jsonb) from public, anon, authenticated, service_role;
 grant execute on function public.enqueue_asana_handoff(uuid, jsonb) to service_role;
+
+-- ------------------------------------------------------------
+-- 5b. Asana handoff health (manager-visible early warning)
+-- ------------------------------------------------------------
+-- Worker heartbeat: when the reconciliation pass last ran, and last ran
+-- successfully. Global, timestamps only (no tenant data). Written only by
+-- the worker through record_worker_heartbeat(); not readable by clients
+-- directly (managers see it through asana_handoff_health()).
+create table public.integration_worker_heartbeats (
+  worker      text primary key check (worker in ('asana_reconcile')),
+  last_run_at timestamptz not null,
+  last_ok_at  timestamptz,
+  last_ok     boolean not null
+);
+alter table public.integration_worker_heartbeats enable row level security;
+revoke all on public.integration_worker_heartbeats from public, anon, authenticated, service_role;
+
+create or replace function public.record_worker_heartbeat(p_worker text, p_ok boolean)
+returns void language sql security definer set search_path = '' as $$
+  insert into public.integration_worker_heartbeats as h (worker, last_run_at, last_ok_at, last_ok)
+  values (p_worker, now(), case when p_ok then now() end, coalesce(p_ok, false))
+  on conflict (worker) do update
+    set last_run_at = excluded.last_run_at,
+        last_ok_at  = coalesce(excluded.last_ok_at, h.last_ok_at),
+        last_ok     = excluded.last_ok
+$$;
+revoke all on function public.record_worker_heartbeat(text, boolean) from public, anon, authenticated, service_role;
+grant execute on function public.record_worker_heartbeat(text, boolean) to service_role;
+
+-- For ONE company, operations managers only. Counts real (non-test, not
+-- deleted) issues that were expected in Asana and are not there:
+--   missing  no Asana job at all for more than 10 minutes (5 worker runs —
+--            ordinary 2-minute latency is never reported). Includes issues
+--            older than 14 days that are no longer retried automatically
+--            ("missing_beyond_retry");
+--   stopped  the create job ended without a task (dead / manual review /
+--            done without a link) — never retried by reconciliation;
+--   stuck    the create job has been waiting or running for over 30 minutes.
+-- Plus the worker heartbeat, so "nothing wrong" (recent successful check)
+-- is distinguishable from "the checker is not running". Up to 10 example
+-- issues: id, apartment, time and problem only — no descriptions, no
+-- reporter, no guest data. Issues with a soft-deleted job only were removed
+-- on purpose and are not reported.
+create or replace function public.asana_handoff_health(p_company_id uuid)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare v jsonb; v_enabled boolean; hb record;
+begin
+  if auth.uid() is null or not public.has_company_role(p_company_id,
+      array['company_admin', 'gm', 'ops_manager']) then
+    raise exception 'not allowed' using errcode = '42501';
+  end if;
+  v_enabled := exists (select 1 from public.integration_settings st
+                        where st.company_id = p_company_id and st.provider = 'asana'
+                          and st.is_enabled and st.deleted_at is null);
+  select last_run_at, last_ok_at, last_ok into hb
+    from public.integration_worker_heartbeats where worker = 'asana_reconcile';
+  with base as (
+    select f.id, f.property_id, f.created_at
+      from public.flags f
+     where f.company_id = p_company_id and f.asana_handoff_expected
+       and not f.is_test and f.deleted_at is null and f.asana_task_url is null
+       and not exists (select 1 from public.external_task_links l
+                        where l.company_id = f.company_id and l.provider = 'asana'
+                          and l.internal_entity_type = 'flag' and l.internal_entity_id = f.id
+                          and l.deleted_at is null)
+  ), classified as (
+    select b.id, b.property_id, b.created_at,
+           case
+             when not exists (select 1 from public.integration_outbox o
+                               where o.company_id = p_company_id and o.provider = 'asana'
+                                 and o.entity_type = 'flag' and o.entity_id = b.id)
+               then case when b.created_at < now() - interval '10 minutes' then 'missing' end
+             else (select case
+                            when o.status in ('pending', 'processing')
+                              then case when o.created_at < now() - interval '30 minutes' then 'stuck' end
+                            else 'stopped'
+                          end
+                     from public.integration_outbox o
+                    where o.company_id = p_company_id and o.provider = 'asana'
+                      and o.entity_type = 'flag' and o.entity_id = b.id and o.deleted_at is null
+                      and o.event_type in ('asana.create_task_for_flag', 'asana.live.create_task_for_flag')
+                    order by o.created_at desc limit 1)
+           end as problem
+      from base b
+  ), problems as (
+    select * from classified where problem is not null
+  )
+  select jsonb_build_object(
+    'asana_enabled', v_enabled,
+    'missing', count(*) filter (where problem = 'missing'),
+    'missing_beyond_retry', count(*) filter (where problem = 'missing' and created_at <= now() - interval '14 days'),
+    'stopped', count(*) filter (where problem = 'stopped'),
+    'stuck', count(*) filter (where problem = 'stuck'),
+    'oldest_problem_at', min(created_at),
+    'items', coalesce((
+      select jsonb_agg(jsonb_build_object('flag_id', x.id, 'property_id', x.property_id,
+               'property_name', pr.name, 'raised_at', x.created_at, 'problem', x.problem) order by x.created_at)
+        from (select * from problems order by created_at limit 10) x
+        join public.properties pr on pr.id = x.property_id), '[]'::jsonb),
+    'last_check_at', hb.last_run_at,
+    'last_check_ok_at', hb.last_ok_at,
+    'last_check_ok', hb.last_ok,
+    'checked_at', now()
+  ) into v from problems;
+  return v;
+end;
+$$;
+revoke all on function public.asana_handoff_health(uuid) from public, anon, authenticated, service_role;
+grant execute on function public.asana_handoff_health(uuid) to authenticated;
 
 -- ------------------------------------------------------------
 -- 6. Audited management functions (operations managers only)

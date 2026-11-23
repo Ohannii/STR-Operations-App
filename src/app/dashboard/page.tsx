@@ -20,6 +20,8 @@ import { Card } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
 import { canManageProperties } from '@/lib/properties/property-management'
 import { canManageTesting } from '@/lib/testing/test-mode'
+import { AsanaHandoffStatus } from '@/components/integrations/asana-handoff-status'
+import { Suspense } from 'react'
 import { PropertyFinder } from '@/components/properties/property-finder'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { startPerf } from '@/lib/perf'
@@ -192,6 +194,16 @@ export default async function DashboardPage() {
           </p>
         ) : null}
       </section>
+
+      {/* Managers only: shown ONLY when real issues have not reached Asana or
+          the automatic check is not running. Streams in; never delays the page. */}
+      {canManageTesting(ctx.membership?.role_key) ? (
+        <Suspense fallback={null}>
+          <div className="mb-10 empty:hidden">
+            <AsanaHandoffStatus companyId={ctx.company.id} variant="alert" />
+          </div>
+        </Suspense>
+      ) : null}
 
       {/* Properties */}
       <section className="mb-12">

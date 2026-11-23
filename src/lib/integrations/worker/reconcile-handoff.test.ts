@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { handoffJobsFor, reconcileAsanaHandoffs, type AwaitingHandoffRow } from './reconcile-handoff'
+import { handoffJobsFor, reconcileAsanaHandoffs, recordReconcileHeartbeat, type AwaitingHandoffRow } from './reconcile-handoff'
 import { ASANA_DESTINATIONS, LIVE_TEST_SCOPE } from '@/lib/integrations/asana/destinations'
 
 const CO = LIVE_TEST_SCOPE.companyId
@@ -92,5 +92,18 @@ describe('reconcileAsanaHandoffs', () => {
     const r = await reconcileAsanaHandoffs(h.client)
     expect(r.checked).toBe(1)
     expect(h.calls.slice(1).map((c) => c.args.p_flag_id)).toEqual([F2])
+  })
+})
+
+describe('recordReconcileHeartbeat', () => {
+  it('records the run and whether it worked; never throws', async () => {
+    const calls: unknown[] = []
+    const ok = { rpc: async (fn: string, args: unknown) => (calls.push([fn, args]), { error: null }) } as unknown as SupabaseClient
+    expect(await recordReconcileHeartbeat(ok, false)).toBe(true)
+    expect(calls).toEqual([['record_worker_heartbeat', { p_worker: 'asana_reconcile', p_ok: false }]])
+    const bad = { rpc: async () => ({ error: { code: 'XX000' } }) } as unknown as SupabaseClient
+    expect(await recordReconcileHeartbeat(bad, true)).toBe(false)
+    const throws = { rpc: async () => { throw new Error('down') } } as unknown as SupabaseClient
+    expect(await recordReconcileHeartbeat(throws, true)).toBe(false)
   })
 })

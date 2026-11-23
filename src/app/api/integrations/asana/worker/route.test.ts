@@ -29,6 +29,32 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs())
 
 describe('automatic staff Asana processing', () => {
+  it('every real run reconciles first, then records the heartbeat with the lookup outcome', async () => {
+    const calls: Array<[string, unknown]> = []
+    h.client = { rpc: async (fn: string, args: unknown) => { calls.push([fn, args]); return fn === 'asana_flags_awaiting_handoff' ? { data: [], error: null } : { data: null, error: null } } }
+    const body = await (await GET(request())).json()
+    expect(calls.map((c) => c[0])).toEqual(['asana_flags_awaiting_handoff', 'record_worker_heartbeat'])
+    expect(calls[1][1]).toEqual({ p_worker: 'asana_reconcile', p_ok: true })
+    expect(body.reconcile).toEqual({ ok: true, checked: 0, outcomes: [] })
+    h.client = {}
+  })
+  it('a failing reconciliation lookup is recorded as a failed check (managers see it), and processing continues', async () => {
+    const calls: Array<[string, unknown]> = []
+    h.client = { rpc: async (fn: string, args: unknown) => { calls.push([fn, args]); return fn === 'asana_flags_awaiting_handoff' ? { data: null, error: { code: 'XX000' } } : { data: null, error: null } } }
+    const body = await (await GET(request())).json()
+    expect(calls[1]).toEqual(['record_worker_heartbeat', { p_worker: 'asana_reconcile', p_ok: false }])
+    expect(body).toMatchObject({ ran: true })
+    expect(h.batch).toHaveBeenCalled()
+    h.client = {}
+  })
+  it('dry-run deployments (previews) neither reconcile nor write a heartbeat', async () => {
+    vi.stubEnv('ASANA_WORKER_DRY_RUN', 'true')
+    const calls: string[] = []
+    h.client = { rpc: async (fn: string) => { calls.push(fn); return { data: [], error: null } } }
+    await GET(request())
+    expect(calls).toEqual([])
+    h.client = {}
+  })
   it('requires the cron secret before creating clients or reading queues', async () => {
     expect((await GET(request('Bearer wrong'))).status).toBe(401)
     expect(h.batch).not.toHaveBeenCalled()

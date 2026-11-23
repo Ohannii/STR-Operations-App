@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/server'
 import { canManageTesting } from '@/lib/testing/test-mode'
 import { loadActiveTestSession } from '@/lib/testing/load-test-mode'
 import { TestingTools } from './testing-tools'
+import { AsanaHandoffStatus } from '@/components/integrations/asana-handoff-status'
 
 /**
  * GET /dashboard/testing — operations managers only.
@@ -31,5 +32,8 @@ export default async function TestingPage() {
     {properties.error
       ? <p role="alert" className="mt-6 rounded-xl bg-amber-50 p-4 text-sm text-amber-900">Testing tools are not switched on yet (database update pending).</p>
       : <TestingTools session={session} properties={properties.data ?? []} />}
+    <div className="mt-6">
+      <AsanaHandoffStatus companyId={ctx.company.id} variant="panel" />
+    </div>
   </AppShell>
 }

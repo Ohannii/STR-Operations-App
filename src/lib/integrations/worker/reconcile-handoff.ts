@@ -96,3 +96,17 @@ export async function reconcileAsanaHandoffs(supabase: SupabaseClient, limit = 1
   }
   return report
 }
+
+/**
+ * Record that the reconciliation pass ran (and whether its lookup worked),
+ * so managers can tell "nothing is wrong" from "the checker is not
+ * running". Timestamps only. NEVER throws.
+ */
+export async function recordReconcileHeartbeat(supabase: SupabaseClient, ok: boolean): Promise<boolean> {
+  try {
+    const { error } = await supabase.rpc('record_worker_heartbeat', { p_worker: 'asana_reconcile', p_ok: ok })
+    return !error
+  } catch {
+    return false
+  }
+}

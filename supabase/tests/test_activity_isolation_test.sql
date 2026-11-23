@@ -334,6 +334,135 @@ set local role authenticated;
 select pg_temp.act_as('00000000-0000-4000-8000-0000000000b1');
 select pg_temp.ok((select count(*) = 0 from public.test_sessions), '12 other company sees no sessions');
 
+-- ---------- 13. Asana handoff health (manager early warning) ----------
+reset role;
+insert into auth.users(id, email) values ('00000000-0000-4000-8000-0000000000c1', 'mgr@c.test'), ('00000000-0000-4000-8000-0000000000c2', 'insp@c.test');
+insert into public.profiles(id, email) values ('00000000-0000-4000-8000-0000000000c1', 'mgr@c.test'), ('00000000-0000-4000-8000-0000000000c2', 'insp@c.test') on conflict (id) do nothing;
+insert into public.companies(id, name) values ('0000000c-0000-4000-8000-00000000000c', 'Company C');
+insert into public.company_memberships(company_id, user_id, role_key) values
+  ('0000000c-0000-4000-8000-00000000000c', '00000000-0000-4000-8000-0000000000c1', 'gm'),
+  ('0000000c-0000-4000-8000-00000000000c', '00000000-0000-4000-8000-0000000000c2', 'inspector');
+insert into public.integration_settings(company_id, provider, is_enabled) values ('0000000c-0000-4000-8000-00000000000c', 'asana', true);
+insert into public.properties(id, company_id, name) values
+  ('0000000b-0000-4000-8000-0000000000c1', '0000000c-0000-4000-8000-00000000000c', 'C Unit 1'),
+  ('0000000b-0000-4000-8000-0000000000c2', '0000000c-0000-4000-8000-00000000000c', 'C Training');
+update public.properties set is_test = true where id = '0000000b-0000-4000-8000-0000000000c2';
+-- c1 missing 20 min | c2 missing 15 days (beyond retry) | c3 fresh 5 min (not reported)
+-- c4 stopped (dead job) | c5 stuck (pending 40 min) | c6 queued 5 min (fine) | c7 TEST missing (excluded)
+-- c8 deleted (excluded) | c9 has task url (excluded) | ca only a soft-deleted job (removed on purpose)
+insert into public.flags(id, company_id, property_id, flag_category_id, raised_by, description, created_at) values
+  ('0000000f-0000-4000-8000-0000000000c1', '0000000c-0000-4000-8000-00000000000c', '0000000b-0000-4000-8000-0000000000c1', (select id from public.flag_categories where key = 'maintenance_issue'), '00000000-0000-4000-8000-0000000000c2', 'guest Jane Doe broke the lamp', now() - interval '20 minutes'),
+  ('0000000f-0000-4000-8000-0000000000c2', '0000000c-0000-4000-8000-00000000000c', '0000000b-0000-4000-8000-0000000000c1', (select id from public.flag_categories where key = 'maintenance_issue'), '00000000-0000-4000-8000-0000000000c2', 'old', now() - interval '15 days'),
+  ('0000000f-0000-4000-8000-0000000000c3', '0000000c-0000-4000-8000-00000000000c', '0000000b-0000-4000-8000-0000000000c1', (select id from public.flag_categories where key = 'maintenance_issue'), '00000000-0000-4000-8000-0000000000c2', 'fresh', now() - interval '5 minutes'),
+  ('0000000f-0000-4000-8000-0000000000c4', '0000000c-0000-4000-8000-00000000000c', '0000000b-0000-4000-8000-0000000000c1', (select id from public.flag_categories where key = 'maintenance_issue'), '00000000-0000-4000-8000-0000000000c2', 'dead job', now() - interval '1 hour'),
+  ('0000000f-0000-4000-8000-0000000000c5', '0000000c-0000-4000-8000-00000000000c', '0000000b-0000-4000-8000-0000000000c1', (select id from public.flag_categories where key = 'maintenance_issue'), '00000000-0000-4000-8000-0000000000c2', 'stuck job', now() - interval '55 minutes'),
+  ('0000000f-0000-4000-8000-0000000000c6', '0000000c-0000-4000-8000-00000000000c', '0000000b-0000-4000-8000-0000000000c1', (select id from public.flag_categories where key = 'maintenance_issue'), '00000000-0000-4000-8000-0000000000c2', 'queued', now() - interval '6 minutes'),
+  ('0000000f-0000-4000-8000-0000000000c7', '0000000c-0000-4000-8000-00000000000c', '0000000b-0000-4000-8000-0000000000c2', (select id from public.flag_categories where key = 'maintenance_issue'), '00000000-0000-4000-8000-0000000000c2', 'test', now() - interval '1 hour'),
+  ('0000000f-0000-4000-8000-0000000000c8', '0000000c-0000-4000-8000-00000000000c', '0000000b-0000-4000-8000-0000000000c1', (select id from public.flag_categories where key = 'maintenance_issue'), '00000000-0000-4000-8000-0000000000c2', 'deleted', now() - interval '1 hour'),
+  ('0000000f-0000-4000-8000-0000000000c9', '0000000c-0000-4000-8000-00000000000c', '0000000b-0000-4000-8000-0000000000c1', (select id from public.flag_categories where key = 'maintenance_issue'), '00000000-0000-4000-8000-0000000000c2', 'has url', now() - interval '1 hour'),
+  ('0000000f-0000-4000-8000-0000000000ca', '0000000c-0000-4000-8000-00000000000c', '0000000b-0000-4000-8000-0000000000c1', (select id from public.flag_categories where key = 'maintenance_issue'), '00000000-0000-4000-8000-0000000000c2', 'removed job', now() - interval '1 hour');
+update public.flags set deleted_at = now() where id = '0000000f-0000-4000-8000-0000000000c8';
+update public.flags set asana_task_url = 'https://app.asana.com/0/1/3' where id = '0000000f-0000-4000-8000-0000000000c9';
+insert into public.integration_outbox(company_id, provider, event_type, entity_type, entity_id, created_by, status, created_at, deleted_at) values
+  ('0000000c-0000-4000-8000-00000000000c', 'asana', 'asana.live.create_task_for_flag', 'flag', '0000000f-0000-4000-8000-0000000000c4', '00000000-0000-4000-8000-0000000000c2', 'dead', now() - interval '50 minutes', null),
+  ('0000000c-0000-4000-8000-00000000000c', 'asana', 'asana.live.create_task_for_flag', 'flag', '0000000f-0000-4000-8000-0000000000c5', '00000000-0000-4000-8000-0000000000c2', 'pending', now() - interval '40 minutes', null),
+  ('0000000c-0000-4000-8000-00000000000c', 'asana', 'asana.live.create_task_for_flag', 'flag', '0000000f-0000-4000-8000-0000000000c6', '00000000-0000-4000-8000-0000000000c2', 'pending', now() - interval '5 minutes', null),
+  ('0000000c-0000-4000-8000-00000000000c', 'asana', 'asana.create_task_for_flag', 'flag', '0000000f-0000-4000-8000-0000000000ca', '00000000-0000-4000-8000-0000000000c2', 'pending', now() - interval '50 minutes', now());
+set local role authenticated;
+select pg_temp.act_as('00000000-0000-4000-8000-0000000000c2');
+select pg_temp.expect_error($$select public.asana_handoff_health('0000000c-0000-4000-8000-00000000000c')$$, '42501', '13a inspectors cannot read handoff health');
+select pg_temp.act_as('00000000-0000-4000-8000-0000000000a1');
+select pg_temp.expect_error($$select public.asana_handoff_health('0000000c-0000-4000-8000-00000000000c')$$, '42501', '13b another company''s manager cannot read it');
+select pg_temp.act_as('00000000-0000-4000-8000-0000000000c1');
+select pg_temp.ok((select (h->>'missing')::int = 2 and (h->>'missing_beyond_retry')::int = 1 and (h->>'stopped')::int = 1 and (h->>'stuck')::int = 1
+  and (h->>'asana_enabled')::boolean and h->'last_check_at' = 'null'::jsonb
+  from (select public.asana_handoff_health('0000000c-0000-4000-8000-00000000000c') h) x), '13c counts: 2 missing (1 beyond retry), 1 stopped, 1 stuck; fresh/queued/test/deleted/linked/removed excluded; worker never ran');
+select pg_temp.ok((select jsonb_array_length(h->'items') = 4
+  and (select array_agg(i->>'problem' order by i->>'raised_at') from jsonb_array_elements(h->'items') i) = array['missing', 'stopped', 'stuck', 'missing']::text[]
+  and not exists (select 1 from jsonb_array_elements(h->'items') i where i ? 'description' or i ? 'raised_by' or i::text ilike '%Jane%')
+  and (h->>'oldest_problem_at')::timestamptz < now() - interval '14 days'
+  from (select public.asana_handoff_health('0000000c-0000-4000-8000-00000000000c') h) x), '13d items: problem, apartment and time only; no descriptions, reporter or guest data');
+select pg_temp.expect_error($$select * from public.integration_worker_heartbeats$$, '42501', '13e clients cannot read the heartbeat table');
+select pg_temp.expect_error($$select public.record_worker_heartbeat('asana_reconcile', true)$$, '42501', '13f clients cannot write a heartbeat');
+reset role;
+set local role service_role;
+select public.record_worker_heartbeat('asana_reconcile', true);
+select pg_temp.expect_error($$select public.record_worker_heartbeat('other_worker', true)$$, '23514', '13g only the known worker name');
+reset role;
+update public.integration_worker_heartbeats set last_run_at = now() - interval '1 hour', last_ok_at = now() - interval '1 hour';
+set local role service_role;
+select public.record_worker_heartbeat('asana_reconcile', false);
+reset role;
+set local role authenticated;
+select pg_temp.act_as('00000000-0000-4000-8000-0000000000c1');
+select pg_temp.ok((select (h->>'last_check_ok')::boolean = false and (h->>'last_check_at')::timestamptz >= now() - interval '1 minute'
+  and (h->>'last_check_ok_at')::timestamptz < now() - interval '59 minutes'
+  from (select public.asana_handoff_health('0000000c-0000-4000-8000-00000000000c') h) x), '13h failed run recorded; last success time kept');
+reset role;
+update public.integration_settings set is_enabled = false where company_id = '0000000c-0000-4000-8000-00000000000c';
+set local role authenticated;
+select pg_temp.act_as('00000000-0000-4000-8000-0000000000c1');
+select pg_temp.ok((select not (h->>'asana_enabled')::boolean from (select public.asana_handoff_health('0000000c-0000-4000-8000-00000000000c') h) x), '13i reports when Asana is switched off for the company');
+reset role;
+
+-- ---------- 14. SAFE recovery keeps every guard on ----------
+-- (block below is verbatim from supabase/ops/test-activity-isolation/02_safe_recovery.sql;
+--  src/lib/testing/ops-scripts.test.ts fails if they ever differ)
+set local role authenticated;
+select pg_temp.act_as('00000000-0000-4000-8000-0000000000a1');
+select public.start_test_session('0000000c-0000-4000-8000-00000000000a', '0000000b-0000-4000-8000-000000000014', 60, 'before recovery') is not null;
+reset role;
+create temp table t_before on commit drop as select id, is_test, test_reason, asana_handoff_expected from public.flags;
+-- ===== SAFE LEVERS (begin) =====
+revoke execute on function public.asana_flags_awaiting_handoff(integer, integer) from service_role;
+revoke execute on function public.enqueue_asana_handoff(uuid, jsonb) from service_role;
+revoke execute on function public.start_test_session(uuid, uuid, integer, text) from authenticated;
+with ended as (
+  update public.test_sessions set ended_at = least(now(), ends_at)
+   where ended_at is null
+  returning id, company_id, property_id
+)
+insert into public.audit_events(company_id, actor_id, event_kind, entity_type, entity_id, metadata)
+select company_id, null, 'test_session_ended', 'test_session', id,
+       jsonb_build_object('property_id', property_id, 'source', 'safe recovery lever B')
+  from ended;
+-- ===== SAFE LEVERS (end) =====
+select pg_temp.ok((select count(*) = 2 from pg_trigger where tgenabled = 'O'
+  and tgname in ('trg_flags_stamp_test_classification', 'trg_outbox_refuse_live_for_test_flags')), '14a both guards still enabled');
+select pg_temp.ok((select count(*) = 0 from public.test_sessions where ended_at is null), '14b running test mode ended');
+select pg_temp.ok((select count(*) >= 1 from public.audit_events where event_kind = 'test_session_ended' and metadata->>'source' = 'safe recovery lever B'), '14c ending is audited');
+select pg_temp.ok(not exists (select 1 from t_before b join public.flags f using (id)
+  where f.is_test is distinct from b.is_test or f.test_reason is distinct from b.test_reason or f.asana_handoff_expected is distinct from b.asana_handoff_expected), '14d no classification changed');
+-- a new issue on the test apartment is still a test issue, still expected, and still cannot go live
+-- (Test 1 was made normal in section 8; mark it test again, as the release step would)
+update public.properties set is_test = true where id = '0000000b-0000-4000-8000-0000000000f1' and not is_test;
+set local role authenticated;
+select pg_temp.act_as('00000000-0000-4000-8000-0000000000a2');
+insert into t_ids values ('after_recovery2', pg_temp.raise_flag('0000000c-0000-4000-8000-00000000000a', '0000000b-0000-4000-8000-0000000000f1'));
+select pg_temp.ok((select is_test and test_reason = 'test_property' and asana_handoff_expected from public.flags where id = (select v from t_ids where k = 'after_recovery2')), '14e new test-apartment issue still classified and expected');
+select pg_temp.expect_error($$update public.flags set is_test = false, test_reason = null where id = (select v from t_ids where k = 'after_recovery2')$$, '42501', '14f classification still immutable');
+select pg_temp.expect_error($$insert into public.integration_outbox(company_id, provider, event_type, entity_type, entity_id, created_by) values ('0000000c-0000-4000-8000-00000000000a', 'asana', 'asana.live.create_task_for_flag', 'flag', (select v from t_ids where k = 'after_recovery2'), auth.uid())$$, '23514', '14g live job for a test issue still refused (old app behaviour)');
+select pg_temp.act_as('00000000-0000-4000-8000-0000000000a1');
+select pg_temp.expect_error($$select public.start_test_session('0000000c-0000-4000-8000-00000000000a', '0000000b-0000-4000-8000-000000000014', 60, 'after recovery')$$, '42501', '14h test mode cannot be started');
+reset role;
+set local role service_role;
+select pg_temp.expect_error($$select * from public.asana_flags_awaiting_handoff(10, 0)$$, '42501', '14i reconciliation stopped (lookup)');
+select pg_temp.expect_error($$select public.enqueue_asana_handoff((select v from t_ids where k = 'after_recovery2'), '[]'::jsonb)$$, '42501', '14j reconciliation stopped (enqueue)');
+reset role;
+-- RESTORE (the commented statements in the script) brings it back
+grant execute on function public.asana_flags_awaiting_handoff(integer, integer) to service_role;
+grant execute on function public.enqueue_asana_handoff(uuid, jsonb) to service_role;
+grant execute on function public.start_test_session(uuid, uuid, integer, text) to authenticated;
+set local role service_role;
+select pg_temp.ok((select v from t_ids where k = 'after_recovery2') in (select flag_id from public.asana_flags_awaiting_handoff(50, 0)), '14k after restore the waiting test issue is picked up again');
+reset role;
+
+-- ---------- 15. the hazardous emergency script refuses without acknowledgement ----------
+select pg_temp.expect_error($q$do $x$ begin
+  if current_setting('test_isolation.hazard_acknowledged', true) is distinct from 'test issues may reach live Asana' then
+    raise exception 'Refusing: read the hazards in this file and set the acknowledgement first';
+  end if; end $x$$q$, 'P0001', '15 emergency script refuses without the acknowledgement');
+
 reset role;
 select 'TEST ACTIVITY ISOLATION: ALL PASSED' as result;
 rollback;

@@ -1,4 +1,4 @@
-# Test activity isolation (draft PR report, revision 3)
+# Test activity isolation (draft PR report, revision 4)
 
 Purpose: test work never creates live Asana work, and a real issue never silently misses Asana. The change keeps live Incidents & Damages intake for genuine issues and adds no steps for inspectors.
 
@@ -75,7 +75,7 @@ An issue is reconciled **only if every one of these holds**. All are checked by 
 
 ### 4. The one mutation the tests do not catch
 
-**21 of 22 deliberate mutations are caught** by the database suite. The one not caught: deleting the `entity_id` check from `enqueue_asana_handoff`'s input validation.
+**28 of 29 deliberate mutations are caught** by the database suite (revision 4 added 7, all caught). The one not caught: deleting the `entity_id` check from `enqueue_asana_handoff`'s input validation.
 
 It cannot cause a real failure. The function's `INSERT` never reads `entity_id` or `company_id` from the input; it always writes the function's own `p_flag_id` and that flag's company. A wrong `entity_id` therefore can never reach the outbox. The check is defence in depth only. This is documented in a comment inside the function.
 
@@ -110,21 +110,79 @@ It cannot cause a real failure. The function's `INSERT` never reads `entity_id` 
    - a Unit 13 issue in test mode goes to BETA, while a Unit 14 issue by the same manager goes live;
    - an ordinary inspector issue goes live.
 
-## Rollback (non-destructive)
+## Recovery and rollback (revision 4: guards are never removed)
 
-- **App problem:** redeploy the previous build. The migration stays, and the previous code works with it.
-- **Database behaviour problem:** run the PAUSE section of `supabase/ops/test-activity-isolation/02_pause_resume.sql`. It:
-  - disables the two triggers;
-  - revokes the worker functions and session start;
-  - ends open sessions, with audit.
+**Normal rollback = app rollback only.** Redeploy the previous production build in Vercel ("Instant Rollback"). Leave the migration in place. Every protection stays on:
 
-  It drops and deletes **nothing**: classifications, sessions, test apartments, audit rows and outbox rows are all kept. RESUME restores the behaviour. This was verified locally: while paused, a Test 1 issue is stamped normal; after resume, it is a test issue again.
+- new Test 1/Test 2 issues are still stamped as test issues;
+- classifications and `asana_handoff_expected` stay immutable;
+- the database still refuses any live Asana job for a test issue. The old app's live attempt is refused; the issue is kept and goes to BETA once the new app is back.
+
+What is lost while rolled back: the Testing page, test mode, the 2-minute reconciliation and the Asana health check.
+
+**Optional safe levers** — `supabase/ops/test-activity-isolation/02_safe_recovery.sql`, each lever needing approval. They are for a problem in the new automation itself:
+
+- A. Stop automatic re-sending: revoke the two worker functions. Managers then see "the automatic Asana check ran but failed".
+- B. Stop new test mode and end any running test mode, with audit.
+
+They never disable a trigger, and never drop, delete or rewrite anything.
+
+*Proof:* the database acceptance test runs the levers verbatim (section 14), and a contract test fails if the script and the test ever differ. It shows:
+
+- both guards are still enabled;
+- no classification changed;
+- a new test-apartment issue is still a test issue, still expected and still immutable;
+- a live job for it is still refused, which is exactly the old app's behaviour;
+- test mode cannot start;
+- reconciliation is refused;
+- after RESTORE, the waiting test issue is picked up again.
+
+**Hazardous emergency only, not a rollback** — `03_emergency_disable_classification.sql`. Use it only if the classification trigger itself blocks real issue reporting.
+
+- It states its hazards: test issues can reach live Asana, failed sends are not retried or reported, and classifications are not locked.
+- It requires all testing to stop and `ASANA_LIVE_INCIDENTS_ENABLED` to be switched off first.
+- It refuses to run without an explicit acknowledgement setting (section 15 and the contract test).
+- It disables only the classification trigger. The live-job veto stays on.
+
+## Asana handoff health (revision 4: manager early warning)
+
+The database function `asana_handoff_health(company)` is for operations managers only; other roles and other companies get 42501. For **real** issues only (never test issues) that were expected in Asana and are not there, it reports:
+
+- **missing:** no Asana job for more than **10 minutes**, which is 5 worker runs, so ordinary 2-minute latency is never reported. It includes issues older than 14 days that are no longer retried automatically (`missing_beyond_retry`).
+- **stopped:** the create job ended without a task (dead, manual review, or done without a link). Reconciliation never retries these.
+- **stuck:** the create job has been waiting or running for more than **30 minutes**.
+- **Worker heartbeat:** each cron run records when the reconciliation check ran and whether it worked. The record holds timestamps only and is service-role only. A healthy empty queue (recent successful check, no problems) is therefore distinct from a broken worker (no check for more than 15 minutes, or a failed check).
+- **Examples:** up to 10, showing apartment, time and problem only. No descriptions, reporter or guest data (tested).
+
+Where managers see it:
+
+- The **dashboard** shows an amber box **only when something needs attention**. It streams in, so it never delays the page. Inspectors see nothing and do nothing new.
+- The **Testing page** always shows the status.
+
+Each problem comes with plain recovery guidance:
+
+- The app keeps retrying.
+- If it is the worker, ask the developer to check the Vercel cron job.
+- For issues that are no longer retried, create the task in Asana by hand or have it re-sent. Nothing is lost.
+
+**Failure paths reviewed:**
+
+| Path | Before | Now |
+|---|---|---|
+| Enqueue never happened, under 14 days | auto-retried; visible only per issue | auto-retried; manager alert after 10 minutes |
+| Enqueue never happened, over 14 days | per issue only ("needs attention") | **manager alert, labelled "no longer retried"** |
+| Job died or went to manual review | per issue only | **manager alert ("Sending stopped")** |
+| Job waiting for hours (e.g. company not allow-listed for the worker) | per issue "Sending to Asana" | **manager alert after 30 minutes** |
+| Worker or cron not running | invisible | **manager alert after 15 minutes**; also shown when the check runs but fails |
+| Asana switched off for the company | — | not an alarm (shown as off on the Testing page) |
+| Job soft-deleted on purpose | — | not reported (deliberate removal) |
+| Test issue failing to reach BETA | — | not reported (not operational work) |
 
 ## Test evidence
 
 **On `main` `da595a4` + this change**
 
-- Vitest: 86 files, 1714 tests, all passing.
+- Vitest: 88 files, 1736 tests, all passing.
 - `tsc`: 8 errors, the pre-existing baseline in test files only.
 - `eslint`: clean on all changed files.
 - `git diff --check`: clean.
@@ -141,9 +199,9 @@ It cannot cause a real failure. The function's `INSERT` never reads `entity_id` 
 
 **Database**
 
-- `supabase/tests/test_activity_isolation_test.sql`: 91 assertions in one rolled-back transaction.
+- `supabase/tests/test_activity_isolation_test.sql`: 112 assertions in one rolled-back transaction.
 - It passed on `main`'s migrations, and on `main` + PR #74's migrations, which matches the shared database's migration history.
-- 22 mutations were tried and 21 caught (see point 4).
+- 29 mutations were tried and 28 caught (see point 4).
 
 **End to end:** rows from the real TypeScript builders were inserted through the real `enqueue_asana_handoff`. A normal issue got live jobs with the live pin; a test issue got BETA jobs.
 
@@ -167,4 +225,5 @@ It cannot cause a real failure. The function's `INSERT` never reads `entity_id` 
 - Test issues still count in the dashboard's open-issue totals and in reports. Excluding them is a small follow-up.
 - Marking Test 1 as a test apartment ends the `ASANA_LIVE_INCIDENTS_TEST` preview on Test 1.
 - The live company id is still hard-coded. Long term: a separate staging project, plus per-company live-routing settings.
-- An issue that fails to enqueue permanently is retried every run until it is 14 days old. After that it shows "Asana sync needs attention". There are no alerts yet; the result is in the cron log.
+- An issue that fails to enqueue permanently is retried every run until it is 14 days old. Managers are alerted after 10 minutes and the issue stays listed, labelled "no longer retried", after 14 days.
+- The health alert is shown in the app only (no email or push), as requested: no new external alert service.
