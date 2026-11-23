@@ -34,22 +34,38 @@ export async function setInvitePasswordAction(formData: FormData) {
     password,
     data: { full_name: fullName },
   })
-  if (error) fail(error.message)
+  if (error) {
+    // A previous attempt can save the password before profile/claim fails or
+    // its response is lost. This exact Auth code confirms the submitted value
+    // is already the current user's password; other errors must still stop.
+    if (error.code !== 'same_password') fail(error.message)
+
+    // The rejected combined update did not save its metadata. Retry only the
+    // name, without asking Auth to change the same password a second time.
+    const { error: nameError } = await supabase.auth.updateUser({
+      data: { full_name: fullName },
+    })
+    if (nameError) fail('We could not save your details. Please try again.')
+  }
 
   // Persist the name to the user's own profile (the "users update own profile"
   // RLS policy permits id = auth.uid()). This is what the Team list and the
   // dashboard greeting read, so members show by name rather than email.
-  const { error: profileError } = await supabase
+  const { data: profile, error: profileError } = await supabase
     .from('profiles')
     .update({ full_name: fullName })
     .eq('id', user.id)
+    .select('id')
+    .maybeSingle()
   if (profileError) {
     // Never leak a raw DB error (e.g. "permission denied for table profiles")
     // into the URL/UI. Log server-side and show a safe message. Membership is
     // NOT claimed on this failure, so the invitation stays pending/inactive.
     console.error('[invite/set-password] profile update failed:', profileError)
-    fail('We could not save your details. Please try again.')
+    fail('Your password is saved, but we could not save your name. Please try again with the same details.')
   }
+  // A zero-row update is not a successful setup, even without a DB error.
+  if (profile?.id !== user.id) fail('We could not find your team profile. Please contact your admin.')
 
   // Acceptance happens ONLY here, and ONLY after password + profile have both
   // succeeded: this is the SOLE path that creates the membership / sets
@@ -59,7 +75,7 @@ export async function setInvitePasswordAction(formData: FormData) {
   const { data: claim, error: claimError } = await supabase.rpc('claim_pending_invitation')
   if (claimError) {
     console.error('[invite/set-password] claim failed:', claimError)
-    fail('Your password is set, but joining the team did not finish. Please try again.')
+    fail('Your password is saved, but joining the team did not finish. Please try again with the same details.')
   }
   // FAIL CLOSED: only 'claimed' or 'already_member' count as success. Every
   // other outcome (no_invitation, expired, revoked, conflict, anything else)

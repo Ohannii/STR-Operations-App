@@ -23,6 +23,9 @@ export default async function SetPasswordPage({
 }) {
   const ctx = await getUserContext()
   if (!ctx) redirect('/login')
+  // An accepted invite, a retried response or a stale tab must not ask an
+  // already-active member to change their password again.
+  if (ctx.company && ctx.membership) redirect('/dashboard')
 
   const { error } = await searchParams
 
@@ -43,6 +46,7 @@ export default async function SetPasswordPage({
             name="full_name"
             type="text"
             autoComplete="name"
+            defaultValue={ctx.profile?.full_name ?? ''}
             required
             maxLength={120}
           />
