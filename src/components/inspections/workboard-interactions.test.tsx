@@ -53,8 +53,32 @@ describe('compact work-list controls', () => {
     expect(host.textContent).not.toContain(serverProperty)
     expect([...host.querySelectorAll('button')].some(b => b.textContent === 'Clear apartment filter')).toBe(false)
   })
+  it('the completed return URL opens the finished card immediately and resets the existing due view', async () => {
+    await act(async () => { root.render(await WorkPage({ searchParams: Promise.resolve({}) })) })
+    expect(headings()).toHaveLength(2)
+    await act(async () => { root.render(await WorkPage({ searchParams: Promise.resolve({ view: 'submitted' }) })) })
+    expect(host.querySelector('select')?.value).toBe('submitted')
+    expect(headings()).toEqual(['Ballito Village · Unit 91'])
+    expect(host.querySelector('article')?.textContent).toContain('Inspection complete')
+  })
+  it('clearing a server apartment filter keeps Completed selected after navigation', async () => {
+    await act(async () => { root.render(await WorkPage({ searchParams: Promise.resolve({ property: serverProperty, view: 'submitted' }) })) })
+    const clear = [...host.querySelectorAll('button')].find(b => b.textContent === 'Clear apartment filter')!
+    await act(async () => { clear.click() })
+    expect(mocks.push).toHaveBeenCalledExactlyOnceWith('/dashboard/work?view=submitted')
+    await act(async () => { root.render(await WorkPage({ searchParams: Promise.resolve({ view: 'submitted' }) })) })
+    expect(headings()).toEqual(['Ballito Village · Unit 91'])
+    expect(host.querySelector('select')?.value).toBe('submitted')
+    expect(host.textContent).not.toContain(serverProperty)
+  })
+  it.each(['unknown', ['submitted', 'cancelled']])('an invalid or repeated view safely returns to due work: %j', async view => {
+    await act(async () => { root.render(await WorkPage({ searchParams: Promise.resolve({ view }) })) })
+    expect(host.querySelector('select')?.value).toBe('due')
+    expect(headings()).toHaveLength(2)
+    expect(host.textContent).not.toContain('Inspection complete')
+  })
 })
 
 const serverProperty = '33333333-3333-4333-8333-333333333333'
 function pageWorkspace(): InspectionWorkspace { return { ...workspace, properties: [{ ...workspace.properties[0], id: serverProperty }, workspace.properties[1]] } }
-function pageJobs(): TurnoverJob[] { return [{ ...due, property_id: serverProperty }, { ...due, id: 'bv-due', property_id: 'bv' }] }
+function pageJobs(): TurnoverJob[] { return [{ ...due, property_id: serverProperty }, { ...due, id: 'bv-due', property_id: 'bv' }, { ...due, id: 'done', property_id: 'bv', pack_id: 'pack', pack_status: 'submitted', submitted_at: '2026-11-22T12:00:00Z' }] }

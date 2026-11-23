@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation'
 import { scheduleTurnover, updateTurnover } from './actions'
 import { InspectionStartButton } from '@/components/inspections/inspection-start-button'
 import { CancelInspectionControl } from '@/components/inspections/cancel-inspection-control'
-import { jobState, propertyLabel, validId, type Allocation, type InspectionWorkspace, type TurnoverJob } from '@/lib/inspections/workboard'
+import { inspectionWorkHref, jobState, propertyLabel, validId, workView, type Allocation, type InspectionWorkspace, type TurnoverJob, type WorkView } from '@/lib/inspections/workboard'
 import { naturalCompare } from '@/lib/properties/finder'
 import { formatDateSAST, formatDateTimeSAST } from '@/lib/ui/datetime'
 
@@ -14,10 +14,10 @@ const control = 'w-full rounded-xl border border-slate-300 bg-white px-3 py-3 te
 const primary = 'inline-flex min-h-12 items-center justify-center rounded-xl bg-teal-700 px-4 py-3 text-sm font-semibold text-white hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2 disabled:opacity-40'
 const dayLabel = (day: string) => formatDateSAST(`${day}T12:00:00+02:00`, 'short')
 
-export function Workboard({ workspace, jobs, manager, all, userId, today, initialProperty }: {
-  workspace: InspectionWorkspace; jobs: TurnoverJob[]; manager: boolean; all: boolean; userId: string; today: string; initialProperty: string
+export function Workboard({ workspace, jobs, manager, all, userId, today, initialProperty, initialView = 'due' }: {
+  workspace: InspectionWorkspace; jobs: TurnoverJob[]; manager: boolean; all: boolean; userId: string; today: string; initialProperty: string; initialView?: WorkView
 }) {
-  const [filter, setFilter] = useState('due')
+  const [filter, setFilter] = useState<WorkView>(initialView)
   const [query, setQuery] = useState(initialProperty)
   const router = useRouter()
   const props = new Map(workspace.properties.map(p => [p.id, p]))
@@ -30,11 +30,11 @@ export function Workboard({ workspace, jobs, manager, all, userId, today, initia
   return <div className="space-y-5">
     {jobs.some(j => !props.has(j.property_id)) && <p role="alert" className="rounded-xl bg-amber-50 p-4 text-sm">An apartment changed while this page loaded. Reload to see the latest inspection list.</p>}
     <div className="flex flex-wrap items-center gap-2">
-      <label className="min-w-0"><span className="sr-only">Inspection view</span><select className="min-h-11 max-w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-teal-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700" value={filter} onChange={e => setFilter(e.target.value)}>{tabs.map(([key, label]) => <option key={key} value={key}>{label} ({jobs.filter(j => matches(j, key)).length})</option>)}</select></label>
+      <label className="min-w-0"><span className="sr-only">Inspection view</span><select className="min-h-11 max-w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-teal-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700" value={filter} onChange={e => setFilter(workView(e.target.value))}>{tabs.map(([key, label]) => <option key={key} value={key}>{label} ({jobs.filter(j => matches(j, key)).length})</option>)}</select></label>
       {query && <button type="button" onClick={() => {
         // An exact apartment URL also restricts the server read. Clearing only
         // local text would falsely imply that other apartments had been loaded.
-        if (validId(initialProperty)) router.push(`/dashboard/work${all ? '?scope=all' : ''}`)
+        if (validId(initialProperty)) router.push(inspectionWorkHref(filter, all))
         else setQuery('')
       }} className="min-h-11 px-2 text-sm font-medium text-teal-800 underline underline-offset-4">Clear apartment filter</button>}
     </div>

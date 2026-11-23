@@ -29,7 +29,7 @@ describe('server-proven inspection completion', () => {
     const html = renderToStaticMarkup(<CompletedInspectionNotice job={confirmed} />)
     expect(html).toContain('Inspection complete'); expect(html).toContain('Submitted by Inspector B')
     expect(html).toContain('12:30'); expect(html).toContain('Back to my inspections')
-    expect(html).toContain('href="/dashboard/work"'); expect(html).toContain(`/properties/${property}/packs/${pack}/report`)
+    expect(html).toContain('href="/dashboard/work?view=submitted"'); expect(html).toContain(`/properties/${property}/packs/${pack}/report`)
     expect(html).toContain('guest readiness are tracked separately'); expect(html).not.toContain('Start inspection')
   })
   it('records a standalone submitted inspection without inventing a scheduled visit or changing other work', () => {

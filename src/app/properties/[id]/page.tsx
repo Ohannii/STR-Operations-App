@@ -563,7 +563,7 @@ export default async function PropertyPage({
               <div className="min-w-0 rounded-xl border border-teal-200 bg-teal-50/60 p-4">
                 {/* Heading + meta. The photo count deliberately lives ONLY in
                     the status banner below — one authoritative status. */}
-                <p className="inline-flex items-center gap-1.5 rounded-full bg-teal-100 px-2.5 py-1 text-xs font-semibold text-teal-900"><Camera size={13} aria-hidden />In progress</p>
+                <p className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${draftInspection && draftInspection.due_on < sastDay() ? 'bg-rose-100 text-rose-900' : 'bg-teal-100 text-teal-900'}`}><Camera size={13} aria-hidden />In progress{draftInspection && draftInspection.due_on < sastDay() ? ' · Overdue' : ''}</p>
                 <h2 className="mt-2 text-lg font-semibold text-slate-900">Apartment inspection</h2>
                 <p className="mt-1 text-sm leading-relaxed text-slate-700">{draftPackPhotoCount > 0 ? 'Next: finish taking photos, then review the pack and report any issues before submitting.' : 'Next: take photos of the apartment. Then review the pack, report any issues and submit.'}</p>
                 {draftInspection && <p className="mt-1 text-xs text-slate-600">Inspection date: {formatDateSAST(`${draftInspection.due_on}T12:00:00+02:00`)} · Started by {draftInspection.starter_name ?? 'Team member'}</p>}

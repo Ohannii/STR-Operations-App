@@ -41,6 +41,16 @@ export function nextDiscardedTurnover(jobs: TurnoverJob[], propertyId: string, t
 }
 // Repeated query keys arrive as arrays in Next; never pass them to client search.
 export const workQueryValue = (value: unknown): string => typeof value === 'string' ? value : ''
+export type WorkView = 'due' | 'upcoming' | 'submitted' | 'cancelled'
+export function workView(value: unknown): WorkView {
+  return value === 'upcoming' || value === 'submitted' || value === 'cancelled' ? value : 'due'
+}
+export function inspectionWorkHref(view: WorkView = 'due', all = false): string {
+  const query = new URLSearchParams()
+  if (all) query.set('scope', 'all')
+  if (view !== 'due') query.set('view', view)
+  return `/dashboard/work${query.size ? `?${query}` : ''}`
+}
 export function sastDay(now = new Date()): string {
   // Avoid Intl locale defaults and server/device timezone differences.
   return new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10)

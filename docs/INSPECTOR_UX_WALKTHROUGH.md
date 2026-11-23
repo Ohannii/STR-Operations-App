@@ -126,3 +126,22 @@ idempotent work-list sync. Manual collisions, pre-existing ad-hoc drafts and
 manager cancellation surviving resync are explicit rules. Two-company automated
 isolation stays mandatory from the first delivery; a second real customer and
 the full manager grid can wait.
+
+## Phone acceptance, 23 November 2026
+
+Anni completed the basic Test 2 journey on iPhone: Start, two photos, submit,
+Back to my inspections and the Completed view. Read-only server verification
+confirmed the linked pack submitted at 10:13 SAST with two photo rows and the
+actual submitter Anni. This is basic phone acceptance, not the Android, offline,
+cross-user or full release checklist.
+
+Two navigation refinements follow that test: the scheduled completion link
+opens the Completed view directly, including on an already-mounted work page;
+clearing an apartment filter retains that view. Active overdue inspections
+keep the Overdue label on the apartment screen. A standalone pack still lives
+in apartment history and does not invent a scheduled-work card.
+
+Routine work remains gated on the real Hostaway connection and mapped turnover
+trace. The next connection work needs secure per-company Account ID/API secret
+entry, verified listing/subunit mapping, and automatic reservation reconciliation.
+Credentials must never be requested in a chat message or committed to source.

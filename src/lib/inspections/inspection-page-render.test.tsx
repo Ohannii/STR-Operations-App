@@ -74,10 +74,15 @@ describe('actual apartment inspection page with isolated server data', () => {
     expect(html).toContain(`/properties/${propertyId}/packs/${packId}/report`)
     expect(html).not.toContain('Save captions and submit pack')
   })
+  it('keeps overdue visible after a scheduled inspection starts', async () => {
+    vi.setSystemTime(new Date('2026-11-23T08:00:00Z'))
+    expect(await apartment('photos')).toContain('In progress · Overdue')
+  })
   it('the submitted exact visit leads back to work, with another Start disclosed separately', async () => {
     const html = await apartment('completed', packId)
     expect(html).toContain('Inspection complete'); expect(html).toContain('Submitted by Inspector B')
     expect(html).toContain('12:30'); expect(html).toContain('Back to my inspections')
+    expect(html).toContain('href="/dashboard/work?view=submitted"')
     expect(html).toMatch(/<details><summary[^>]*>Start another inspection<\/summary>/)
     expect(html).not.toContain('start a new pack when ready')
   })
