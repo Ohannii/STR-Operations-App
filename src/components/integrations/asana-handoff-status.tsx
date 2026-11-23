@@ -1,7 +1,21 @@
 import Link from 'next/link'
-import { AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, HelpCircle } from 'lucide-react'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { loadHandoffHealth } from '@/lib/integrations/asana/load-handoff-health'
+import { unavailableNotice } from '@/lib/integrations/asana/handoff-health'
+
+/** Is Asana switched on for the company? true / false, or null when unknown. */
+async function asanaSwitchedOn(supabase: SupabaseClient, companyId: string): Promise<boolean | null> {
+  try {
+    const { data, error } = await supabase.from('integration_settings').select('id')
+      .eq('company_id', companyId).eq('provider', 'asana').eq('is_enabled', true).is('deleted_at', null)
+      .limit(1).maybeSingle()
+    return error ? null : data != null
+  } catch {
+    return null
+  }
+}
 
 /** "23 Nov, 14:05" in South Africa time. */
 function sast(iso: string | null): string {
@@ -17,11 +31,19 @@ function sast(iso: string | null): string {
  * attention (dashboard); 'panel' always renders (Testing page).
  */
 export async function AsanaHandoffStatus({ companyId, variant }: { companyId: string; variant: 'alert' | 'panel' }) {
-  const health = await loadHandoffHealth(await createClient(), companyId)
-  if (health === 'unavailable') {
-    return variant === 'panel'
-      ? <p className="text-sm text-slate-600">The Asana check is not available yet (database update pending) or could not be loaded.</p>
-      : null
+  const supabase = await createClient()
+  const health = await loadHandoffHealth(supabase, companyId)
+  if ('unavailable' in health) {
+    // Could not check. Never claims that issues failed; silent only when
+    // Asana is KNOWN to be switched off for this company.
+    const notice = unavailableNotice(health.unavailable, await asanaSwitchedOn(supabase, companyId))
+    if (!notice) return null
+    return <section aria-labelledby="asana-health-heading" role="status" className="rounded-xl border border-slate-300 bg-slate-50 p-4 sm:p-5">
+      <h2 id="asana-health-heading" className="flex items-center gap-2 text-base font-semibold text-slate-900">
+        <HelpCircle size={18} aria-hidden className="shrink-0 text-slate-600" />{notice.headline}
+      </h2>
+      <p className="mt-1 text-sm text-slate-700">{notice.detail}</p>
+    </section>
   }
   if (variant === 'alert' && health.level !== 'attention') return null
   const attention = health.level === 'attention'

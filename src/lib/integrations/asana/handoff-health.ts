@@ -10,6 +10,8 @@
  * Thresholds (database side): "missing" only after 10 minutes without any
  * job (5 worker runs — ordinary 2-minute latency is never an incident);
  * "stuck" after 30 minutes waiting. Worker heartbeat stale after 15 minutes.
+ * A worker that has NEVER run is a problem too, after the same 15-minute
+ * start-up grace counted from when monitoring began (the migration).
  */
 
 export const HEARTBEAT_STALE_MINUTES = 15
@@ -23,12 +25,13 @@ export type HandoffHealthRaw = {
   stuck: number
   oldest_problem_at: string | null
   items: Array<{ flag_id: string; property_id: string; property_name: string; raised_at: string; problem: HandoffProblem }>
+  monitoring_since: string | null
   last_check_at: string | null
   last_check_ok_at: string | null
   last_check_ok: boolean | null
 }
 
-export type WorkerState = 'ok' | 'never_ran' | 'stale' | 'failing'
+export type WorkerState = 'ok' | 'starting' | 'never_ran' | 'stale' | 'failing'
 export type HandoffItem = { href: string; apartment: string; raisedAt: string; label: string }
 export type HandoffHealth = {
   level: 'ok' | 'attention' | 'off'
@@ -64,6 +67,7 @@ export function parseHandoffHealth(v: unknown): HandoffHealthRaw | null {
         ? [{ flag_id: x.flag_id, property_id: x.property_id, property_name: typeof x.property_name === 'string' ? x.property_name : 'Apartment', raised_at: x.raised_at as string, problem: x.problem as HandoffProblem }]
         : []
     }).slice(0, 10),
+    monitoring_since: iso(r.monitoring_since),
     last_check_at: iso(r.last_check_at),
     last_check_ok_at: iso(r.last_check_ok_at),
     last_check_ok: typeof r.last_check_ok === 'boolean' ? r.last_check_ok : null,
@@ -78,9 +82,13 @@ function itemLabel(problem: HandoffProblem, raisedAt: string, now: number): stri
 }
 
 export function assessHandoffHealth(raw: HandoffHealthRaw, now = Date.now()): HandoffHealth {
-  const worker: WorkerState = !raw.last_check_at ? 'never_ran'
+  const grace = HEARTBEAT_STALE_MINUTES * 60_000
+  const worker: WorkerState = !raw.last_check_at
+    // Never ran: only "starting" inside the grace period after monitoring
+    // began; with no known start it is reported straight away.
+    ? (raw.monitoring_since && now - Date.parse(raw.monitoring_since) <= grace ? 'starting' : 'never_ran')
     : raw.last_check_ok === false ? 'failing'
-      : now - Date.parse(raw.last_check_at) > HEARTBEAT_STALE_MINUTES * 60_000 ? 'stale' : 'ok'
+      : now - Date.parse(raw.last_check_at) > grace ? 'stale' : 'ok'
   const problems = raw.missing + raw.stopped + raw.stuck
   const base = {
     worker, problems, lastCheckAt: raw.last_check_at, lastCheckOkAt: raw.last_check_ok_at,
@@ -92,9 +100,9 @@ export function assessHandoffHealth(raw: HandoffHealthRaw, now = Date.now()): Ha
   if (!raw.asana_enabled) {
     return { ...base, level: 'off', headline: 'Asana is switched off for this company.', details: [], actions: [] }
   }
-  const workerDown = worker === 'stale' || worker === 'failing'
+  const workerDown = worker === 'stale' || worker === 'failing' || worker === 'never_ran'
   if (problems === 0 && !workerDown) {
-    return { ...base, level: 'ok', headline: worker === 'never_ran' ? 'No issues waiting for Asana. The automatic check has not reported yet.' : 'All issues reached Asana.', details: [], actions: [] }
+    return { ...base, level: 'ok', headline: worker === 'starting' ? 'No issues waiting for Asana. The automatic check is starting up.' : 'All issues reached Asana.', details: [], actions: [] }
   }
   const details: string[] = []
   const actions: string[] = []
@@ -103,6 +111,7 @@ export function assessHandoffHealth(raw: HandoffHealthRaw, now = Date.now()): Ha
   if (raw.stuck) details.push(`${plural(raw.stuck, 'issue has', 'issues have')} been waiting more than 30 minutes.`)
   if (worker === 'failing') details.push('The automatic Asana check ran but failed.')
   if (worker === 'stale') details.push(`The automatic Asana check has not run for more than ${HEARTBEAT_STALE_MINUTES} minutes.`)
+  if (worker === 'never_ran') details.push('The automatic Asana check has never run since it was installed.')
   if (workerDown) actions.push('New issues are still saved in the app, but they will not reach Asana until the automatic check runs again. Ask your developer to check the Vercel cron job for /api/integrations/asana/worker.')
   if ((raw.missing || raw.stuck) && !workerDown) actions.push('The app keeps retrying every few minutes. If an issue is still listed in 30 minutes, ask your developer to check the Asana connection.')
   if (raw.stopped || raw.missing_beyond_retry) actions.push('For issues that are no longer retried, open the issue and create the Asana task by hand, or ask your developer to send it again. Nothing is lost: the issue and its photos stay in the app.')
@@ -110,4 +119,25 @@ export function assessHandoffHealth(raw: HandoffHealthRaw, now = Date.now()): Ha
     ? `${plural(problems, 'issue has', 'issues have')} not reached Asana`
     : 'Automatic sending to Asana is not running'
   return { ...base, level: 'attention', headline, details, actions }
+}
+
+/**
+ * What to show when the health check itself could not be made. Neutral,
+ * never an alarm and never "issues failed". Nothing when Asana is KNOWN to
+ * be switched off for the company (asanaOn === false); shown when it is on
+ * or unknown.
+ */
+export function unavailableNotice(
+  reason: 'not_installed' | 'error', asanaOn: boolean | null,
+): { headline: string; detail: string } | null {
+  if (asanaOn === false) return null
+  return reason === 'not_installed'
+    ? {
+        headline: 'Asana delivery monitoring is not installed on this database yet',
+        detail: 'The database update for this check has not been applied here (expected on a preview before release). Issues are still saved and sent as before.',
+      }
+    : {
+        headline: 'Could not verify Asana delivery right now',
+        detail: 'This does not mean any issue failed. The check will try again when you reload. If this stays for more than 30 minutes, ask your developer to check the app’s connection to the database.',
+      }
 }

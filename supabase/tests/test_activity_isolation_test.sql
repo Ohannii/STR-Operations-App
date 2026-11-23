@@ -375,8 +375,8 @@ select pg_temp.act_as('00000000-0000-4000-8000-0000000000a1');
 select pg_temp.expect_error($$select public.asana_handoff_health('0000000c-0000-4000-8000-00000000000c')$$, '42501', '13b another company''s manager cannot read it');
 select pg_temp.act_as('00000000-0000-4000-8000-0000000000c1');
 select pg_temp.ok((select (h->>'missing')::int = 2 and (h->>'missing_beyond_retry')::int = 1 and (h->>'stopped')::int = 1 and (h->>'stuck')::int = 1
-  and (h->>'asana_enabled')::boolean and h->'last_check_at' = 'null'::jsonb
-  from (select public.asana_handoff_health('0000000c-0000-4000-8000-00000000000c') h) x), '13c counts: 2 missing (1 beyond retry), 1 stopped, 1 stuck; fresh/queued/test/deleted/linked/removed excluded; worker never ran');
+  and (h->>'asana_enabled')::boolean and h->'last_check_at' = 'null'::jsonb and (h->>'monitoring_since') is not null
+  from (select public.asana_handoff_health('0000000c-0000-4000-8000-00000000000c') h) x), '13c counts: 2 missing (1 beyond retry), 1 stopped, 1 stuck; fresh/queued/test/deleted/linked/removed excluded; worker never ran, monitoring start known');
 select pg_temp.ok((select jsonb_array_length(h->'items') = 4
   and (select array_agg(i->>'problem' order by i->>'raised_at') from jsonb_array_elements(h->'items') i) = array['missing', 'stopped', 'stuck', 'missing']::text[]
   and not exists (select 1 from jsonb_array_elements(h->'items') i where i ? 'description' or i ? 'raised_by' or i::text ilike '%Jane%')
@@ -385,8 +385,12 @@ select pg_temp.ok((select jsonb_array_length(h->'items') = 4
 select pg_temp.expect_error($$select * from public.integration_worker_heartbeats$$, '42501', '13e clients cannot read the heartbeat table');
 select pg_temp.expect_error($$select public.record_worker_heartbeat('asana_reconcile', true)$$, '42501', '13f clients cannot write a heartbeat');
 reset role;
+create temp table t_since on commit drop as select monitoring_since from public.integration_worker_heartbeats where worker = 'asana_reconcile';
 set local role service_role;
 select public.record_worker_heartbeat('asana_reconcile', true);
+reset role;
+select pg_temp.ok((select h.monitoring_since = t.monitoring_since and h.last_run_at is not null and h.last_ok from public.integration_worker_heartbeats h, t_since t where h.worker = 'asana_reconcile'), '13f2 a run keeps the monitoring start and records the run');
+set local role service_role;
 select pg_temp.expect_error($$select public.record_worker_heartbeat('other_worker', true)$$, '23514', '13g only the known worker name');
 reset role;
 update public.integration_worker_heartbeats set last_run_at = now() - interval '1 hour', last_ok_at = now() - interval '1 hour';

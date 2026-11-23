@@ -329,14 +329,19 @@ grant execute on function public.enqueue_asana_handoff(uuid, jsonb) to service_r
 -- successfully. Global, timestamps only (no tenant data). Written only by
 -- the worker through record_worker_heartbeat(); not readable by clients
 -- directly (managers see it through asana_handoff_health()).
+-- monitoring_since is set when this migration is applied, so "the worker
+-- has NEVER run" becomes visible after a short start-up grace period
+-- instead of looking healthy.
 create table public.integration_worker_heartbeats (
-  worker      text primary key check (worker in ('asana_reconcile')),
-  last_run_at timestamptz not null,
-  last_ok_at  timestamptz,
-  last_ok     boolean not null
+  worker           text primary key check (worker in ('asana_reconcile')),
+  monitoring_since timestamptz not null default now(),
+  last_run_at      timestamptz,
+  last_ok_at       timestamptz,
+  last_ok          boolean
 );
 alter table public.integration_worker_heartbeats enable row level security;
 revoke all on public.integration_worker_heartbeats from public, anon, authenticated, service_role;
+insert into public.integration_worker_heartbeats (worker) values ('asana_reconcile');
 
 create or replace function public.record_worker_heartbeat(p_worker text, p_ok boolean)
 returns void language sql security definer set search_path = '' as $$
@@ -360,7 +365,8 @@ grant execute on function public.record_worker_heartbeat(text, boolean) to servi
 --            done without a link) — never retried by reconciliation;
 --   stuck    the create job has been waiting or running for over 30 minutes.
 -- Plus the worker heartbeat, so "nothing wrong" (recent successful check)
--- is distinguishable from "the checker is not running". Up to 10 example
+-- is distinguishable from "the checker is not running" or "has never run"
+-- (monitoring_since without any run). Up to 10 example
 -- issues: id, apartment, time and problem only — no descriptions, no
 -- reporter, no guest data. Issues with a soft-deleted job only were removed
 -- on purpose and are not reported.
@@ -375,7 +381,7 @@ begin
   v_enabled := exists (select 1 from public.integration_settings st
                         where st.company_id = p_company_id and st.provider = 'asana'
                           and st.is_enabled and st.deleted_at is null);
-  select last_run_at, last_ok_at, last_ok into hb
+  select monitoring_since, last_run_at, last_ok_at, last_ok into hb
     from public.integration_worker_heartbeats where worker = 'asana_reconcile';
   with base as (
     select f.id, f.property_id, f.created_at
@@ -420,6 +426,7 @@ begin
                'property_name', pr.name, 'raised_at', x.created_at, 'problem', x.problem) order by x.created_at)
         from (select * from problems order by created_at limit 10) x
         join public.properties pr on pr.id = x.property_id), '[]'::jsonb),
+    'monitoring_since', hb.monitoring_since,
     'last_check_at', hb.last_run_at,
     'last_check_ok_at', hb.last_ok_at,
     'last_check_ok', hb.last_ok,

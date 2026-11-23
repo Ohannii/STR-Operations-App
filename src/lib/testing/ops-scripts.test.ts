@@ -61,8 +61,14 @@ describe('03_emergency_disable_classification.sql (hazardous)', () => {
     expect(sql).toContain('alter table public.flags disable trigger trg_flags_stamp_test_classification;')
     expect(sql).not.toContain('trg_outbox_refuse_live_for_test_flags')
   })
+  it('requires EVERY live routing path off, including the preview test switch', () => {
+    expect(em).toContain('Switch EVERY live Asana routing path off')
+    expect(em).toMatch(/ASANA_LIVE_INCIDENTS_ENABLED\s+-> anything other than "true"/)
+    expect(em).toMatch(/ASANA_LIVE_INCIDENTS_TEST\s+-> anything other than "true"/)
+  })
   it('states its hazards and the required preconditions', () => {
-    for (const text of ['NOT A ROLLBACK', 'CAN reach the live Asana', 'Stop all testing', 'ASANA_LIVE_INCIDENTS_ENABLED', 'NOT retried and NOT reported']) {
+    for (const text of ['NOT A ROLLBACK', 'NEVER RUN ROUTINELY', 'EXPLICIT APPROVAL', 'PERMANENTLY mis-recorded', 'IRREVERSIBLE DATA EFFECT',
+      'CAN reach the live Asana', 'Stop all testing', 'NOT retried and NOT reported']) {
       expect(em).toContain(text)
     }
   })

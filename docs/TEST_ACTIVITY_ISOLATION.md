@@ -1,4 +1,4 @@
-# Test activity isolation (draft PR report, revision 4)
+# Test activity isolation (draft PR report, revision 5)
 
 Purpose: test work never creates live Asana work, and a real issue never silently misses Asana. The change keeps live Incidents & Damages intake for genuine issues and adds no steps for inspectors.
 
@@ -140,7 +140,8 @@ They never disable a trigger, and never drop, delete or rewrite anything.
 **Hazardous emergency only, not a rollback** — `03_emergency_disable_classification.sql`. Use it only if the classification trigger itself blocks real issue reporting.
 
 - It states its hazards: test issues can reach live Asana, failed sends are not retried or reported, and classifications are not locked.
-- It requires all testing to stop and `ASANA_LIVE_INCIDENTS_ENABLED` to be switched off first.
+- It requires explicit approval at the time, all testing to stop, and **every** live routing switch off first: `ASANA_LIVE_INCIDENTS_ENABLED` **and** `ASANA_LIVE_INCIDENTS_TEST`.
+- It warns prominently that issues created during the emergency are permanently recorded as normal and not expected in Asana. They cannot be corrected after re-enabling, so the emergency's start and end times must be noted.
 - It refuses to run without an explicit acknowledgement setting (section 15 and the contract test).
 - It disables only the classification trigger. The live-job veto stays on.
 
@@ -151,7 +152,13 @@ The database function `asana_handoff_health(company)` is for operations managers
 - **missing:** no Asana job for more than **10 minutes**, which is 5 worker runs, so ordinary 2-minute latency is never reported. It includes issues older than 14 days that are no longer retried automatically (`missing_beyond_retry`).
 - **stopped:** the create job ended without a task (dead, manual review, or done without a link). Reconciliation never retries these.
 - **stuck:** the create job has been waiting or running for more than **30 minutes**.
-- **Worker heartbeat:** each cron run records when the reconciliation check ran and whether it worked. The record holds timestamps only and is service-role only. A healthy empty queue (recent successful check, no problems) is therefore distinct from a broken worker (no check for more than 15 minutes, or a failed check).
+- **Worker heartbeat:** each cron run records when the reconciliation check ran and whether it worked. The record holds timestamps only and is service-role only. A healthy empty queue (recent successful check, no problems) is therefore distinct from a broken worker: no check for more than 15 minutes, a failed check, or **no check ever**.
+- **Never ran (revision 5).** The migration records when monitoring started. If the check has never run more than 15 minutes after that, the dashboard shows "Automatic sending to Asana is not running — the check has never run since it was installed", even when no issues are waiting. Within those first 15 minutes it is a quiet "starting up".
+- **Check unavailable (revision 5).** If the health check itself cannot be read, managers see a neutral notice, never an alarm and never "issues failed":
+  - "Could not verify Asana delivery right now" for an outage;
+  - "monitoring is not installed on this database yet" when the database update is missing, as on a preview.
+
+  Nothing is shown when Asana is *known* to be switched off for the company.
 - **Examples:** up to 10, showing apartment, time and problem only. No descriptions, reporter or guest data (tested).
 
 Where managers see it:
@@ -174,6 +181,8 @@ Each problem comes with plain recovery guidance:
 | Job died or went to manual review | per issue only | **manager alert ("Sending stopped")** |
 | Job waiting for hours (e.g. company not allow-listed for the worker) | per issue "Sending to Asana" | **manager alert after 30 minutes** |
 | Worker or cron not running | invisible | **manager alert after 15 minutes**; also shown when the check runs but fails |
+| Worker never ran at all after release | invisible | **manager alert after a 15-minute start-up grace** (revision 5) |
+| Health check itself unreadable | — | neutral "could not verify" notice, not an alarm (revision 5) |
 | Asana switched off for the company | — | not an alarm (shown as off on the Testing page) |
 | Job soft-deleted on purpose | — | not reported (deliberate removal) |
 | Test issue failing to reach BETA | — | not reported (not operational work) |
@@ -182,7 +191,7 @@ Each problem comes with plain recovery guidance:
 
 **On `main` `da595a4` + this change**
 
-- Vitest: 88 files, 1736 tests, all passing.
+- Vitest: 89 files, 1752 tests, all passing.
 - `tsc`: 8 errors, the pre-existing baseline in test files only.
 - `eslint`: clean on all changed files.
 - `git diff --check`: clean.
@@ -199,7 +208,7 @@ Each problem comes with plain recovery guidance:
 
 **Database**
 
-- `supabase/tests/test_activity_isolation_test.sql`: 112 assertions in one rolled-back transaction.
+- `supabase/tests/test_activity_isolation_test.sql`: 113 assertions in one rolled-back transaction.
 - It passed on `main`'s migrations, and on `main` + PR #74's migrations, which matches the shared database's migration history.
 - 29 mutations were tried and 28 caught (see point 4).
 
