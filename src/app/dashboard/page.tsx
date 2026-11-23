@@ -191,6 +191,10 @@ export default async function DashboardPage() {
         </div>
       </section>
 
+      {ctx.membership?.role_key === 'company_admin' && <p className="mb-6">
+        <Link href="/dashboard/settings/pms" className="inline-flex min-h-11 items-center font-medium text-teal-800 underline">Connect Hostaway & match apartments</Link>
+      </p>}
+
       {/* Properties */}
       <section className="mb-12">
         <div className="flex flex-wrap items-end justify-between gap-3 mb-4">
