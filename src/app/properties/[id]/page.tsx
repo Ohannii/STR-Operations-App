@@ -97,6 +97,9 @@ type FlagRow = {
   // Session 8 follow-up: closed_at populated only for the history
   // section's recent-closed-flags query.
   closed_at?: string | null
+  // Test issue (test apartment or manager test mode). Set from a separate
+  // tolerant read so this page keeps working before the column exists.
+  is_test?: boolean
   flag_category: { id: string; key: string } | { id: string; key: string }[] | null
 }
 
@@ -249,6 +252,18 @@ export default async function PropertyPage({
     .limit(5)
     .returns<FlagRow[]>()
 
+  // Which issues on this apartment are test issues. Separate and tolerant:
+  // before migration 20261123120000 the column does not exist, the read
+  // errors, and the page simply shows no Test labels.
+  const testFlagsPromise = supabase
+    .from('flags')
+    .select('id')
+    .eq('property_id', id)
+    .eq('is_test', true)
+    .is('deleted_at', null)
+    .limit(500)
+    .returns<Array<{ id: string }>>()
+
   const [
     { data: property },
     { data: openFlags, error: flagsError },
@@ -264,6 +279,8 @@ export default async function PropertyPage({
     submittedPacksPromise,
     recentClosedFlagsPromise,
   ])
+  const { data: testFlagRows } = await testFlagsPromise
+  const testFlagIds = new Set((testFlagRows ?? []).map((f) => f.id))
 
   if (!property) notFound()
 
@@ -411,6 +428,7 @@ export default async function PropertyPage({
   const flagsByGroupId = new Map<string, FlagRow[]>()
   const otherFlags: FlagRow[] = []
   for (const f of openFlags ?? []) {
+    f.is_test = testFlagIds.has(f.id)
     const cat = pickCategory(f.flag_category)
     const groupId = cat ? flagCategoryGroupId(cat.key) : null
     if (groupId) {
@@ -1261,6 +1279,7 @@ function FlagCardInline({
                 </span>
                 <Badge tone={sev.tone}>{sev.label}</Badge>
                 <Badge tone="slate">{flag.status}</Badge>
+                {flag.is_test ? <Badge tone="amber">Test</Badge> : null}
                 <span className="inline-flex items-center gap-1 text-[11px] font-medium">
                   <span
                     className={`w-1.5 h-1.5 rounded-full ${flag.asana_task_url ? 'bg-emerald-500' : 'bg-amber-400'}`}

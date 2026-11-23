@@ -19,6 +19,7 @@ import { buttonClasses } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
 import { canManageProperties } from '@/lib/properties/property-management'
+import { canManageTesting } from '@/lib/testing/test-mode'
 import { PropertyFinder } from '@/components/properties/property-finder'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { startPerf } from '@/lib/perf'
@@ -181,6 +182,15 @@ export default async function DashboardPage() {
             muted={(openRecoveryCount ?? 0) === 0}
           />
         </div>
+        {/* Managers only. Real authorization is on the page, in the actions and in the database functions. */}
+        {canManageTesting(ctx.membership?.role_key) ? (
+          <p className="mt-4 text-sm">
+            <Link href="/dashboard/testing" className="font-medium text-slate-700 underline underline-offset-2 hover:text-slate-900">
+              Testing tools
+            </Link>
+            <span className="text-slate-500"> · keep test issues out of live Asana</span>
+          </p>
+        ) : null}
       </section>
 
       {/* Properties */}

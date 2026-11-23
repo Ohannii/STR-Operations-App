@@ -36,7 +36,10 @@ vi.mock('@/lib/supabase/server', () => ({
         maybeSingle: async () =>
           table === 'flag_categories'
             ? { data: { id: 'cat-1' }, error: null }
-            : { data: { id: PROP, company_id: CO }, error: null },
+            : table === 'flags'
+              // the database's test classification of the new flag (normal issue)
+              ? { data: { is_test: false }, error: null }
+              : { data: { id: PROP, company_id: CO }, error: null },
       }
       return q
     },
@@ -188,10 +191,19 @@ describe('Report issue from a pack photo (issue mode)', () => {
       return finalizeIssue({})
     }
 
-    it('CONFIRMED no task link and no job -> "not_sent" (after reading both)', async () => {
+    it('CONFIRMED no task link and no job -> "not_sent" (after reading both + the handoff expectation)', async () => {
       statusTables = { flags: { data: [{ id: FLAG, asana_task_url: null }] }, integration_outbox: { data: [] } }
       expect(await run()).toMatchObject({ ok: true, asanaStatus: 'not_sent' })
-      expect([...statusReads].sort()).toEqual(['flags', 'integration_outbox'])
+      // flags (link), integration_outbox (job), flags (was it expected in Asana?)
+      expect([...statusReads].sort()).toEqual(['flags', 'flags', 'integration_outbox'])
+    })
+
+    it('no job yet but EXPECTED in Asana (reconciliation will send it) -> "queued", never "not_sent"', async () => {
+      statusTables = {
+        flags: { data: [{ id: FLAG, asana_task_url: null, asana_handoff_expected: true, created_at: new Date().toISOString() }] },
+        integration_outbox: { data: [] },
+      }
+      expect(await run()).toMatchObject({ ok: true, asanaStatus: 'queued' })
     })
 
     it('REGRESSION: an existing task link -> "in_asana", never "Not sent to Asana"', async () => {

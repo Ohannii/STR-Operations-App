@@ -315,6 +315,14 @@ export default async function FlagDetailPage({
     .order('uploaded_at', { ascending: false })
     .returns<EvidencePhotoRow[]>()
 
+  // Test issue? Separate and tolerant: before migration 20261123120000 the
+  // column does not exist, this read errors, and no Test label is shown.
+  const testPromise = supabase
+    .from('flags')
+    .select('is_test, test_reason')
+    .eq('id', flagId)
+    .maybeSingle<{ is_test: boolean; test_reason: string | null }>()
+
   const [
     { data: property },
     { data: flag },
@@ -330,6 +338,7 @@ export default async function FlagDetailPage({
     marksPromise,
     photosPromise,
   ])
+  const { data: testInfo } = await testPromise
   perf.mark('queries')
   perf.done()
 
@@ -542,6 +551,11 @@ export default async function FlagDetailPage({
               </h1>
               <div className="flex flex-wrap items-center gap-2 mt-2">
                 <Badge tone={status.tone}>{status.label}</Badge>
+                {testInfo?.is_test ? (
+                  <Badge tone="amber">
+                    {testInfo.test_reason === 'test_property' ? 'Test apartment' : 'Test issue'}
+                  </Badge>
+                ) : null}
                 <Badge tone={sev.tone}>{sev.label}</Badge>
                 <Badge tone={charge.tone}>Responsibility: {charge.label}</Badge>
                 <Badge tone={flag.asana_task_url ? 'emerald' : 'amber'}>

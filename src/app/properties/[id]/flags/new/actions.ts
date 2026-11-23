@@ -15,6 +15,7 @@ import {
 import { parseIssueSelections, selectionsToRpc } from '@/lib/issues/issue-selections'
 import type { AsanaIssueStatus } from '@/lib/issues/asana-status'
 import { chooseDestinationForNewFlag } from '@/lib/integrations/asana/destinations'
+import { readFlagTestClassification } from '@/lib/testing/flag-test-classification'
 import { loadFlagAsanaStatuses } from '@/lib/issues/load-pack-photo-issues'
 import { finalizeIssueErrorMessage } from '@/lib/issues/finalize-issue-errors'
 
@@ -147,9 +148,22 @@ export async function createFlagAction(formData: FormData) {
       createdBy: ctx.user.id,
       payload: { property_id: property.id, category_key: categoryKey },
     }
-    const destination = chooseDestinationForNewFlag({ companyId: property.company_id, propertyId: property.id, isPackPhotoIssue: false })
-    if (destination === 'beta') await maybeEnqueueFlagCreated(supabase, input)
-    else await maybeEnqueueFlagEvents(supabase, input, destination)
+    // TEST ISOLATION: stamped by the database (test apartment / manager
+    // test mode on this apartment); never sent by the client. If it cannot
+    // be read, NOTHING is enqueued here: the issue is saved and the worker's
+    // reconciliation (asana_flags_awaiting_handoff) enqueues it from the
+    // stored classification within minutes. No guess, no silent loss.
+    const classification = await readFlagTestClassification(supabase, newFlag.id)
+    if (classification !== 'unknown') {
+      const destination = chooseDestinationForNewFlag({
+        companyId: property.company_id,
+        propertyId: property.id,
+        isPackPhotoIssue: false,
+        isTest: classification === 'test',
+      })
+      if (destination === 'beta') await maybeEnqueueFlagCreated(supabase, input)
+      else await maybeEnqueueFlagEvents(supabase, input, destination)
+    }
   }
 
   // Keep the company dashboard's "Open flags" count in sync — it's
@@ -361,21 +375,31 @@ export async function finalizeFlagWithPhotos(
   // DESTINATION — decided ONCE, here, before any create attempt, and pinned
   // by the job's event type. BETA for everything, except a pack-photo issue
   // of the controlled live test's company + property while its switch is on.
-  const destination = chooseDestinationForNewFlag({
-    companyId: ctx.company.id,
-    propertyId,
-    isPackPhotoIssue: issueArgs !== null,
-  })
-  const { create } = await maybeEnqueueFlagEvents(
-    supabase,
-    {
+  // TEST ISOLATION: the database stamped the flag's test classification
+  // inside the RPC. If it cannot be read, nothing is enqueued here (no
+  // guessed destination); the issue is saved and the worker's reconciliation
+  // enqueues it from the stored classification. The status then reads
+  // "Sending to Asana" (the flag is expected and has no job yet).
+  const classification = await readFlagTestClassification(supabase, proposedFlagId)
+  let create: 'enqueued' | 'duplicate' | 'failed' | 'disabled' | 'deferred' = 'deferred'
+  if (classification !== 'unknown') {
+    const destination = chooseDestinationForNewFlag({
       companyId: ctx.company.id,
-      flagId: proposedFlagId,
-      createdBy: ctx.user.id,
-      payload: { property_id: propertyId, category_key: categoryKey },
-    },
-    destination,
-  )
+      propertyId,
+      isPackPhotoIssue: issueArgs !== null,
+      isTest: classification === 'test',
+    })
+    ;({ create } = await maybeEnqueueFlagEvents(
+      supabase,
+      {
+        companyId: ctx.company.id,
+        flagId: proposedFlagId,
+        createdBy: ctx.user.id,
+        payload: { property_id: propertyId, category_key: categoryKey },
+      },
+      destination,
+    ))
+  }
 
   // Honest Asana status. A job inserted just now is queued. EVERY other
   // outcome (a job already existed, the insert failed, or Asana looked

@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { Building2, LogOut } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { Suspense, type ReactNode } from 'react'
+import { TestModeBanner } from '@/components/testing/test-mode-banner'
 
 /**
  * App shell for logged-in pages. Sticky header with brand + company
@@ -62,6 +63,11 @@ export function AppShell({
           </div>
         </div>
       </header>
+      {/* Only renders while the signed-in manager has test mode on. Suspense: the
+          page never waits for this read; the banner streams in when ready. */}
+      <Suspense fallback={null}>
+        <TestModeBanner />
+      </Suspense>
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
         {children}
       </main>
