@@ -14,7 +14,7 @@ beforeEach(() => {
 })
 afterEach(() => vi.unstubAllEnvs())
 
-function db(over: { company?: string; property?: unknown; error?: string; otherJob?: boolean } = {}) {
+function db(over: { company?: string; property?: unknown; error?: string; otherJob?: boolean; isTest?: boolean } = {}) {
   const reads: string[] = []
   const filters: Record<string, unknown> = {}
   const client = {
@@ -27,7 +27,7 @@ function db(over: { company?: string; property?: unknown; error?: string; otherJ
         limit: () => query,
         maybeSingle: async () => query,
         then(resolve: (v: unknown) => unknown) {
-          const data = table === 'flags' ? { company_id: over.company ?? CO, property_id: PROP }
+          const data = table === 'flags' ? { company_id: over.company ?? CO, property_id: PROP, is_test: over.isTest ?? false }
             : table === 'properties' ? ('property' in over ? over.property : { id: PROP, company_id: CO })
               : table === 'integration_outbox' ? (over.otherJob ? [{ id: 'opposing' }] : []) : null
           return Promise.resolve(resolve({ data, error: over.error === table ? { code: 'XX000' } : null }))
@@ -42,17 +42,24 @@ const job = { companyId: CO, flagId: FLAG, payload: destinationPin('live_inciden
 
 describe('staff rollout destination and database gate', () => {
   it.each([false, true])('new ordinary/pack-photo issue (%s) on a real property goes to intake', (isPackPhotoIssue) => {
-    expect(chooseDestinationForNewFlag({ companyId: CO, propertyId: PROP, isPackPhotoIssue })).toBe('live_incidents')
+    expect(chooseDestinationForNewFlag({ companyId: CO, propertyId: PROP, isPackPhotoIssue, isTest: false })).toBe('live_incidents')
     expect(() => assertAllowedProject(LIVE.projectGid)).not.toThrow()
   })
   it.each(['', 'false', 'TRUE', '1'])('only an exact true enables rollout (%s)', (value) => {
     vi.stubEnv('ASANA_LIVE_INCIDENTS_ENABLED', value)
     expect(liveIncidentsRolloutEnabled()).toBe(false)
     expect(liveIncidentsEnabled()).toBe(false)
-    expect(chooseDestinationForNewFlag({ companyId: CO, propertyId: PROP, isPackPhotoIssue: true })).toBe('beta')
+    expect(chooseDestinationForNewFlag({ companyId: CO, propertyId: PROP, isPackPhotoIssue: true, isTest: false })).toBe('beta')
+  })
+  it('a test issue is refused by the worker even with rollout on, before any other read', async () => {
+    expect(chooseDestinationForNewFlag({ companyId: CO, propertyId: PROP, isPackPhotoIssue: false, isTest: true })).toBe('beta')
+    const h = db({ isTest: true })
+    expect(await liveTestRefusal(h.client, LIVE, job)).toEqual({ code: LIVE_TEST_CODES.testIssue, permanent: true })
+    expect(h.reads).toEqual(['flags'])
+    expect(LIVE_TEST_CODES.testIssue).toBe('live_test:test_issue')
   })
   it('never opts another company into live', async () => {
-    expect(chooseDestinationForNewFlag({ companyId: 'other', propertyId: PROP, isPackPhotoIssue: true })).toBe('beta')
+    expect(chooseDestinationForNewFlag({ companyId: 'other', propertyId: PROP, isPackPhotoIssue: true, isTest: false })).toBe('beta')
     const h = db({ company: 'other' })
     expect(await liveTestRefusal(h.client, LIVE, { ...job, companyId: 'other' })).toEqual({ code: LIVE_TEST_CODES.outOfScope, permanent: true })
     expect(h.reads).toEqual(['flags'])

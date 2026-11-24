@@ -73,12 +73,20 @@ export function isInLiveTestScope(input: { companyId: unknown; propertyId: unkno
 /**
  * Destination for a NEW issue, decided once at enqueue. Staff rollout covers
  * the pinned company; the preview test remains limited to Test 1 pack issues.
+ *
+ * TEST ISSUES NEVER GO LIVE. `isTest` is the database's own classification
+ * of the flag (flags.is_test, stamped by trigger from a test apartment or the
+ * reporter's active test session — migration 20261123120000). A test issue
+ * always goes to the BETA project. The database additionally refuses a live
+ * job for a test flag, so a wrong value here cannot leak test work.
  */
 export function chooseDestinationForNewFlag(input: {
   companyId: string
   propertyId: string
   isPackPhotoIssue: boolean
+  isTest: boolean
 }): AsanaDestinationKey {
+  if (input.isTest) return 'beta'
   if (liveIncidentsRolloutEnabled() && input.companyId === LIVE_TEST_SCOPE.companyId) {
     return 'live_incidents'
   }

@@ -114,7 +114,7 @@ describe('hard allowlist', () => {
 
 describe('which destination a NEW flag gets (decided once, at enqueue)', () => {
   const pick = (o: Partial<Parameters<typeof chooseDestinationForNewFlag>[0]> = {}) =>
-    chooseDestinationForNewFlag({ companyId: CO, propertyId: PROP, isPackPhotoIssue: true, ...o })
+    chooseDestinationForNewFlag({ companyId: CO, propertyId: PROP, isPackPhotoIssue: true, isTest: false, ...o })
 
   it('scope constants', () => {
     expect(LIVE_TEST_SCOPE).toEqual({ companyId: CO, propertyId: PROP })
@@ -133,6 +133,15 @@ describe('which destination a NEW flag gets (decided once, at enqueue)', () => {
     expect(pick({ propertyId: 'a0000000-0000-4000-8000-000000000001' })).toBe('beta') // other property
     expect(pick({ companyId: 'b0000000-0000-4000-8000-000000000001' })).toBe('beta') // other company
     expect(pick({ propertyId: PROP.toUpperCase() })).toBe('beta') // exact match only
+  })
+
+  it('a test issue always goes to BETA, whatever the switches say', () => {
+    expect(pick({ isTest: true })).toBe('beta')
+    on()
+    expect(pick({ isTest: true })).toBe('beta')
+    vi.stubEnv('ASANA_LIVE_INCIDENTS_ENABLED', 'true')
+    expect(pick({ isTest: true, isPackPhotoIssue: false })).toBe('beta')
+    expect(pick({ isTest: false, isPackPhotoIssue: false })).toBe('live_incidents') // control: rollout really is on
   })
 })
 

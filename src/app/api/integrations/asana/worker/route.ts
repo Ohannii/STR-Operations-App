@@ -8,6 +8,7 @@ import {
   runAsanaOutboxBatch,
 } from '@/lib/integrations/worker/process-outbox'
 import { runNextAttachEvidence } from '@/lib/integrations/worker/attach-evidence'
+import { reconcileAsanaHandoffs, recordReconcileHeartbeat } from '@/lib/integrations/worker/reconcile-handoff'
 import { createAsanaProvider } from '@/lib/integrations/asana/provider'
 import { parseAllowedCompanyIds } from '@/lib/integrations/company-allowlist'
 import { ASANA_TEST_PROJECT_GID, liveIncidentsEnabled, liveIncidentsRolloutEnabled } from '@/lib/integrations/asana/config'
@@ -65,6 +66,13 @@ export async function GET(request: Request) {
   const supabase = createServiceClient()
   const provider = createAsanaProvider(asanaToken)
 
+  // Reconciliation first: issues expected in Asana that never got a job
+  // (unknown classification, failed enqueue, lost response) are enqueued
+  // from their stored classification. Never throws; capped per run.
+  const reconcile = await reconcileAsanaHandoffs(supabase, 10)
+  // Heartbeat for the managers' Asana health check (timestamps only).
+  await recordReconcileHeartbeat(supabase, reconcile.ok)
+
   // Create-task pass (drains up to `batch`), then AT MOST ONE attach pass so
   // a single tick can never fan out into dozens of large uploads.
   const results = await runAsanaOutboxBatch(supabase, provider, deps, batch)
@@ -92,9 +100,9 @@ export async function GET(request: Request) {
   }
   console.log(
     '[asana-worker][cron]',
-    JSON.stringify({ created: results.length, results, attach }),
+    JSON.stringify({ reconcile, created: results.length, results, attach }),
   )
-  return NextResponse.json({ ran: true, processed: processed(), results, attach })
+  return NextResponse.json({ ran: true, processed: processed(), results, attach, reconcile })
 }
 
 /**

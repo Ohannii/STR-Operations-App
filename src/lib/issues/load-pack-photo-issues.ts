@@ -70,9 +70,42 @@ export async function loadFlagAsanaStatuses(
         }),
       )
     }
+    await applyAwaitingHandoff(supabase, companyId, out)
     return out
   } catch {
     return allUnknown()
+  }
+}
+
+/** Must match asana_flags_awaiting_handoff() (migration 20261123120000). */
+export const ASANA_HANDOFF_RECONCILE_DAYS = 14
+
+/**
+ * "Not sent" is only final when the issue was never expected in Asana. An
+ * issue stamped asana_handoff_expected with no job yet is picked up by the
+ * worker's reconciliation, so it is shown as on its way ('queued', polled)
+ * while inside the reconciliation window, and 'needs_attention' after it.
+ * Tolerant: if this read fails (or the column does not exist yet), the
+ * statuses are left exactly as they were.
+ */
+async function applyAwaitingHandoff(supabase: SupabaseClient, companyId: string, out: FlagAsanaLookup): Promise<void> {
+  const candidates = [...out].filter(([, st]) => st === 'not_sent').map(([id]) => id)
+  if (candidates.length === 0) return
+  try {
+    const { data, error } = await supabase
+      .from('flags')
+      .select('id, asana_handoff_expected, created_at')
+      .eq('company_id', companyId)
+      .in('id', candidates)
+    if (error || !Array.isArray(data)) return
+    const cutoff = Date.now() - ASANA_HANDOFF_RECONCILE_DAYS * 24 * 60 * 60 * 1000
+    for (const row of data as Array<{ id: string; asana_handoff_expected?: unknown; created_at?: unknown }>) {
+      if (row.asana_handoff_expected !== true || out.get(row.id) !== 'not_sent') continue
+      const created = typeof row.created_at === 'string' ? Date.parse(row.created_at) : NaN
+      out.set(row.id, Number.isFinite(created) && created > cutoff ? 'queued' : 'needs_attention')
+    }
+  } catch {
+    // leave statuses unchanged
   }
 }
 

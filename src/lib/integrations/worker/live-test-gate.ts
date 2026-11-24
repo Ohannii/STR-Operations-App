@@ -29,6 +29,7 @@ export const LIVE_TEST_CODES = {
   pinMismatch: 'live_test:destination_pin_mismatch',
   outOfScope: 'live_test:out_of_scope',
   notPackPhotoIssue: 'live_test:not_pack_photo_issue',
+  testIssue: 'live_test:test_issue',
   otherDestinationJob: 'live_test:other_destination_job',
   scopeReadFailed: 'live_test:scope_read_failed',
 } as const
@@ -47,12 +48,15 @@ export async function liveTestRefusal(
   try {
     const { data: flag, error: flagErr } = await supabase
       .from('flags')
-      .select('id, company_id, property_id')
+      .select('id, company_id, property_id, is_test')
       .eq('id', job.flagId)
       .is('deleted_at', null)
       .maybeSingle()
     if (flagErr) return retry
-    const f = flag as { company_id?: unknown; property_id?: unknown } | null
+    const f = flag as { company_id?: unknown; property_id?: unknown; is_test?: unknown } | null
+    // A test issue never goes live, whatever its job says (defence in depth
+    // behind the enqueue choice and the database backstop).
+    if (f && f.is_test === true) return { code: LIVE_TEST_CODES.testIssue, permanent: true }
     if (
       !f ||
       f.company_id !== job.companyId ||
