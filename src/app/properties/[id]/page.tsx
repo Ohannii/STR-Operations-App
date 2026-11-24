@@ -11,7 +11,7 @@ import {
   FileText,
   Flag,
   Hourglass,
-  Info,
+  Pencil,
   MessageCircle,
   type LucideIcon,
 } from 'lucide-react'
@@ -28,7 +28,6 @@ import { GalleryUploader } from '@/components/photos/gallery-uploader'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { canManageProperties } from '@/lib/properties/property-management'
-import { buttonClasses } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { StaticChip, ToggleChip } from '@/components/ui/chip'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -54,6 +53,13 @@ import { packDateDisplay } from '@/lib/reports/pack-dates'
 import { updateFlagAction } from './flags/[flagId]/actions'
 import { toggleFlagMarkAction } from './flags/[flagId]/marks/actions'
 import { startPreArrivalPackAction } from './packs/actions'
+import { canInspect, nextDiscardedTurnover, nextUnstartedTurnover, sastDay } from '@/lib/inspections/workboard'
+import { loadInspectionJobs } from '@/lib/inspections/load-workspace'
+import { InspectionStartButton } from '@/components/inspections/inspection-start-button'
+import { DiscardedInspectionNotice } from '@/components/inspections/discarded-inspection-notice'
+import { formatDateSAST } from '@/lib/ui/datetime'
+import { completedInspectionForPack, inspectionCompletionForPack } from '@/lib/inspections/completion'
+import { CompletedInspectionNotice } from '@/components/inspections/completed-inspection-notice'
 
 /**
  * GET /properties/[id]
@@ -119,7 +125,7 @@ export default async function PropertyPage({
     open?: string
     error?: string
     pack_started?: string
-    pack_submitted?: string
+    pack_submitted?: string | string[]
     pack_discarded?: string
   }>
 }) {
@@ -135,7 +141,6 @@ export default async function PropertyPage({
     raised,
     open,
     error,
-    pack_started,
     pack_submitted,
     pack_discarded,
   } = await searchParams
@@ -220,7 +225,7 @@ export default async function PropertyPage({
 
   const submittedPacksPromise = supabase
     .from('evidence_packs')
-    .select('id, title, submitted_at, submitted_by, started_at')
+    .select('id, property_id, status, deleted_at, title, submitted_at, submitted_by, started_at')
     .eq('property_id', id)
     .eq('pack_type', 'pre_arrival')
     .eq('status', 'submitted')
@@ -230,6 +235,9 @@ export default async function PropertyPage({
     .returns<
       {
         id: string
+        property_id: string
+        status: string
+        deleted_at: string | null
         title: string | null
         submitted_at: string | null
         submitted_by: string | null
@@ -271,6 +279,7 @@ export default async function PropertyPage({
     { data: draftPack },
     { data: submittedPacks },
     { data: closedFlags },
+    inspectionJobs,
   ] = await Promise.all([
     propertyPromise,
     flagsPromise,
@@ -278,11 +287,17 @@ export default async function PropertyPage({
     draftPackPromise,
     submittedPacksPromise,
     recentClosedFlagsPromise,
+    canInspect(ctx.membership?.role_key) ? loadInspectionJobs(ctx.company.id, false, id) : Promise.resolve({ data: [], error: null }),
   ])
   const { data: testFlagRows } = await testFlagsPromise
   const testFlagIds = new Set((testFlagRows ?? []).map((f) => f.id))
 
   if (!property) notFound()
+  const scheduledInspection = nextUnstartedTurnover(inspectionJobs.data ?? [], id, sastDay())
+  const discardedInspection = scheduledInspection ? null : nextDiscardedTurnover(inspectionJobs.data ?? [], id, sastDay())
+  const completedJob = completedInspectionForPack(inspectionJobs.data ?? [], id, pack_submitted)
+  const confirmedSubmittedPack = submittedPacks?.find(p => p.id === pack_submitted)
+  const draftInspection = inspectionJobs.data?.find(j => !j.cancelled_at && !j.pack_deleted && j.pack_id === draftPack?.id)
 
   // Second query wave. Everything here depends only on IDs from the
   // first wave (open-flag IDs, draft pack id, submitted pack ids) —
@@ -344,21 +359,34 @@ export default async function PropertyPage({
           .returns<{ evidence_pack_id: string }[]>()
       : null
 
+  const standaloneSubmitterQuery = confirmedSubmittedPack && !completedJob && confirmedSubmittedPack.submitted_by
+    && confirmedSubmittedPack.submitted_by !== ctx.user.id
+    ? supabase.from('profiles').select('full_name').eq('id', confirmedSubmittedPack.submitted_by).maybeSingle<{ full_name: string | null }>()
+    : null
+
   const [
     marksRes,
     flagPhotosRes,
     draftPackPhotosRes,
     submittedPackPhotosRes,
     draftPackPendingIntentsRes,
+    standaloneSubmitterRes,
   ] = await Promise.all([
     marksQuery,
     flagPhotosQuery,
     draftPackPhotosQuery,
     submittedPackPhotosQuery,
     draftPackPendingIntentsQuery,
+    standaloneSubmitterQuery,
   ])
   perf.mark('queries')
   perf.done()
+
+  const completedInspection = inspectionCompletionForPack(
+    canInspect(ctx.membership?.role_key) && !inspectionJobs.error ? inspectionJobs.data : null,
+    id, pack_submitted, confirmedSubmittedPack,
+    confirmedSubmittedPack?.submitted_by === ctx.user.id ? ctx.profile?.full_name ?? null : standaloneSubmitterRes?.data?.full_name ?? null,
+  )
 
   const activeMarksByFlagId = (marksRes?.data ?? []).reduce<
     Record<string, ChipKind[]>
@@ -443,6 +471,25 @@ export default async function PropertyPage({
   const status = propertyStatusDisplay(property.status)
   const sub = [property.unit_reference, property.address].filter(Boolean).join(' · ')
 
+  const startInspectionPanel = (
+    <section aria-label="Start apartment inspection" className="rounded-xl border border-teal-200 bg-teal-50/60 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold text-slate-900">{scheduledInspection ? completedInspection ? 'Next inspection due' : 'Inspect this apartment' : 'Pre-arrival inspection'}</h2>
+        {scheduledInspection && <span className="rounded-full bg-teal-100 px-2.5 py-1 text-xs font-semibold text-teal-900">{scheduledInspection.due_on < sastDay() ? 'Overdue' : 'Due today'}</span>}
+      </div>
+      {scheduledInspection && <p className="mt-1 text-sm font-medium text-teal-900">{formatDateSAST(`${scheduledInspection.due_on}T12:00:00+02:00`, 'short')}</p>}
+      <p className="mt-2 text-sm leading-relaxed text-slate-700">Take photos and report any issues. Review and submit the pack when you are finished{scheduledInspection ? ' to complete this inspection' : ''}.</p>
+      <div className="mt-4">
+        {inspectionJobs.error ? <p role="alert" className="text-sm text-amber-900">{inspectionJobs.error} Reload before starting a pack.</p> : scheduledInspection ? <InspectionStartButton jobId={scheduledInspection.id} propertyId={property.id} label="Start inspection" /> : <form action={startPreArrivalPackAction}>
+          <input type="hidden" name="property_id" value={property.id} />
+          <button type="submit" className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2 sm:w-auto">
+            <Camera size={18} aria-hidden />Start pre-arrival pack
+          </button>
+        </form>}
+      </div>
+    </section>
+  )
+
   return (
     <AppShell
       companyName={ctx.company.name}
@@ -451,7 +498,7 @@ export default async function PropertyPage({
     >
       <Link
         href="/dashboard"
-        className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 mb-5 transition-colors"
+        className="mb-3 inline-flex min-h-11 items-center gap-1.5 text-sm text-slate-500 transition-colors hover:text-slate-900"
       >
         <ArrowLeft size={14} aria-hidden />
         All properties
@@ -465,21 +512,16 @@ export default async function PropertyPage({
           <Alert tone="success">Issue reported. It&rsquo;s in the list below.</Alert>
         </div>
       ) : null}
-      {pack_started ? (
+      {pack_submitted && !completedInspection ? (
         <div className="mb-5">
-          <Alert tone="success">Pre-arrival pack started. Tap Take photos to begin.</Alert>
-        </div>
-      ) : null}
-      {pack_submitted ? (
-        <div className="mb-5">
-          <Alert tone="success">
-            Pack submitted. It&rsquo;s now in history — start a new pack when ready.
+          <Alert tone={confirmedSubmittedPack ? 'success' : 'info'}>
+            {confirmedSubmittedPack ? <>Inspection photos submitted. <Link href={`/properties/${id}/packs/${confirmedSubmittedPack.id}/report`} className="underline">View submitted inspection</Link></> : <>Check inspection history for the latest submission status.</>}
           </Alert>
         </div>
       ) : null}
-      {pack_discarded ? (
+      {pack_discarded && !discardedInspection ? (
         <div className="mb-5">
-          <Alert tone="success">Draft pack discarded.</Alert>
+          <Alert tone="info">Inspection draft discarded.</Alert>
         </div>
       ) : null}
       {error ? (
@@ -489,14 +531,11 @@ export default async function PropertyPage({
       ) : null}
 
       {/* Property header */}
-      <Card className="mb-8">
-        <div className="p-5 sm:p-6">
+      <Card className="mb-6 !shadow-none">
+        <div className="p-4 sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0 flex-1">
-              <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">
-                Apartment
-              </p>
-              <h1 className="text-2xl font-semibold text-slate-900 tracking-tight truncate">
+              <h1 className="break-words text-2xl font-semibold tracking-tight text-slate-900">
                 {property.name}
               </h1>
               {sub ? (
@@ -509,25 +548,20 @@ export default async function PropertyPage({
                   <span className="text-slate-700 font-medium">{property.bedrooms ?? '—'}</span>{' '}
                   {property.bedrooms === 1 ? 'bedroom' : 'bedrooms'}
                 </span>
-                <span>Added {relativeTime(property.created_at)}</span>
-                {(submittedPacks?.length ?? 0) > 0 ? (
-                  <span className="inline-flex items-center gap-1 text-slate-700">
-                    <FileText size={12} aria-hidden />
-                    <span>
-                      <span className="font-medium">{submittedPacks?.length}</span>{' '}
-                      submitted pack{submittedPacks?.length === 1 ? '' : 's'}
-                    </span>
-                  </span>
-                ) : null}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               {canManageProperties(ctx.membership?.role_key) ? (
-                <Link href={`/properties/${id}/edit`} className={buttonClasses('secondary', 'sm')}>Edit property</Link>
+                <Link href={`/properties/${id}/edit`} aria-label="Edit property" className="inline-flex min-h-11 items-center gap-1.5 px-1 text-sm text-slate-500 hover:text-slate-900"><Pencil size={14} aria-hidden />Edit</Link>
               ) : null}
-              <Badge tone={status.tone} className="!text-xs !px-2.5 !py-1">{status.label}</Badge>
+              {canManageProperties(ctx.membership?.role_key) && <Badge tone={status.tone} className="!text-xs !font-medium !normal-case !tracking-normal !px-2 !py-1">Apartment: {status.label}</Badge>}
             </div>
           </div>
+
+          <nav aria-label="Apartment sections" className="mt-3 flex flex-wrap items-center gap-x-5 text-sm text-slate-600">
+            {canInspect(ctx.membership?.role_key) && <Link href={`/dashboard/work?${canManageProperties(ctx.membership?.role_key) ? 'scope=all&' : ''}property=${id}`} className="inline-flex min-h-11 items-center gap-1.5 font-medium text-teal-800 hover:text-teal-950"><ClipboardCheck size={16} aria-hidden />Inspection work</Link>}
+            <Link href="#history" className="inline-flex min-h-11 items-center gap-1.5 hover:text-slate-950"><FileText size={14} aria-hidden />Pack history</Link>
+          </nav>
 
           {/* Session 8 follow-up: pack-aware pre-arrival surface.
               Three states:
@@ -541,13 +575,16 @@ export default async function PropertyPage({
               photos forever" behaviour that didn't support
               repeatable turnover capture. */}
           <div className="mt-4 pt-4 border-t border-slate-100">
+            {completedInspection && <CompletedInspectionNotice job={completedInspection} />}
+            {draftPack && !draftInspection && scheduledInspection && <p className="mb-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-950">This open pack is not linked to the next scheduled inspection. Submit or discard it first, then start the scheduled inspection. Submitting this older pack will not complete that visit.</p>}
             {draftPack ? (
-              <div className="min-w-0">
+              <div className="min-w-0 rounded-xl border border-teal-200 bg-teal-50/60 p-4">
                 {/* Heading + meta. The photo count deliberately lives ONLY in
                     the status banner below — one authoritative status. */}
-                <p className="text-sm font-medium text-slate-900">
-                  Pre-arrival pack in progress
-                </p>
+                <p className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${draftInspection && draftInspection.due_on < sastDay() ? 'bg-rose-100 text-rose-900' : 'bg-teal-100 text-teal-900'}`}><Camera size={13} aria-hidden />In progress{draftInspection && draftInspection.due_on < sastDay() ? ' · Overdue' : ''}</p>
+                <h2 className="mt-2 text-lg font-semibold text-slate-900">Apartment inspection</h2>
+                <p className="mt-1 text-sm leading-relaxed text-slate-700">{draftPackPhotoCount > 0 ? 'Next: finish taking photos, then review the pack and report any issues before submitting.' : 'Next: take photos of the apartment. Then review the pack, report any issues and submit.'}</p>
+                {draftInspection && <p className="mt-1 text-xs text-slate-600">Inspection date: {formatDateSAST(`${draftInspection.due_on}T12:00:00+02:00`)} · Started by {draftInspection.starter_name ?? 'Team member'}</p>}
                 {(() => {
                   // Draft-creation default titles are not repeated here (the
                   // heading above already says what this is); a custom title is.
@@ -588,10 +625,10 @@ export default async function PropertyPage({
                 />
 
                 {/* 2. Add-photos group. */}
-                <p className="mt-4 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+                <p className="mt-4 text-sm font-medium text-slate-600">
                   Add photos
                 </p>
-                <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                <div className="mt-1.5 flex flex-col items-stretch gap-1">
                   <EvidenceCapture
                     propertyId={property.id}
                     evidencePackId={draftPack.id}
@@ -599,7 +636,7 @@ export default async function PropertyPage({
                     userId={ctx.user.id}
                     companyId={ctx.company.id}
                     launchLabel={
-                      draftPackPhotoCount > 0 ? 'Continue capturing' : 'Take photos'
+                      draftPackPhotoCount > 0 ? 'Take more photos' : 'Take photos'
                     }
                     // Capturing leads only while the pack is empty; once there
                     // are photos, Submit becomes the dominant action.
@@ -628,22 +665,13 @@ export default async function PropertyPage({
                 <div className="mt-4 pt-3 border-t border-slate-100">
                   <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
                     <Link
-                      href={`/properties/${property.id}/packs/${draftPack.id}/report`}
-                      target="_blank"
-                      rel="noopener"
-                      className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2 sm:w-auto"
-                    >
-                      <FileText size={13} aria-hidden />
-                      Open pack
-                    </Link>
-                    <Link
                       href={`/properties/${property.id}/flags/new`}
-                      className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 transition hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-700 focus-visible:ring-offset-2 sm:w-auto"
+                      className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2 sm:w-auto"
                     >
                       <Flag size={13} aria-hidden />
-                      Spotted an issue — report it
+                      Report an issue
                     </Link>
-                    <div className="sm:ml-auto">
+                    {draftPackPhotoCount > 0 && <div className="sm:ml-auto">
                       {/* P0 caption durability (22 Oct 2026): the property page
                           never finalises a pre-arrival pack directly any more.
                           Submission lives on the pack report, where every
@@ -651,12 +679,12 @@ export default async function PropertyPage({
                           this link is the only submit affordance here. */}
                       <Link
                         href={`/properties/${property.id}/packs/${draftPack.id}/report`}
-                        className="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 active:bg-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2 sm:w-auto"
+                        className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2 sm:w-auto"
                       >
-                        <Check size={15} aria-hidden />
-                        Review captions and submit
+                        <ClipboardCheck size={18} aria-hidden />
+                        Review and submit inspection
                       </Link>
-                    </div>
+                    </div>}
                   </div>
                 </div>
 
@@ -665,32 +693,17 @@ export default async function PropertyPage({
                   <DiscardDraftButton
                     propertyId={property.id}
                     packId={draftPack.id}
+                    scheduled={Boolean(draftInspection)}
+                    propertyName={[property.name, property.address].filter(Boolean).join(' · ')}
                   />
                 </div>
               </div>
+            ) : discardedInspection ? (
+              <DiscardedInspectionNotice job={discardedInspection} manager={canManageProperties(ctx.membership?.role_key)} propertyName={[property.name, property.address].filter(Boolean).join(' · ')} />
+            ) : completedInspection && !scheduledInspection ? (
+              <details><summary className="inline-flex min-h-11 cursor-pointer items-center text-sm font-medium text-teal-800 underline underline-offset-4">Start another inspection</summary><p className="mb-3 text-sm text-slate-600">Start a separate visit only if another inspection is needed.</p>{startInspectionPanel}</details>
             ) : (
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-slate-900">
-                    Pre-arrival evidence pack
-                  </p>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Start a fresh pack for this turnover. Camera stays open —
-                    capture a full sweep in one go. Submitted packs land in
-                    history below.
-                  </p>
-                </div>
-                <form action={startPreArrivalPackAction} className="contents">
-                  <input type="hidden" name="property_id" value={property.id} />
-                  <button
-                    type="submit"
-                    className="inline-flex items-center gap-2 rounded-md bg-slate-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 active:bg-slate-950 transition"
-                  >
-                    <Camera size={16} aria-hidden />
-                    Start pre-arrival pack
-                  </button>
-                </form>
-              </div>
+              startInspectionPanel
             )}
           </div>
 
@@ -707,8 +720,7 @@ export default async function PropertyPage({
         <div className="mb-3">
           <h2 className="text-lg font-semibold text-slate-900">Report an issue</h2>
           <p className="text-sm text-slate-600">
-            One tap to report something an inspector or manager noticed. Triage and
-            child actions ship in a later session.
+            Choose what needs attention.
           </p>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
@@ -725,24 +737,24 @@ export default async function PropertyPage({
                 href={`/properties/${property.id}/flags/new?category=${key}`}
                 className={
                   isSafety
-                    ? 'group min-w-0 bg-red-50 border border-red-200 rounded-xl p-4 hover:bg-red-100 hover:border-red-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2'
-                    : 'group min-w-0 bg-white border border-slate-200 rounded-xl p-4 hover:border-slate-300 hover:shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2'
+                    ? 'group flex min-w-0 items-start gap-3 rounded-xl border border-red-100 bg-red-50/60 p-3.5 transition-colors hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2'
+                    : 'group flex min-w-0 items-start gap-3 rounded-xl border border-slate-200/80 bg-white p-3.5 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2'
                 }
               >
                 <div
                   className={
                     isSafety
-                      ? 'w-9 h-9 rounded-lg bg-red-600 text-white flex items-center justify-center mb-2.5'
-                      : 'w-9 h-9 rounded-lg bg-slate-100 text-slate-700 group-hover:bg-slate-900 group-hover:text-white flex items-center justify-center mb-2.5 transition-colors'
+                      ? 'mt-0.5 shrink-0 text-red-600'
+                      : 'mt-0.5 shrink-0 text-slate-500'
                   }
                 >
                   <Icon size={18} aria-hidden />
                 </div>
-                <p
+                <div className="min-w-0"><p
                   className={
                     isSafety
-                      ? 'text-sm font-semibold text-red-900'
-                      : 'text-sm font-semibold text-slate-900'
+                      ? 'text-sm font-medium text-red-900'
+                      : 'text-sm font-medium text-slate-900'
                   }
                 >
                   {tileTitle}
@@ -750,12 +762,12 @@ export default async function PropertyPage({
                 <p
                   className={
                     isSafety
-                      ? 'text-[11px] text-red-700 mt-0.5 leading-snug'
-                      : 'text-[11px] text-slate-500 mt-0.5 leading-snug'
+                      ? 'mt-1 text-xs leading-relaxed text-red-700'
+                      : 'mt-1 text-xs leading-relaxed text-slate-500'
                   }
                 >
                   {tileSub}
-                </p>
+                </p></div>
               </Link>
             )
           })}
@@ -767,7 +779,7 @@ export default async function PropertyPage({
           derived from the data we already loaded — no extra queries
           except the open-recovery head-count which ran in parallel
           with the flags query. */}
-      <section className="mb-8">
+      {(readyForAsanaCount > 0 || ownerApprovalPendingCount > 0 || (openRecoveryCount ?? 0) > 0 || overdueCount > 0) && <section className="mb-8">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <SnapshotTile
             icon={ClipboardCheck}
@@ -794,7 +806,7 @@ export default async function PropertyPage({
             tone={overdueCount > 0 ? 'red' : 'slate'}
           />
         </div>
-      </section>
+      </section>}
 
       {/* Open flags — grouped by category, expand-in-place (Session 7).
           Each card has a collapsed summary + an expanded inline panel
@@ -886,7 +898,7 @@ export default async function PropertyPage({
             - Recently closed/no-action flags (capped at 5)
           Both link out to their respective detail pages so the
           full record is one click away weeks after the fact. */}
-      <section className="mb-10">
+      <section id="history" className="mb-10 scroll-mt-24">
         <h2 className="text-lg font-semibold text-slate-900 mb-3">History</h2>
         <div className="grid md:grid-cols-2 gap-4">
           <Card>
@@ -1014,64 +1026,7 @@ export default async function PropertyPage({
         </div>
       </section>
 
-      {/* Roadmap blurb */}
-      <section className="mb-10">
-        <h2 className="text-sm font-semibold text-slate-900 mb-3">Coming for this apartment</h2>
-        <div className="grid sm:grid-cols-3 gap-3">
-          <RoadmapMiniCard
-            icon={ClipboardCheck}
-            label="Turnover inspection"
-            phase="Next session"
-          />
-          <RoadmapMiniCard
-            icon={Camera}
-            label="Evidence camera & photos"
-            phase="v1.0"
-          />
-          <RoadmapMiniCard
-            icon={ChevronRight}
-            label="Flag triage & child actions"
-            phase="v1.0"
-          />
-        </div>
-      </section>
-
-      {/* Footer info */}
-      <section className="pt-6 border-t border-slate-200">
-        <div className="flex items-start gap-3 text-xs text-slate-500">
-          <Info size={14} className="mt-0.5 shrink-0 text-slate-400" aria-hidden />
-          <p>
-            Approval cap, owner link, and template overrides for this apartment
-            inherit the company defaults. Per-property overrides become editable when
-            the settings page ships in v1.2.
-          </p>
-        </div>
-      </section>
     </AppShell>
-  )
-}
-
-function RoadmapMiniCard({
-  icon: Icon,
-  label,
-  phase,
-}: {
-  icon: LucideIcon
-  label: string
-  phase: string
-}) {
-  return (
-    <Card>
-      <div className="p-3 flex items-center gap-2.5">
-        <div className="shrink-0 w-7 h-7 rounded-md bg-slate-100 flex items-center justify-center">
-          <Icon size={14} className="text-slate-600" aria-hidden />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold text-slate-900 truncate">{label}</p>
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider">{phase}</p>
-        </div>
-      </div>
-    </Card>
   )
 }
 

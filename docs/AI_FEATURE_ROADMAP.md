@@ -1,5 +1,11 @@
 # AI_FEATURE_ROADMAP.md
 
+Current product decision (22 November 2026): companies should be able to use an
+in-app AI helper and connect their existing ChatGPT/Claude apps, with the in-app
+helper delivered first. See `COMPANY_AI_CONNECTIONS_SCOPE.md`. Earlier MVP phase
+labels below are historical; the company operations helper is now requested.
+The guest-facing support chatbot remains a separate feature.
+
 ## Core AI principle
 
 **AI is assistive, not authoritative.**

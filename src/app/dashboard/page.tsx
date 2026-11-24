@@ -26,6 +26,8 @@ import { PropertyFinder } from '@/components/properties/property-finder'
 import { getUserContext } from '@/lib/auth/get-user-context'
 import { startPerf } from '@/lib/perf'
 import { createClient } from '@/lib/supabase/server'
+import { loadInspectionJobs } from '@/lib/inspections/load-workspace'
+import { canInspect, jobState, sastDay } from '@/lib/inspections/workboard'
 
 /**
  * GET /dashboard
@@ -92,16 +94,22 @@ export default async function DashboardPage() {
     .eq('is_active', true)
     .is('deleted_at', null)
 
+  const inspectionPromise = canInspect(ctx.membership?.role_key)
+    ? loadInspectionJobs(ctx.company.id, canManageProperties(ctx.membership?.role_key))
+    : Promise.resolve({ data: null, error: null })
+
   const [
     { data: properties, error },
     { count: openFlagsCount },
     { count: openRecoveryCount },
     { count: memberCountRaw },
+    inspections,
   ] = await Promise.all([
     propertiesPromise,
     openFlagsCountPromise,
     openRecoveryCountPromise,
     memberCountPromise,
+    inspectionPromise,
   ])
   const memberCount = memberCountRaw ?? 0
   perf.mark('queries')
@@ -153,13 +161,13 @@ export default async function DashboardPage() {
                 : 'View all open flags.'
             }
           />
-          <SnapshotCard
+          {canInspect(ctx.membership?.role_key) && <SnapshotCard
             icon={ClipboardCheck}
-            label="Pending inspections"
-            value={0}
-            hint="Ships with the turnover workflow."
-            muted
-          />
+            label={canManageProperties(ctx.membership?.role_key) ? 'Team inspections due' : 'Inspections due'}
+            value={inspections.data ? inspections.data.filter(j => ['today', 'overdue', 'needs_attention'].includes(jobState(j, sastDay()))).length : '—'}
+            hint={inspections.data ? 'Open the scheduled inspection work list.' : inspections.error ?? 'Inspection work is unavailable.'}
+            href={canManageProperties(ctx.membership?.role_key) ? '/dashboard/work?scope=all' : '/dashboard/work'}
+          />}
           {/* PR-A: Team management entry — company_admin only. Hiding this
               card is UX; real authorization is server-side on the page,
               in every action, and in the SECURITY DEFINER functions. */}
@@ -329,7 +337,7 @@ function SnapshotCard({
 }: {
   icon: LucideIcon
   label: string
-  value: number
+  value: number | string
   hint?: string
   muted?: boolean
   href?: string

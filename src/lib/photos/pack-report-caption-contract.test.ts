@@ -101,12 +101,16 @@ describe('REV 6 BLOCKER 2 — the pack report exposes NO per-photo removal', () 
   })
 
   it('the draft banner no longer tells inspectors to remove photos', () => {
+    const start = reportCode.indexOf('Review your inspection.')
+    expect(start).toBeGreaterThan(-1)
     const banner = reportCode.slice(
-      reportCode.indexOf('This pack is still a draft.'),
-      reportCode.indexOf('</p>', reportCode.indexOf('This pack is still a draft.')),
+      start,
+      reportCode.indexOf('</p>', start),
     )
     expect(banner).not.toMatch(/remove photos that/i)
-    expect(banner).toContain('discard the draft')
+    expect(banner).toContain('individual photos can&rsquo;t be removed')
+    expect(banner).toContain('More inspection options')
+    expect(banner).toContain('needs a manager')
   })
 
   it('the database guard that makes removal impossible is unchanged', () => {
@@ -181,8 +185,9 @@ describe('BLOCKER 2 — no user-accessible path bypasses caption review', () => 
     expect(exports).toEqual(['PackStatusBanner', 'DiscardDraftButton'])
   })
 
-  it('the property page uses the "Review captions and submit" link, not a direct submit', () => {
-    expect(propertyCode).toContain('Review captions and submit')
+  it('the property review action still opens the caption report, never a direct submit', () => {
+    const reviewLink = propertyCode.match(/<Link\b[\s\S]*?<\/Link>/g)?.find(link => link.includes('Review and submit inspection'))
+    expect(reviewLink).toContain('href={`/properties/${property.id}/packs/${draftPack.id}/report`}')
     expect(propertyCode).not.toMatch(/import\s*\{[^}]*PackSubmitButton[^}]*\}/)
     expect(propertyCode).not.toContain('<PackSubmitButton')
     expect(propertyCode).not.toContain('submitEvidencePackAction')
@@ -192,7 +197,7 @@ describe('BLOCKER 2 — no user-accessible path bypasses caption review', () => 
     const body = stripComments(exportedFnBody(packActions, 'submitEvidencePackAction'))
     // The pre-arrival refusal exists and no finalize call remains in the action.
     expect(body).toContain("pack.pack_type === 'pre_arrival'")
-    expect(body).toContain('Save captions and submit pack')
+    expect(body).toContain('Submit inspection')
     expect(body).not.toMatch(/rpc\(\s*'finalize_prearrival_pack'/)
   })
 

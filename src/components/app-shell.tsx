@@ -30,7 +30,8 @@ export function AppShell({
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
           <Link
             href="/dashboard"
-            className="flex items-center gap-2.5 min-w-0 group"
+            aria-label="STR Operations dashboard"
+            className="flex min-h-11 min-w-11 items-center gap-2.5 group"
           >
             <div className="w-7 h-7 rounded-md bg-slate-900 flex items-center justify-center shrink-0 group-hover:bg-slate-800 transition-colors">
               <Building2 size={15} className="text-white" />
@@ -53,7 +54,7 @@ export function AppShell({
             <form action="/auth/signout" method="POST">
               <button
                 type="submit"
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-sm text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors"
+                className="inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 px-2.5 py-1.5 text-sm text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700"
                 aria-label="Sign out"
               >
                 <LogOut size={14} aria-hidden />

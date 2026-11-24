@@ -1,5 +1,17 @@
 # INTEGRATION_ROADMAP.md
 
+Status note (22 November 2026): the original MVP plan below is historical.
+Outbound Asana issue/evidence sync is implemented; Hostaway is not. Current
+allocation/workboard decisions and integration boundaries are in
+[INSPECTOR_WORKBOARD.md](INSPECTOR_WORKBOARD.md). Existing apartments must be
+explicitly mapped by company, property UUID and listing/subunit identity;
+do not create or match apartments by unit number alone.
+
+The calendar must use each company’s connected PMS, with Hostaway as the first
+connector for Drop-Inn. See `PMS_CALENDAR_SCOPE.md`. Optional in-app AI followed
+by external ChatGPT/Claude connections is recorded in
+`COMPANY_AI_CONNECTIONS_SCOPE.md`; this is a requirement, not shipped capability.
+
 ## Plain-English overview
 
 The MVP does **not** require any integrations. That is the whole point of an evidence-first system — it has to be useful on its own.

@@ -271,13 +271,13 @@ export default async function PackReportPage({
         {isDraft ? (
           <div className="border border-t-0 border-amber-300 bg-amber-50 px-6 py-3 print:hidden">
             <p className="text-sm text-amber-900">
-              <span className="font-semibold">This pack is still a draft.</span>{' '}
-              Edit captions below, then tap{' '}
-              <span className="font-semibold">Save captions and submit pack</span>{' '}
-              at the bottom of this page. Submitted packs become an immutable
-              record. Photos can&rsquo;t be removed from a pre-arrival pack one by
-              one &mdash; if the wrong photos are in it, discard the draft from the
-              property page and start a new pack.
+              <span className="font-semibold">Review your inspection.</span>{' '}
+              Add captions and report any issues, then tap{' '}
+              <span className="font-semibold">Submit inspection</span>{' '}
+              below. Submitted photos and captions can&rsquo;t be edited, and
+              individual photos can&rsquo;t be removed. To discard, return to
+              the apartment&rsquo;s More inspection options. A discarded scheduled
+              inspection needs a manager to arrange a replacement.
             </p>
           </div>
         ) : null}
@@ -493,11 +493,10 @@ export default async function PackReportPage({
               Ready to submit?
             </h3>
             <p className="text-sm text-emerald-800 mt-1 leading-relaxed">
-              Submitting saves every caption on this page and finalises the
-              pack in one step — there are no individual save buttons.
-              Submitted packs move into the apartment&rsquo;s history and
-              become an immutable record. After submit, a new pre-arrival pack
-              can be started for the next turnover.
+              Check the photos and captions, and report any issues before
+              submitting. The pack is then saved in the apartment&rsquo;s
+              history. Reported issues stay open and guest readiness is
+              tracked separately.
             </p>
             <div className="mt-3">
               <PackCaptionSubmit photoCount={photoRows.length} />

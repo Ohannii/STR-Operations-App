@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:inspections:db": "node scripts/tests/inspection-database.mjs"
   },
   "dependencies": {
     "@react-pdf/renderer": "4.5.1",
@@ -26,6 +27,8 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
+    "happy-dom": "^21.0.4",
+    "pg": "^8.23.1",
     "supabase": "^2.101.0",
     "tailwindcss": "^4",
     "typescript": "^5",

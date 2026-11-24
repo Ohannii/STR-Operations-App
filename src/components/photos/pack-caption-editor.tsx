@@ -219,12 +219,12 @@ export function PackCaptionProvider({
           setSubmitConflict(true)
           return
         }
-        router.push(`/properties/${propertyId}?pack_submitted=1`)
+        router.push(`/properties/${propertyId}?pack_submitted=${encodeURIComponent(packId)}`)
         router.refresh()
       } catch (err) {
         console.error('[pack-captions] submit failed:', err instanceof Error ? err.name : typeof err)
         setSubmitError(
-          'The pack could not be submitted. It is still a draft and your captions are kept on this device.',
+          'Could not confirm submission. Your captions are kept on this device. Reconnect and reload to check the inspection status before trying again.',
         )
       } finally {
         submittingRef.current = false
@@ -488,7 +488,7 @@ export function PackCaptionSubmit({ photoCount }: { photoCount: number }) {
         disabled={blocked}
         aria-disabled={blocked}
         title={typeof reason === 'string' ? reason : reason?.text}
-        className="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 active:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2 sm:w-auto"
+        className="inline-flex min-h-13 w-full items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 py-3 text-base font-semibold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2"
       >
         {submitting ? (
           <Loader2 size={15} className="animate-spin" aria-hidden />
@@ -496,11 +496,11 @@ export function PackCaptionSubmit({ photoCount }: { photoCount: number }) {
           <Check size={15} aria-hidden />
         )}
         {submitting
-          ? 'Saving captions and submitting…'
-          : `Save captions and submit pack (${photoCount})`}
+          ? 'Submitting inspection…'
+          : `Submit inspection (${photoCount} ${photoCount === 1 ? 'photo' : 'photos'})`}
       </button>
       {reason && !submitting ? (
-        <span className="text-[11px] text-amber-700">
+        <span role="status" className="text-sm leading-relaxed text-amber-800">
           {typeof reason === 'string' ? reason : reason?.text}
         </span>
       ) : null}
