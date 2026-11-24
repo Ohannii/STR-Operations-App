@@ -1,6 +1,11 @@
-# PR #78 production release runbook — v1 (24 Nov 2026)
+# PR #78 production release runbook — v2 (24 Nov 2026)
 
 **Status:** for the lead's independent review. Nothing in this runbook has been run against production, except that `release_1_preflight_readonly.sql` was run once, read-only, to record the expected values below.
+
+**v2 changes (lead review of v1):**
+- The apply transaction now re-checks the **exact approved history fingerprint** and requires **exactly one** active "Test 1" and **exactly one** active "Test 2", under a row lock.
+- The postflight now proves that **pre-existing** issues were not reclassified, while reporting issues created after the release separately, never as a failure.
+- A fresh preflight is mandatory before any retry.
 
 **Approvals:** every step marked **[APPROVAL]** needs Anni's explicit approval at the time, naming the step, file and commit.
 
@@ -52,12 +57,14 @@
 | `pr78_history_rows` / `placeholder_rows` | 0 / 0 |
 | `history_fingerprint` | `a7dd154116a9b381d2d5e1cc4c369e3612e7b640ab4433982786a54382fe8e56` (after the 24 Nov repair) |
 | `pr78_objects_absent` / `pr78_columns_absent` | true / true |
-| `active_test_apartments` | 2 |
+| `active_test_apartments` / `active_test_1` / `active_test_2` | 2 / 1 / 1 |
 | `asana_enabled` | true |
 | `asana_jobs_in_flight` | 0 |
 | `live_jobs_in_flight_for_test_apartments` | 0 |
 
-If **any** value differs at release time, stop and report. Don't improvise.
+Re-checked read-only on 24 Nov after v2: unchanged.
+
+If **any** value differs at release time, stop and report. Don't improvise. `release_2` refuses by itself if the history fingerprint differs from `a7dd1541…8e56`, or if there is not exactly one active Test 1 and one active Test 2.
 
 ## 3. Order of release (recommended: PR #78 first, on its own)
 
@@ -71,8 +78,13 @@ If **any** value differs at release time, stop and report. Don't improvise.
 
 **Step C. Preflight.** Run `release_1_preflight_readonly.sql`. It must equal §2.
 
-**Step D. [APPROVAL] Database.** Run `release_2_apply_PROPOSED.sql` through the Supabase connector (role `postgres`). It is one transaction: SHA-256 guards, migration, marking, history recorded with the **full SQL**, and postconditions (2 test apartments, 2 audit rows, 3 enabled guard triggers, heartbeat row, exact function and table grants). Any failure means nothing changed.
-- If it aborts with `lock timeout` (staff activity), retry a few minutes later.
+**Step D. [APPROVAL] Database.** Run `release_2_apply_PROPOSED.sql` through the Supabase connector (role `postgres`). It is one transaction:
+- **guards**: SHA-256 of both embedded texts; history **fingerprint** equal to the approved preflight value; exactly one active Test 1 and one active Test 2 (rows locked);
+- **then**: migration, marking, and history recorded with the **full SQL**;
+- **postconditions**: Test 1 and Test 2 (and nothing else) marked, 2 audit rows, 3 enabled guard triggers, heartbeat row, exact function and table grants.
+
+Any failure means nothing changed.
+- If it aborts with `lock timeout` (staff activity) or any other error, **run step C (preflight) again** and compare with §2 before any retry. Retry only if everything still matches.
 - **Between D and F the current app keeps running.** It never references the new objects. A new Test 1 or Test 2 issue raised by mistake is stamped as a test issue, so the old app's live attempt is refused by the database veto. The issue is saved and waits until reconciliation sends it to BETA after F. Nothing can reach live Asana.
 
 **Step E. Postflight.** Run `release_3_postflight_readonly.sql`:
@@ -80,7 +92,10 @@ If **any** value differs at release time, stop and report. Don't improvise.
 - `pr78_history_statement = 1:422bc93d…7381a`;
 - `earlier_history_fingerprint` = the preflight `history_fingerprint`;
 - Test 1 and Test 2 both true;
-- `all_test_apartments = 2`, `reclassified_existing_flags = 0`, `test_sessions = 0`;
+- `all_test_apartments = 2`, `test_sessions = 0`;
+- `release_at` is set (the release transaction's time, from its 2 audit rows);
+- `reclassified_preexisting_flags = 0` and `reclassified_preexisting_examples` empty. This means no issue created **before** the release was stamped as test or "expected in Asana" (there is no backfill);
+- `flags_created_since_release` and `test_flags_since_release` are **informational only**. New issues raised after the release are stamped normally and are never a failure. `test_flags_since_release` should be 0 while testing is frozen.
 - `heartbeat_waiting_for_first_run = true`;
 - jobs in flight equal to preflight.
 
@@ -120,7 +135,26 @@ The two PRs overlap in **3 files**:
 
 **Plan:** after PR #78 is merged, update PR #74 by merging the new `main` into it (the same merge as proven above). Then re-run its tests and its own acceptance plan. PR #74 is **not** release-ready: Hostaway mapped turnovers, Android, offline and cross-user device checks are still pending.
 
-## 6. Open, acknowledged risks
+## 6. Verification of v2 (Claude, local PostgreSQL with production-shaped schema)
+
+The local copy of `release_2` differed from the committed file **only** in the fingerprint literal, set to the local database's value.
+
+| Test | Result |
+|---|---|
+| Committed file (live fingerprint) against a different history | **refused** |
+| One history row changed | **refused** |
+| Two active "Test 1" and no "Test 2" (total still 2, which the marking script alone would accept) | **refused**, nothing changed |
+| An extra active "Test 2" | **refused** |
+| The same extra "Test 2" soft-deleted | accepted, then applied |
+| Postflight right after | 35 rows; `pr78_history_statement = 1:422bc93d…`; earlier fingerprint unchanged; Test 1 and Test 2 true; `reclassified_preexisting_flags = 0` (a 2-day-old Test 1 issue stayed unclassified) |
+| Two new issues raised after the release (Test 1, Unit 13) | `reclassified_preexisting_flags` still **0**; `flags_created_since_release = 2`, `test_flags_since_release = 1`. Not a failure |
+| A pre-existing issue tampered to "expected" (trigger bypassed) | **caught**: count 1, with its id listed |
+| A second apply | **refused** |
+| Acceptance suite on the released database (extra synthetic issues removed) | **ALL PASSED** |
+
+**Note:** the acceptance suite's reconciliation assertions (10c, 10za) are global, so they assume no other recent "expected" issues exist in the database. They are designed for a data-less database (local or branch) and must never be run on production.
+
+## 7. Open, acknowledged risks
 
 - Test issues still count in the dashboard totals and reports.
 - Marking Test 1 ends the `ASANA_LIVE_INCIDENTS_TEST` preview on Test 1.

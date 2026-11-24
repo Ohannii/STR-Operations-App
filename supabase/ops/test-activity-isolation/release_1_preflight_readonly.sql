@@ -23,6 +23,10 @@ select
   (select count(*) from public.properties
     where company_id = '1669c464-8d26-40fc-9956-9f8955fd27c7' and deleted_at is null
       and name in ('Test 1', 'Test 2')) as active_test_apartments,                         -- expect 2
+  (select count(*) from public.properties
+    where company_id = '1669c464-8d26-40fc-9956-9f8955fd27c7' and deleted_at is null and name = 'Test 1') as active_test_1, -- expect 1
+  (select count(*) from public.properties
+    where company_id = '1669c464-8d26-40fc-9956-9f8955fd27c7' and deleted_at is null and name = 'Test 2') as active_test_2, -- expect 1
   exists (select 1 from public.integration_settings
            where company_id = '1669c464-8d26-40fc-9956-9f8955fd27c7' and provider = 'asana'
              and is_enabled and deleted_at is null) as asana_enabled,                      -- expect true

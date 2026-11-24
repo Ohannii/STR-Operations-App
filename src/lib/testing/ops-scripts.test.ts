@@ -97,6 +97,24 @@ describe('release_2_apply_PROPOSED.sql (production release transaction)', () => 
     expect(guard2).toBeGreaterThan(-1)
     expect(exec).toBeGreaterThan(Math.max(guard1, guard2))
   })
+  it('refuses unless the history matches the APPROVED preflight fingerprint, checked before executing anything', () => {
+    const sql = executable(rel)
+    const fp = sql.indexOf("v_fp <> 'a7dd154116a9b381d2d5e1cc4c369e3612e7b640ab4433982786a54382fe8e56'")
+    expect(fp).toBeGreaterThan(-1)
+    expect(sql.indexOf('execute m;')).toBeGreaterThan(fp)
+    // same expression as the preflight's history_fingerprint
+    const expr = (t: string) => t.slice(t.indexOf("quote_nullable(version) || '|'"), t.indexOf("e'\\n' order by version)")).replace(/\s+/g, ' ')
+    expect(expr(sql).length).toBeGreaterThan(150)
+    expect(expr(sql)).toBe(expr(executable(ops('release_1_preflight_readonly.sql'))))
+  })
+  it('requires exactly one active "Test 1" and exactly one active "Test 2" (not just two in total) before executing', () => {
+    const sql = executable(rel)
+    const one = sql.indexOf("name = 'test 1') <> 1")
+    const two = sql.indexOf("name = 'test 2') <> 1")
+    expect(one).toBeGreaterThan(-1)
+    expect(two).toBeGreaterThan(-1)
+    expect(sql.indexOf('execute m;')).toBeGreaterThan(Math.max(one, two))
+  })
   it('records the FULL migration SQL in history, never a placeholder comment', () => {
     expect(executable(rel)).toContain("values ('20261123120000', 'test_activity_isolation', array[m]);")
   })
@@ -104,5 +122,14 @@ describe('release_2_apply_PROPOSED.sql (production release transaction)', () => 
     const sql = executable(rel)
     expect(sql.match(/^do \$rel\$/gm)).toHaveLength(1)
     for (const banned of ['commit;', 'rollback;', 'disable trigger']) expect(sql.replace(/\$mig\$[\s\S]*?\$mig\$/, '').replace(/\$mark\$[\s\S]*?\$mark\$/, '')).not.toContain(banned)
+  })
+})
+
+describe('release_3_postflight_readonly.sql', () => {
+  const post = executable(ops('release_3_postflight_readonly.sql'))
+  it('only counts issues created BEFORE the release as reclassified; later issues are informational', () => {
+    expect(post).toContain("where flags.created_at < release.at and (flags.is_test or flags.asana_handoff_expected)) as reclassified_preexisting_flags")
+    expect(post).toContain('as flags_created_since_release')
+    expect(post).not.toContain('reclassified_existing_flags')
   })
 })

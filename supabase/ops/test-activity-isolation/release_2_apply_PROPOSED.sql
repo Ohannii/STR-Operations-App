@@ -6,8 +6,10 @@
 --
 -- ONE DO block = ONE transaction. It:
 --   1. refuses unless both embedded texts match their reviewed SHA-256
---      (migration 422bc93d…7381a, marking script dc68c656…7853) and the
---      history is exactly as in the preflight (34 rows, PR #78 absent);
+--      (migration 422bc93d…7381a, marking script dc68c656…7853), the
+--      history is byte-identical to the approved preflight (exact
+--      fingerprint a7dd1541…8e56, 34 rows, PR #78 absent) and there is
+--      exactly ONE active "Test 1" and exactly ONE active "Test 2";
 --   2. runs the migration, then the Test 1 / Test 2 marking;
 --   3. records migration history with the REAL migration SQL (one element,
 --      LF preserved) — never a placeholder comment. The data-only marking
@@ -16,9 +18,11 @@
 --      triggers enabled, grants exactly as designed;
 --   5. raises on ANY failure, so nothing at all is changed.
 -- Short lock timeout: if staff activity holds a lock on flags/properties
--- for more than 5 s it aborts cleanly and can simply be retried later.
+-- for more than 5 s it aborts cleanly (nothing changed). Before ANY retry,
+-- run release_1_preflight_readonly.sql again and compare with the runbook.
 do $rel$
 declare
+  v_fp text;
   m text := $mig$-- ============================================================
 -- Test activity isolation: test issues never create live Asana work
 -- (rev 2, 23 Nov 2026, after lead review)
@@ -614,8 +618,30 @@ begin
   if encode(extensions.digest(convert_to(k, 'UTF8'), 'sha256'), 'hex') <> 'dc68c65639f49e8b7e248349c928f46baf47fc8289f95ade2b22afaa2ccb7853' then
     raise exception 'REFUSED: marking script does not match the reviewed checksum';
   end if;
+  -- History must be byte-identical to the approved preflight. Same
+  -- expression as release_1_preflight_readonly.sql (history_fingerprint).
+  lock table supabase_migrations.schema_migrations in share row exclusive mode;
   select count(*) into n from supabase_migrations.schema_migrations;
   if n <> 34 then raise exception 'REFUSED: expected 34 history rows, found %', n; end if;
+  select encode(extensions.digest(convert_to(string_agg(
+           quote_nullable(version) || '|' || quote_nullable(name) || '|' || quote_nullable(statements::text) || '|' ||
+           quote_nullable(created_by) || '|' || quote_nullable(idempotency_key) || '|' || quote_nullable(rollback::text),
+           E'\n' order by version), 'UTF8'), 'sha256'), 'hex')
+    into v_fp from supabase_migrations.schema_migrations;
+  if v_fp <> 'a7dd154116a9b381d2d5e1cc4c369e3612e7b640ab4433982786a54382fe8e56' then
+    raise exception 'REFUSED: migration history differs from the approved preflight (fingerprint %)', v_fp;
+  end if;
+  -- Exactly one active "Test 1" and exactly one active "Test 2", checked
+  -- under a lock so they cannot change before the marking runs.
+  perform 1 from public.properties
+   where company_id = '1669c464-8d26-40fc-9956-9f8955fd27c7' and name in ('Test 1', 'Test 2')
+   for update;
+  if (select count(*) from public.properties
+       where company_id = '1669c464-8d26-40fc-9956-9f8955fd27c7' and deleted_at is null and name = 'Test 1') <> 1
+     or (select count(*) from public.properties
+       where company_id = '1669c464-8d26-40fc-9956-9f8955fd27c7' and deleted_at is null and name = 'Test 2') <> 1 then
+    raise exception 'REFUSED: need exactly one active "Test 1" and exactly one active "Test 2"';
+  end if;
   if exists (select 1 from supabase_migrations.schema_migrations where version = '20261123120000')
      or to_regclass('public.test_sessions') is not null then
     raise exception 'REFUSED: PR #78 migration is already (partly) present';
@@ -628,10 +654,13 @@ begin
     values ('20261123120000', 'test_activity_isolation', array[m]);
 
   -- Postconditions
-  select count(*) into n from public.properties
-   where company_id = '1669c464-8d26-40fc-9956-9f8955fd27c7' and deleted_at is null
-     and name in ('Test 1', 'Test 2') and is_test;
-  if n <> 2 then raise exception 'ABORTED: expected 2 test apartments, found %', n; end if;
+  if (select count(*) from public.properties
+       where company_id = '1669c464-8d26-40fc-9956-9f8955fd27c7' and deleted_at is null and name = 'Test 1' and is_test) <> 1
+     or (select count(*) from public.properties
+       where company_id = '1669c464-8d26-40fc-9956-9f8955fd27c7' and deleted_at is null and name = 'Test 2' and is_test) <> 1
+     or (select count(*) from public.properties where is_test) <> 2 then
+    raise exception 'ABORTED: expected exactly Test 1 and Test 2 (and nothing else) marked as test apartments';
+  end if;
   select count(*) into n from public.audit_events
    where event_kind = 'property_test_status_changed'
      and metadata->>'source' = 'release step 01_mark_test_apartments';

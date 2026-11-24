@@ -2,7 +2,16 @@
 -- PR #78 production release — STEP 3: POSTFLIGHT (READ-ONLY)
 -- ============================================================
 -- SELECT only. Run right after release_2. Compare with the runbook.
-with hist as (
+-- "Release moment" = the timestamp of the release transaction, taken from
+-- the two Test 1 / Test 2 marking audit rows it wrote (same transaction as
+-- the migration). Issues created BEFORE it must keep is_test = false and
+-- asana_handoff_expected = false (no backfill); issues created AFTER it
+-- are stamped normally and are reported separately, never as a failure.
+with release as (
+  select min(created_at) as at from public.audit_events
+   where event_kind = 'property_test_status_changed'
+     and metadata->>'source' = 'release step 01_mark_test_apartments'
+), hist as (
   select version, name, statements, created_by, idempotency_key, rollback
     from supabase_migrations.schema_migrations
 )
@@ -18,7 +27,13 @@ select
   (select string_agg(name || '=' || is_test, ', ' order by name) from public.properties
     where company_id = '1669c464-8d26-40fc-9956-9f8955fd27c7' and deleted_at is null and name in ('Test 1', 'Test 2')) as test_apartments, -- expect Test 1=true, Test 2=true
   (select count(*) from public.properties where is_test) as all_test_apartments,          -- expect 2
-  (select count(*) from public.flags where is_test or asana_handoff_expected) as reclassified_existing_flags, -- expect 0 right after release (no backfill)
+  (select at from release) as release_at,                                                 -- expect the release time (not null)
+  (select count(*) from public.flags, release
+    where flags.created_at < release.at and (flags.is_test or flags.asana_handoff_expected)) as reclassified_preexisting_flags, -- expect 0
+  (select string_agg(flags.id::text, ', ') from (select f.id from public.flags f, release
+     where f.created_at < release.at and (f.is_test or f.asana_handoff_expected) limit 5) flags) as reclassified_preexisting_examples, -- expect null
+  (select count(*) from public.flags, release where flags.created_at >= release.at) as flags_created_since_release,   -- informational
+  (select count(*) from public.flags, release where flags.created_at >= release.at and flags.is_test) as test_flags_since_release, -- informational (expect 0 while testing is frozen)
   (select count(*) from public.test_sessions) as test_sessions,                           -- expect 0
   (select last_run_at is null and monitoring_since is not null from public.integration_worker_heartbeats where worker = 'asana_reconcile') as heartbeat_waiting_for_first_run, -- expect true until the new app's cron runs
   (select count(*) from public.integration_outbox
