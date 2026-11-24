@@ -1,12 +1,17 @@
-# Test activity isolation (draft PR report, revision 5)
+# Test activity isolation (draft PR report, revision 6)
 
 Purpose: test work never creates live Asana work, and a real issue never silently misses Asana. The change keeps live Incidents & Damages intake for genuine issues and adds no steps for inspectors.
 
-**Status:** draft for review.
+**Status (24 Nov 2026):** draft, ready for release review. The production steps are in [`docs/releases/PR78_RELEASE_RUNBOOK.md`](releases/PR78_RELEASE_RUNBOOK.md).
 
-- Nothing merged or deployed.
-- No migration applied, no release step run, no environment or live data changed.
-- The only database access was two read-only `select` queries on the shared database (the ids of Test 1 and Test 2, and the company's Asana setting).
+- Nothing merged or deployed. PR #78's migration is **not** on the production database.
+- **Production database writes so far: one**, the separately approved **migration-history metadata repair** on 24 Nov. Versions `20261119090000` and `20261119110000` now store their full SQL instead of a placeholder comment (`supabase/ops/migration-history-repair/`). No schema or application data changed.
+- **Isolated Supabase branch acceptance: PASSED** (lead, 24 Nov):
+  - all 34 historical migrations replayed;
+  - migration and Test 1/Test 2 marking applied in one transaction;
+  - `TEST ACTIVITY ISOLATION: ALL PASSED`;
+  - the branch was deleted.
+- All other production access has been read-only checks.
 
 ## What it does
 
@@ -225,9 +230,14 @@ Each problem comes with plain recovery guidance:
 
 ## PR #74 overlap
 
-- One conflict: `src/app/properties/[id]/page.tsx`, at the parallel-read `Promise.all`.
-- Resolution: keep PR #74's `loadInspectionJobs(...)` entry, then add the two `testFlagsPromise` lines after the `])`.
-- No other file overlaps.
+- **Three overlapping files:** `src/app/dashboard/page.tsx`, `src/app/properties/[id]/page.tsx` and `src/components/app-shell.tsx`.
+- A real three-way merge of PR #78 into PR #74 resolves all three **automatically**, and the result keeps every PR #74 line; PR #78 only adds.
+- The combined tree passes:
+  - Vitest: 102 files / 1891 tests;
+  - the build;
+  - this suite;
+  - PR #74's own database tests.
+- Full proof and plan are in the runbook, §5. The earlier "one conflicting hunk" was a `git apply` limitation.
 
 ## Remaining risks
 

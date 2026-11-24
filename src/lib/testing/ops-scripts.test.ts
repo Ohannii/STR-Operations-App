@@ -73,3 +73,36 @@ describe('03_emergency_disable_classification.sql (hazardous)', () => {
     }
   })
 })
+
+describe('release_2_apply_PROPOSED.sql (production release transaction)', () => {
+  const rel = ops('release_2_apply_PROPOSED.sql')
+  const repo = (p: string) => readFileSync(join(process.cwd(), p), 'utf8').replace(/\r\n/g, '\n')
+  const embedded = (open: string, close: string) => {
+    const i = rel.indexOf(open)
+    const j = rel.indexOf(close, i + open.length)
+    expect(i).toBeGreaterThan(-1)
+    expect(j).toBeGreaterThan(i)
+    return rel.slice(i + open.length, j)
+  }
+  it('embeds the migration and the marking script byte-for-byte (no drift from the reviewed files)', () => {
+    expect(embedded('m text := $mig$', '$mig$;')).toBe(repo('supabase/migrations/20261123120000_test_activity_isolation.sql'))
+    expect(embedded('k text := $mark$', '$mark$;')).toBe(ops('01_mark_test_apartments.sql'))
+  })
+  it('guards both texts by their reviewed checksums before executing anything', () => {
+    const sql = executable(rel)
+    const guard1 = sql.indexOf("'422bc93d9dede32ceb9f5944173c770083f27c5cdb79ede7621b0c99e7c7381a'")
+    const guard2 = sql.indexOf("'dc68c65639f49e8b7e248349c928f46baf47fc8289f95ade2b22afaa2ccb7853'")
+    const exec = sql.indexOf('execute m;')
+    expect(guard1).toBeGreaterThan(-1)
+    expect(guard2).toBeGreaterThan(-1)
+    expect(exec).toBeGreaterThan(Math.max(guard1, guard2))
+  })
+  it('records the FULL migration SQL in history, never a placeholder comment', () => {
+    expect(executable(rel)).toContain("values ('20261123120000', 'test_activity_isolation', array[m]);")
+  })
+  it('is a single DO block (one transaction) with no transaction control or trigger disabling', () => {
+    const sql = executable(rel)
+    expect(sql.match(/^do \$rel\$/gm)).toHaveLength(1)
+    for (const banned of ['commit;', 'rollback;', 'disable trigger']) expect(sql.replace(/\$mig\$[\s\S]*?\$mig\$/, '').replace(/\$mark\$[\s\S]*?\$mark\$/, '')).not.toContain(banned)
+  })
+})
